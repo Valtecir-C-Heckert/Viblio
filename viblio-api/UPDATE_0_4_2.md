@@ -9,15 +9,15 @@ vivo por SSE autenticado. Não há migração nova: o pacote mantém 001–011 i
 Execute no PC onde estão os arquivos em Downloads, fora do SSH:
 
 ```powershell
-scp "$env:USERPROFILE\Downloads\viblio-api-0.4.2.zip" valtecir@192.168.1.24:/home/valtecir/
-ssh valtecir@192.168.1.24
+scp "$env:USERPROFILE\Downloads\viblio-api-0.4.2.zip" <usuario>@<ip-do-servidor>:~/
+ssh <usuario>@<ip-do-servidor>
 ```
 
 ## Atualizar no servidor (Debian)
 
 ```bash
-ls -lh /home/valtecir/viblio-api-0.4.2.zip
-python3 ~/atualizar-viblio.py --zip /home/valtecir/viblio-api-0.4.2.zip --sha256 SHA256_PUBLICADO_COM_ESTE_ZIP
+ls -lh ~/viblio-api-0.4.2.zip
+python3 ~/atualizar-viblio.py --zip ~/viblio-api-0.4.2.zip --sha256 SHA256_PUBLICADO_COM_ESTE_ZIP
 ```
 
 Copie o SHA-256 correspondente a este ZIP do arquivo de checksums entregue com a

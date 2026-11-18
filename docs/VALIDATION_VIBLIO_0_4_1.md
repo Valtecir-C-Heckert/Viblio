@@ -29,5 +29,5 @@ WAF/regras de borda e restrição da origem continuam dependendo da implantaçã
 Atualize a [API primeiro](../viblio-api/UPDATE_0_4_1.md) e depois instale o APK por cima. Checksums em [downloads/SHA256SUMS](../downloads/SHA256SUMS).
 
 ```bash
-python3 ~/atualizar-viblio.py --zip /home/valtecir/viblio-api-0.4.1.zip --sha256 312ac973918b4cf51e860e710152bff35a4893bf87005975fb10e98877319511
+python3 ~/atualizar-viblio.py --zip ~/viblio-api-0.4.1.zip --sha256 312ac973918b4cf51e860e710152bff35a4893bf87005975fb10e98877319511
 ```

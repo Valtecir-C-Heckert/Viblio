@@ -2,10 +2,10 @@
 
 ## Atualizar no servidor
 
-Baixe o ZIP da API e coloque-o na raiz do seu Nextcloud. No terminal de `srvValtecir`:
+Baixe o ZIP da API e coloque-o na raiz do seu Nextcloud. No terminal de `<servidor>`:
 
 ```bash
-sudo cp /DATA/AppData/nextcloud/var/www/html/data/valtecir/files/viblio-api-0.3.1.zip /tmp/viblio-api-0.3.1.zip
+sudo cp <pasta-nextcloud>/viblio-api-0.3.1.zip /tmp/viblio-api-0.3.1.zip
 sudo chown "$(id -un):$(id -gn)" /tmp/viblio-api-0.3.1.zip
 chmod 600 /tmp/viblio-api-0.3.1.zip
 test -f ~/atualizar-viblio.py || cp /opt/viblio/api/scripts/atualizar-viblio.py ~/atualizar-viblio.py
@@ -15,7 +15,7 @@ python3 ~/atualizar-viblio.py --zip /tmp/viblio-api-0.3.1.zip --sha256 f1f198ca9
 Se o ZIP estiver em outra pasta, localize-o e use esse caminho no `cp`:
 
 ```bash
-sudo find /DATA/AppData/nextcloud/var/www/html/data/valtecir/files -type f -name 'viblio-api-0.3.1.zip'
+sudo find <pasta-nextcloud> -type f -name 'viblio-api-0.3.1.zip'
 ```
 
 O atualizador guarda os backups e preserva `.env` e volumes. Sem migração nova. Depois confira:

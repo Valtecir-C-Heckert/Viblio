@@ -4,7 +4,7 @@ Este roteiro prepara o acesso público **apenas à API do Viblio**, usando Cloud
 
 **Estado da entrega 0.2.8:** o proprietário confirmou em 01/11/2026 o JSON de `https://api.viblio.com.br/v1/auth/info` em dados móveis, com Wi-Fi e Tailscale desligados, e a API saudável após ajustar PUBLIC_BASE_URL. O APK 0.2.8 usa esse endereço por padrão. O roteiro abaixo permanece como referência de implantação e retorno seguro; não repita a criação de conta/banco se já concluiu essas etapas.
 
-Os comandos são para a sessão SSH de `valtecir@srvValtecir`. No computador, entre pelo endereço que você já usa. O endereço escolhido é **`https://api.viblio.com.br`**. Na etapa 1 precisamos confirmar o controle de `viblio.com.br` para configurar o DNS.
+Os comandos são para a sessão SSH de `<usuario>@<servidor>`. No computador, entre pelo endereço que você já usa. O endereço escolhido é **`https://api.viblio.com.br`**. Na etapa 1 precisamos confirmar o controle de `viblio.com.br` para configurar o DNS.
 
 ## 1. Conferir domínio e guardar o DNS atual
 
@@ -33,7 +33,7 @@ Se localhost:8088 não abrir, confira o bind e a porta atuais antes de criar o t
 ## 3. Fazer backup antes de mudar a URL
 
 ```bash
-sudo install -d -m 700 -o valtecir -g valtecir /opt/viblio/backups /opt/viblio/tunnel
+sudo install -d -m 700 -o "$USER" -g "$USER" /opt/viblio/backups /opt/viblio/tunnel
 umask 077
 VIBLIO_PUBLIC_BACKUP="/opt/viblio/backups/antes-publico-$(date +%Y%m%d-%H%M%S)"
 mkdir "$VIBLIO_PUBLIC_BACKUP"
@@ -47,7 +47,7 @@ Confirme que os comandos deram certo e que o volume existe. **Não continue se h
 
 ```bash
 docker run --rm --mount type=volume,source=viblio-catalog-api_viblio-covers,target=/data,readonly --mount "type=bind,source=$VIBLIO_PUBLIC_BACKUP,target=/backup" alpine:3.22 tar -czf /backup/covers-and-private.tar.gz -C /data .
-sudo chown valtecir:valtecir "$VIBLIO_PUBLIC_BACKUP/covers-and-private.tar.gz"
+sudo chown "$USER:$USER" "$VIBLIO_PUBLIC_BACKUP/covers-and-private.tar.gz"
 chmod 600 "$VIBLIO_PUBLIC_BACKUP/covers-and-private.tar.gz"
 ls -lh "$VIBLIO_PUBLIC_BACKUP/database.dump" "$VIBLIO_PUBLIC_BACKUP/covers-and-private.tar.gz"
 ```
