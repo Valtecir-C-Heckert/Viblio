@@ -1,0 +1,33 @@
+services:
+  viblio-api:
+    build:
+      context: .
+      args:
+        OFFLINE_WHEELS: ${OFFLINE_WHEELS:-0}
+    restart: unless-stopped
+    ports:
+      - "${VIBLIO_BIND_ADDRESS:-0.0.0.0}:${VIBLIO_API_PORT:-8088}:8080"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Configure DATABASE_URL no arquivo .env}
+      VIBLIO_API_TOKEN: ${VIBLIO_API_TOKEN:?Gere uma chave no servidor}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Informe o endereço acessível pelo celular}
+      COVER_DIR: /data/covers
+    volumes:
+      - viblio-covers:/data/covers
+    networks:
+      - existing-viblio
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8080/v1/health',headers={'Authorization':'Bearer '+os.environ['VIBLIO_API_TOKEN']}); urllib.request.urlopen(r,timeout=5)"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+networks:
+  existing-viblio:
+    external: true
+    name: viblio_default
+volumes:
+  viblio-covers:

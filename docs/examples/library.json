@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "currentBookId": "example-deusa",
+  "books": [
+    {"id":"example-deusa","title":"Deusa em chamas","author":"R. F. Kuang","genre":"Fantasia Dark","totalPages":592,"currentPage":354,"coverData":"","background":"black"},
+    {"id":"example-furia","title":"Fúria Vermelha","author":"Pierce Brown","genre":"Distopia","totalPages":468,"currentPage":0,"coverData":"","background":"black"},
+    {"id":"example-1984","title":"1984","author":"George Orwell","genre":"Distopia","totalPages":328,"currentPage":328,"coverData":"","background":"black"}
+  ],
+  "sessions": []
+}

@@ -1,0 +1,106 @@
+name: Downloads do Viblio
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-viblio.yml'
+      - 'downloads/viblio-*.apk'
+      - 'downloads/viblio-*-preview.png'
+      - 'downloads/viblio-api-*.zip'
+      - 'downloads/SHA256SUMS'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: viblio-release
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Select and verify the already signed release files
+        id: files
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, os, re
+          root = Path('downloads')
+          versions = []
+          for path in root.glob('viblio-*.apk'):
+              match = re.fullmatch(r'viblio-(\d+)\.(\d+)\.(\d+)\.apk', path.name)
+              if match:
+                  versions.append((tuple(map(int, match.groups())), path))
+          _, apk = max(versions)
+          version = apk.name.removeprefix('viblio-').removesuffix('.apk')
+          api = root / f'viblio-api-{version}.zip'
+          preview = root / f'viblio-{version}-preview.png'
+          manifest = {}
+          for line in (root / 'SHA256SUMS').read_text().splitlines():
+              if not line.strip():
+                  continue
+              digest, name = line.split(maxsplit=1)
+              name = name.lstrip('*').strip()
+              if name in manifest:
+                  raise SystemExit('Duplicate checksum entry')
+              manifest[name] = digest
+          checksums = []
+          files = [apk] + ([api] if api.is_file() else []) + ([preview] if preview.is_file() else [])
+          for path in files:
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if manifest.get(path.name) != digest:
+                  raise SystemExit(f'Checksum mismatch: {path.name}')
+              checksums.append(f'{digest}  {path.name}\n')
+          sums = root / f'viblio-{version}-SHA256SUMS.txt'
+          sums.write_text(''.join(checksums))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              api_path = str(api) if api.is_file() else ''
+              out.write(f'preview={preview if preview.is_file() else ""}\n')
+              out.write(f'version={version}\napk={apk}\napi={api_path}\nsums={sums}\n')
+          PY
+      - name: Publish downloadable attachments, preserving existing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.files.outputs.version }}
+          APK: ${{ steps.files.outputs.apk }}
+          API: ${{ steps.files.outputs.api }}
+          SUMS: ${{ steps.files.outputs.sums }}
+          PREVIEW: ${{ steps.files.outputs.preview }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="viblio-v${VERSION}"
+          notes="${RUNNER_TEMP}/viblio-notes.md"
+          cat > "$notes" <<'NOTES'
+          APK assinado para atualizar o Viblio existente, sem desinstalar.
+          Quando houver ZIP de API nesta versão, consulte o guia incluído antes de atualizar o servidor.
+          Versões somente de APK usam a API existente, conforme o guia de atualização do Viblio.
+          Baixe o arquivo .apk na lista de anexos desta versão.
+          NOTES
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --draft --target "$GITHUB_SHA" --title "Viblio ${VERSION}" --notes-file "$notes"
+          fi
+          for file in "$APK" "$API" "$PREVIEW" "$SUMS"; do
+            [[ -n "$file" ]] || continue
+            name="$(basename "$file")"
+            existing="$(mktemp -d)"
+            if gh release download "$tag" --pattern "$name" --dir "$existing" >/dev/null 2>&1; then
+              cmp "$file" "$existing/$name"
+            else
+              gh release upload "$tag" "$file"
+            fi
+            rm -rf "$existing"
+          done
+          gh release edit "$tag" --draft=false
+          # This marker is created only after all attachments were verified/published.
+          # It lets environments without GitHub API access verify completion via Git.
+          ready="tags/viblio-download-ready-${VERSION}"
+          if ! gh api "repos/${GH_REPO}/git/ref/${ready}" >/dev/null 2>&1; then
+            gh api --method POST "repos/${GH_REPO}/git/refs" -f "ref=refs/${ready}" -f "sha=${GITHUB_SHA}" >/dev/null
+          fi

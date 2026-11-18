@@ -1,0 +1,13 @@
+services:
+  tunnel:
+    image: cloudflare/cloudflared@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
+    restart: unless-stopped
+    network_mode: host
+    user: "${VIBLIO_TUNNEL_UID:?Informe o UID em .env}:${VIBLIO_TUNNEL_GID:?Informe o GID em .env}"
+    command: ["tunnel", "--no-autoupdate", "run", "--token-file", "/run/secrets/tunnel-token"]
+    volumes:
+      - ./tunnel-token:/run/secrets/tunnel-token:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
