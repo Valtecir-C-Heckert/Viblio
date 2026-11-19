@@ -1,5 +1,12 @@
 # API do novo Viblio
 
+## Atualização 0.4.7
+
+Otimização de sincronização em Amigos, Feed e Clubes: pool limitado de conexões
+PostgreSQL, remoção de `FOR UPDATE` em leituras `GET` de clubes, eliminação de
+detoast repetido no Feed e cache ampliado de miniaturas. Sem migração nova;
+`001–012` permanecem intactas. [Guia](UPDATE_0_4_7.md).
+
 ## Atualização 0.4.6
 
 Suporte aditivo ao redesenho da aba Clubes: resumo da etapa/votação e contador de

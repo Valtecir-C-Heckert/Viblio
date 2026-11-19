@@ -28,6 +28,7 @@ class ViblioActivity : Activity() {
     private lateinit var content: LinearLayout
     private var statistics:BooksPanel?=null
     private lateinit var navigation:LinearLayout
+    private lateinit var composerDock:FrameLayout
     private lateinit var search:SearchPanel
     private lateinit var account:AccountPanel
     private lateinit var friends:br.com.viblio.ui.SocialPanel
@@ -56,6 +57,11 @@ class ViblioActivity : Activity() {
     }
     private val positions=mutableMapOf<String,Int>()
 
+    companion object {
+        private var introPlayed = false
+    }
+    private var introView: br.com.viblio.ui.ViblioIntroView? = null
+
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         ui = DisplayUi(this).apply {readingColor(null)}
@@ -69,12 +75,25 @@ class ViblioActivity : Activity() {
         val host=ui.column()
         root.addView(host,FrameLayout.LayoutParams(-1,-1))
         host.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
+        composerDock=FrameLayout(this).apply { visibility=android.view.View.GONE }
+        host.addView(composerDock,LinearLayout.LayoutParams(-1,-2))
         navigation=ui.row().apply { setPadding(ui.dp(12),ui.dp(6),ui.dp(12),ui.dp(6));background=ui.shape(ui.background,0) }
         host.addView(navigation,LinearLayout.LayoutParams(-1,ui.dp(72)))
         root.setOnApplyWindowInsetsListener { view, insets ->
-            view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop,
-                insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
-            insets.consumeSystemWindowInsets()
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                val bars = insets.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.ime())
+                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+                if (insets.isVisible(android.view.WindowInsets.Type.ime()) && composerDock.visibility == android.view.View.VISIBLE) {
+                    scroll.post { scroll.fullScroll(android.view.View.FOCUS_DOWN) }
+                }
+                android.view.WindowInsets.CONSUMED
+            } else {
+                @Suppress("DEPRECATION")
+                view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop,
+                    insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
+                @Suppress("DEPRECATION")
+                insets.consumeSystemWindowInsets()
+            }
         }
         window.statusBarColor = ui.background
         window.navigationBarColor = ui.background
@@ -96,7 +115,18 @@ class ViblioActivity : Activity() {
         render()
         scroll.post { scroll.scrollTo(0,positions[tab] ?: 0) }
         root.requestApplyInsets()
+        val isDeepLink=intent?.action==Intent.ACTION_VIEW && intent.data?.scheme=="viblio"
         openIncomingReading(intent)
+        if(state==null && !introPlayed && !isDeepLink && br.com.viblio.ui.ViblioIntroView.animatorsEnabled(this)){
+            introPlayed=true
+            val overlay=br.com.viblio.ui.ViblioIntroView(this,ui.accent){
+                introView?.let {view->root.removeView(view)}
+                introView=null
+            }
+            introView=overlay
+            root.addView(overlay,FrameLayout.LayoutParams(-1,-1))
+            overlay.start()
+        }
     }
     private fun makeSearch()=SearchPanel(this,ui,catalog,manual=::registerManual,scan={launchIsbnScanner("search")}) { record ->
             val open={ switchTab("shelf");library.addFromCatalog(record) }
@@ -106,6 +136,7 @@ class ViblioActivity : Activity() {
             else open()
         }
     private fun makeFriends()=br.com.viblio.ui.SocialPanel(this,ui,accounts){if(tab=="friends")render()}.apply {
+        composerDock=this@ViblioActivity.composerDock
         onBackdrop={if(tab=="friends" && !needsLogin())applyBackground(displayTheme)}
     }
     private fun makeLibrary()=BooksPanel(this,ui,{homeAssistant.changed();accounts.localChanged();if(tab=="shelf")render()}).apply {
@@ -151,6 +182,8 @@ class ViblioActivity : Activity() {
         updateReadingTheme()
         content.setPadding(ui.dp(20),ui.dp(12),ui.dp(20),ui.dp(24))
         content.removeAllViews()
+        composerDock.removeAllViews()
+        composerDock.visibility=android.view.View.GONE
         if(needsLogin()){
             navigation.visibility=android.view.View.GONE
             applyBackground(ui)
@@ -256,7 +289,7 @@ class ViblioActivity : Activity() {
     override fun onStart() { super.onStart();stopped=false;accounts.start();homeAssistant.start();started=true;if(tab=="shelf" && !needsLogin()) library.onStart();catalog.retry();if(needsRender)render() }
     override fun onStop() { stopped=true;accounts.stop();homeAssistant.stop();started=false;library.onStop();if(tab=="search") search.hide();if(tab=="friends")friends.hide();super.onStop() }
     override fun onResume() { super.onResume();if(tab=="search" || tab=="friends") render() }
-    override fun onDestroy() { navigationCovers.shutdownNow();accounts.close();homeAssistant.close();search.close();catalog.close();friends.close();statistics?.onDestroy();library.onDestroy();super.onDestroy() }
+    override fun onDestroy() { introView?.cancel();introView=null;navigationCovers.shutdownNow();accounts.close();homeAssistant.close();search.close();catalog.close();friends.close();statistics?.onDestroy();library.onDestroy();super.onDestroy() }
     override fun onSaveInstanceState(outState:Bundle) {
         outState.putString("scan.target",scanTarget);outState.putString("scan.profile",scanProfile);outState.putString("scan.editor",scanEditor)
         outState.putBoolean("viblio.offline",offline)

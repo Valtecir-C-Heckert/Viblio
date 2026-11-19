@@ -85,10 +85,10 @@ def mount_friends(app,connect,storage,current):
         with connect() as db:
             rows=db.execute("""SELECT u.id,u.username,s.revision,s.current FROM public.viblio_friendships f
                 JOIN public.viblio_users u ON u.id=CASE WHEN f.user_low=%s THEN f.user_high ELSE f.user_low END
-                LEFT JOIN LATERAL (SELECT b.revision,(SELECT jsonb_build_object('id',e->>'id','title',left(e->>'title',500),'author',left(e->>'author',200),'currentPage',coalesce(e->'currentPage','0'::jsonb),'totalPages',e->'totalPages','pagesKnown',coalesce(e->'pagesKnown','true'::jsonb),'readFinished',coalesce(e->'readFinished','false'::jsonb),'coverData',e ? 'coverData' AND e->'coverData'<>'\"\"'::jsonb AND e->'coverData'<>jsonb_build_object('_cover_hash','e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'))
+                LEFT JOIN LATERAL (SELECT b.revision,CASE WHEN nullif(b.snapshot->'library'->>'currentBookId','') IS NOT NULL THEN (SELECT jsonb_build_object('id',e->>'id','title',left(e->>'title',500),'author',left(e->>'author',200),'currentPage',coalesce(e->'currentPage','0'::jsonb),'totalPages',e->'totalPages','pagesKnown',coalesce(e->'pagesKnown','true'::jsonb),'readFinished',coalesce(e->'readFinished','false'::jsonb),'coverData',e ? 'coverData' AND e->'coverData'<>'""'::jsonb AND e->'coverData'<>jsonb_build_object('_cover_hash','e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'))
                     FROM jsonb_array_elements(b.snapshot->'library'->'books') e
                     WHERE e->>'id'=b.snapshot->'library'->>'currentBookId' AND coalesce(e->>'archived','false')='false'
-                    AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(b.snapshot->'library'->'collections') c WHERE c->>'id'=e->>'collectionId' AND coalesce(c->>'archived','false')='true') LIMIT 1) AS current
+                    AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(b.snapshot->'library'->'collections') c WHERE c->>'id'=e->>'collectionId' AND coalesce(c->>'archived','false')='true') LIMIT 1) END AS current
                     FROM public.viblio_library_bases b WHERE b.user_id=u.id ORDER BY b.revision DESC LIMIT 1) s ON true
                 WHERE (f.user_low=%s OR f.user_high=%s) AND f.status='accepted' AND (%s::uuid IS NULL OR u.id>%s)
                 ORDER BY u.id LIMIT 31""",(user['id'],user['id'],user['id'],cursor,cursor)).fetchall()
@@ -134,7 +134,7 @@ def mount_friends(app,connect,storage,current):
             page=matches[cursor:cursor+40]
             return dict(friend=friend,revision=row['revision'],items=page,next_cursor=cursor+40 if len(matches)>cursor+40 else None,
                         collection=dict(id=target['id'],title=str(target['title'])[:500]) if target else None)
-    @lru_cache(maxsize=1)
+    @lru_cache(maxsize=6)
     def cover_sources(owner,filename):
         if not re.fullmatch(r'[a-f0-9]{32}\.json\.gz',filename):raise HTTPException(404,'Capa indisponível.')
         try:
@@ -143,7 +143,7 @@ def mount_friends(app,connect,storage,current):
         if len(raw)>MAX_PACKED:raise HTTPException(413,'Acervo acima do limite.')
         library=unpack(raw)['library'];collections={c['id']:c for c in library.get('collections',[])}
         return {b['id']:b.get('coverData','') for b in library.get('books',[])+library.get('collections',[]) if visible(b,collections)}
-    @lru_cache(maxsize=256)
+    @lru_cache(maxsize=512)
     def thumbnail(owner,filename,book_id):
         art=cover_sources(owner,filename).get(book_id,'')
         if not isinstance(art,str) or not art.startswith('data:image/jpeg;base64,'):raise HTTPException(404,'Capa indisponível.')

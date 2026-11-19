@@ -10,8 +10,10 @@ import re
 import unicodedata
 import uuid
 import warnings
+from contextlib import asynccontextmanager, contextmanager
 from decimal import Decimal
 from pathlib import Path
+import queue
 from typing import Annotated, Literal
 
 import psycopg
@@ -141,7 +143,55 @@ def create_app(database_url=None, api_token=None, storage=None, public_url=None)
             with identity.open('x') as file: file.write(str(uuid.uuid4()))
         except FileExistsError: pass
     catalog_source = identity.read_text().strip()
-    app = FastAPI(title='Viblio catalogue', docs_url=None, redoc_url=None, openapi_url=None)
+    pool_queue: queue.LifoQueue = queue.LifoQueue(maxsize=8)
+    def close_pool():
+        while True:
+            try: conn, _ = pool_queue.get_nowait()
+            except queue.Empty: break
+            try: conn.close()
+            except Exception: pass
+    @asynccontextmanager
+    async def lifespan(_app):
+        try: yield
+        finally: close_pool()
+    @contextmanager
+    def connect():
+        conn = None
+        now = time.monotonic()
+        while conn is None:
+            try: candidate, returned_at = pool_queue.get_nowait()
+            except queue.Empty: break
+            if candidate.closed or candidate.broken or now - returned_at > 120:
+                try: candidate.close()
+                except Exception: pass
+            else:
+                conn = candidate
+        if conn is None:
+            conn = psycopg.connect(database_url, row_factory=dict_row, connect_timeout=5)
+        try:
+            yield conn
+            conn.commit()
+        except BaseException:
+            try:
+                if not conn.closed and not conn.broken: conn.rollback()
+            except Exception:
+                pass
+            if isinstance(conn, psycopg.Connection) and (conn.closed or conn.broken):
+                try: conn.close()
+                except Exception: pass
+                conn = None
+            raise
+        finally:
+            if conn is not None:
+                if conn.closed or conn.broken:
+                    try: conn.close()
+                    except Exception: pass
+                else:
+                    try: pool_queue.put_nowait((conn, time.monotonic()))
+                    except queue.Full:
+                        try: conn.close()
+                        except Exception: pass
+    app = FastAPI(title='Viblio catalogue', docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     from .security import RateLimits,SecurityGate
     limits=RateLimits();app.state.rate_limits=limits
     app.add_middleware(BodyLimit)
@@ -154,7 +204,6 @@ def create_app(database_url=None, api_token=None, storage=None, public_url=None)
     def installation_only(credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)]):
         if not credentials or not hmac.compare_digest(credentials.credentials, api_token):
             raise HTTPException(401, 'Chave de acesso inválida.', headers={'WWW-Authenticate': 'Bearer'})
-    def connect(): return psycopg.connect(database_url, row_factory=dict_row, connect_timeout=5)
     from .accounts import mount_accounts
     from .personal_library import mount_library
     lookup_user,current_user=mount_accounts(app,connect,api_token,catalog_source,limits)

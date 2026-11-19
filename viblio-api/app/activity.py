@@ -110,16 +110,28 @@ def mount_activity(app,connect,current):
             actors=[r['id'] for r in friends]
             visibility=db.execute('SELECT id FROM public.viblio_users WHERE id=ANY(%s::uuid[]) AND share_activity',(actors,)).fetchall()
             actors=[r['id'] for r in visibility]
-            rows=db.execute('''WITH candidate AS MATERIALIZED (
-                SELECT a.* FROM public.viblio_activity a WHERE a.user_id=ANY(%s::uuid[]) AND a.occurred_at>=now()-interval '180 days'
-                AND (%s::timestamptz IS NULL OR (a.occurred_at,a.id)<(%s,%s)) ORDER BY a.occurred_at DESC,a.id DESC LIMIT 41)
-                SELECT a.*,u.username,b.revision,b.book FROM candidate a JOIN public.viblio_users u ON u.id=a.user_id AND u.share_activity
-                LEFT JOIN LATERAL (SELECT s.revision,(SELECT e FROM jsonb_array_elements(s.snapshot->'library'->'books') e
-                    WHERE e->>'id'=a.book_id AND coalesce(e->>'archived','false')='false' AND NOT EXISTS
-                    (SELECT 1 FROM jsonb_array_elements(s.snapshot->'library'->'collections') c WHERE c->>'id'=e->>'collectionId' AND coalesce(c->>'archived','false')='true') LIMIT 1) book
-                    FROM public.viblio_library_bases s WHERE s.user_id=a.user_id ORDER BY s.revision DESC LIMIT 1) b ON true
-                ORDER BY a.occurred_at DESC,a.id DESC''',(actors,position[0] if position else None,position[0] if position else None,position[1] if position else None)).fetchall()
+            rows=db.execute('''SELECT a.*,u.username FROM public.viblio_activity a
+                JOIN public.viblio_users u ON u.id=a.user_id AND u.share_activity
+                WHERE a.user_id=ANY(%s::uuid[]) AND a.occurred_at>=now()-interval '180 days'
+                AND (%s::timestamptz IS NULL OR (a.occurred_at,a.id)<(%s,%s))
+                ORDER BY a.occurred_at DESC,a.id DESC LIMIT 41''',(actors,position[0] if position else None,position[0] if position else None,position[1] if position else None)).fetchall() if actors else []
+            actor_ids=list({r['user_id'] for r in rows[:40]})
+            bases=db.execute('''SELECT DISTINCT ON (user_id) user_id,revision,
+                snapshot->'library'->'books' books,snapshot->'library'->'collections' collections
+                FROM public.viblio_library_bases WHERE user_id=ANY(%s::uuid[])
+                ORDER BY user_id,revision DESC''',(actor_ids,)).fetchall() if actor_ids else []
             setting=db.execute('SELECT share_activity FROM public.viblio_users WHERE id=%s',(user['id'],)).fetchone()
-        from .friends import project
-        items=[dict(id=str(r['id']),actor=dict(id=str(r['user_id']),username=r['username']),kind=r['kind'],occurred_at=int(r['occurred_at'].timestamp()*1000),book=project(r['book'],r['user_id'],r['revision']),**r['data']) for r in rows[:40] if r['book']]
+        from .friends import project,visible
+        catalog_by_user={}
+        for base in bases:
+            colls={c['id']:c for c in (base['collections'] or []) if isinstance(c,dict) and 'id' in c}
+            catalog_by_user[base['user_id']]=(base['revision'],{b['id']:b for b in (base['books'] or []) if isinstance(b,dict) and 'id' in b and visible(b,colls)})
+        items=[]
+        for r in rows[:40]:
+            entry=catalog_by_user.get(r['user_id'])
+            if not entry:continue
+            rev,books_map=entry
+            book=books_map.get(r['book_id'])
+            if not book:continue
+            items.append(dict(id=str(r['id']),actor=dict(id=str(r['user_id']),username=r['username']),kind=r['kind'],occurred_at=int(r['occurred_at'].timestamp()*1000),book=project(book,r['user_id'],rev),**r['data']))
         return dict(items=items,next_cursor=encode_cursor(rows[39]) if len(rows)>40 else None,sharing=setting['share_activity'],visible_actor_ids=[str(a) for a in actors])

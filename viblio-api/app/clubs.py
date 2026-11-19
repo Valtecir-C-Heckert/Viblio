@@ -86,12 +86,13 @@ def mount_clubs(app,connect,storage,current):
     root=Path(storage)/'private-libraries'
     events=DiscussionEvents()
     app.state.discussion_events=events
-    def access(db,c,u,admin=False,invited=False):
-        if not db.execute('SELECT id FROM public.viblio_clubs WHERE id=%s FOR UPDATE',(c,)).fetchone():raise HTTPException(404,'Clube não encontrado.')
+    def access(db,c,u,admin=False,invited=False,lock=True):
+        club=db.execute('SELECT id,name FROM public.viblio_clubs WHERE id=%s'+(' FOR UPDATE' if lock else ''),(c,)).fetchone()
+        if not club:raise HTTPException(404,'Clube não encontrado.')
         m=db.execute('SELECT role,status FROM public.viblio_club_members WHERE club_id=%s AND user_id=%s',(c,u)).fetchone()
         if not m or m['status']!='active' and not invited:raise HTTPException(404,'Clube não encontrado ou convite pendente.')
         if admin and (m['role']!='admin' or m['status']!='active'):raise HTTPException(403,'Somente administradores deste clube.')
-        return m
+        return dict(m,club_name=club['name'])
     def latest(db,c,r=None):
         row=db.execute('SELECT * FROM public.viblio_club_rounds WHERE club_id=%s'+(' AND id=%s' if r else '')+' ORDER BY created_at DESC LIMIT 1',(c,r) if r else (c,)).fetchone()
         if not row:raise HTTPException(404,'Leitura não encontrada.')
@@ -120,8 +121,8 @@ def mount_clubs(app,connect,storage,current):
                 im.thumbnail((160,240));out=io.BytesIO();im.convert('RGB').save(out,'JPEG',quality=80);data=out.getvalue()
             return data if len(data)<=96*1024 else None
         except (OSError,ValueError):return None
-    def info(db,c,u,r=None):
-        role=access(db,c,u);round=latest(db,c,r)
+    def info(db,c,u,r=None,lock=False):
+        role=access(db,c,u,lock=lock);round=latest(db,c,r)
         members=db.execute("""SELECT m.user_id id,u.username,m.role,m.status,
             coalesce((live.book->>'currentPage')::int,p.page,0) page FROM public.viblio_club_members m
             JOIN public.viblio_users u ON u.id=m.user_id
@@ -147,7 +148,7 @@ def mount_clubs(app,connect,storage,current):
             LEFT JOIN public.viblio_club_stage_reads sr ON sr.stage_id=s.id AND sr.user_id=%s
             WHERE s.round_id=%s ORDER BY s.page_limit LIMIT 20""",(u,u,round['id'])).fetchall()
         history=db.execute('SELECT r.id,r.state,r.due_at,r.completed_at,b.title,b.author,b.cover IS NOT NULL has_cover,b.id proposal_id FROM public.viblio_club_rounds r LEFT JOIN public.viblio_club_proposals b ON b.id=r.selected_id WHERE r.club_id=%s ORDER BY r.created_at DESC LIMIT 100',(c,)).fetchall()
-        return dict(id=str(c),name=db.execute('SELECT name FROM public.viblio_clubs WHERE id=%s',(c,)).fetchone()['name'],role=role['role'],round=dict(id=str(round['id']),state=round['state'],selected_id=str(round['selected_id']) if round['selected_id'] else None,due_at=round['due_at'],started_at=round['started_at'],completed_at=round['completed_at']),members=[dict(id=str(m['id']),username=m['username'],role=m['role'],status=m['status'],page=m['page']) for m in members],proposals=[dict(id=str(p['id']),title=p['title'],author=p['author'],pages=p['pages'],proposed_by=p['proposed_by'] or '',votes=p['votes'],mine=p['mine'],cover=f"/v1/clubs/{c}/proposals/{p['id']}/cover" if p['has_cover'] else '') for p in proposals],stages=[dict(id=str(s['id']),page_limit=s['page_limit'],discuss_at=s['discuss_at'],is_open=s['is_open'],comments=s['comments'],unread=s['unread']) for s in stages],history=[dict(id=str(h['id']),state=h['state'],title=h['title'],author=h['author'],due_at=h['due_at'],completed_at=h['completed_at'],cover=f"/v1/clubs/{c}/proposals/{h['proposal_id']}/cover" if h['has_cover'] else '') for h in history])
+        return dict(id=str(c),name=role['club_name'],role=role['role'],round=dict(id=str(round['id']),state=round['state'],selected_id=str(round['selected_id']) if round['selected_id'] else None,due_at=round['due_at'],started_at=round['started_at'],completed_at=round['completed_at']),members=[dict(id=str(m['id']),username=m['username'],role=m['role'],status=m['status'],page=m['page']) for m in members],proposals=[dict(id=str(p['id']),title=p['title'],author=p['author'],pages=p['pages'],proposed_by=p['proposed_by'] or '',votes=p['votes'],mine=p['mine'],cover=f"/v1/clubs/{c}/proposals/{p['id']}/cover" if p['has_cover'] else '') for p in proposals],stages=[dict(id=str(s['id']),page_limit=s['page_limit'],discuss_at=s['discuss_at'],is_open=s['is_open'],comments=s['comments'],unread=s['unread']) for s in stages],history=[dict(id=str(h['id']),state=h['state'],title=h['title'],author=h['author'],due_at=h['due_at'],completed_at=h['completed_at'],cover=f"/v1/clubs/{c}/proposals/{h['proposal_id']}/cover" if h['has_cover'] else '') for h in history])
     @app.get('/v1/clubs')
     def clubs(user=Depends(current)):
         with connect() as db:rows=db.execute("""SELECT c.id,c.name,m.role,m.status,r.state,r.due_at,
@@ -343,8 +344,8 @@ def mount_clubs(app,connect,storage,current):
             db.execute('UPDATE public.viblio_club_stages SET discuss_at=%s,is_open=%s WHERE id=%s',(body.discuss_at,body.is_open,identifier))
         events.publish(c,identifier)
         return dict(ok=True)
-    def discussion(db,c,s,u):
-        role=access(db,c,u);r=db.execute('SELECT s.page_limit,s.discuss_at,s.round_id,(s.is_open OR s.discuss_at<=now()) opened FROM public.viblio_club_stages s JOIN public.viblio_club_rounds r ON r.id=s.round_id WHERE s.id=%s AND r.club_id=%s',(s,c)).fetchone()
+    def discussion(db,c,s,u,lock=True):
+        role=access(db,c,u,lock=lock);r=db.execute('SELECT s.page_limit,s.discuss_at,s.round_id,(s.is_open OR s.discuss_at<=now()) opened FROM public.viblio_club_stages s JOIN public.viblio_club_rounds r ON r.id=s.round_id WHERE s.id=%s AND r.club_id=%s',(s,c)).fetchone()
         if not r:raise HTTPException(404,'Etapa não encontrada.')
         return r,role
     @app.get('/v1/clubs/{c}/stages/{identifier}/events')
@@ -382,7 +383,7 @@ def mount_clubs(app,connect,storage,current):
     @app.get('/v1/clubs/{c}/stages/{identifier}/messages')
     def messages(c:uuid.UUID,identifier:uuid.UUID,before:int|None=Query(None,ge=1),user=Depends(current)):
         with connect() as db:
-            r,role=discussion(db,c,identifier,user['id'])
+            r,role=discussion(db,c,identifier,user['id'],lock=False)
             if not r['opened']:raise HTTPException(403,'A discussão ainda não abriu.')
             rows=db.execute("""SELECT m.id,m.user_id,u.username,m.body,m.sent_at,
                 p.id reply_id,pu.username reply_username,p.body reply_body
@@ -423,7 +424,7 @@ def mount_clubs(app,connect,storage,current):
                 if not isinstance(after_book,str) or len(after_book)>200:raise ValueError()
             except (ValueError,TypeError,UnicodeError):raise HTTPException(422,'Página de livros inválida.') from None
         with connect() as db:
-            access(db,c,user['id'])
+            access(db,c,user['id'],lock=False)
             rows=db.execute("""SELECT m.user_id,u.username,s.revision,e.book FROM public.viblio_club_members m
                 JOIN public.viblio_users u ON u.id=m.user_id
                 JOIN LATERAL (SELECT revision,snapshot FROM public.viblio_library_bases WHERE user_id=m.user_id ORDER BY revision DESC LIMIT 1) s ON true
@@ -442,7 +443,7 @@ def mount_clubs(app,connect,storage,current):
     @app.get('/v1/clubs/{c}/library-cover')
     def library_cover(c:uuid.UUID,owner_id:uuid.UUID,book_id:str=Query(...,min_length=1,max_length=200),revision:int=Query(...,ge=1),user=Depends(current)):
         with connect() as db:
-            access(db,c,user['id'])
+            access(db,c,user['id'],lock=False)
             if not db.execute("SELECT 1 FROM public.viblio_club_members WHERE club_id=%s AND user_id=%s AND status='active'",(c,owner_id)).fetchone():raise HTTPException(404,'Estante indisponível.')
             book(db,owner_id,book_id)
             latest_revision=db.execute('SELECT revision FROM public.viblio_library_versions WHERE user_id=%s ORDER BY revision DESC LIMIT 1',(owner_id,)).fetchone()
@@ -459,30 +460,40 @@ def mount_clubs(app,connect,storage,current):
                 if at.tzinfo is None or not re.fullmatch('(?:[em]:[0-9]{1,20}|a:[a-f0-9-]{36})',key):raise ValueError()
             except (ValueError,TypeError,UnicodeError):raise HTTPException(422,'Página de atividades inválida.') from None
         with connect() as db:
-            access(db,c,user['id']);r=latest(db,c,round_id)
-            rows=db.execute("""WITH timeline AS (
+            access(db,c,user['id'],lock=False);r=latest(db,c,round_id)
+            rows=db.execute("""WITH round_act AS MATERIALIZED (
+                SELECT a.id,a.occurred_at,a.user_id,a.book_id,a.kind,a.data
+                FROM public.viblio_activity a
+                JOIN public.viblio_club_members eligible ON eligible.club_id=%s AND eligible.user_id=a.user_id AND eligible.status='active'
+                WHERE a.occurred_at>=%s AND (%s::timestamptz IS NULL OR a.occurred_at<=%s)),
+                act_users AS MATERIALIZED (SELECT DISTINCT user_id FROM round_act),
+                act_bases AS MATERIALIZED (
+                    SELECT DISTINCT ON (s.user_id) s.user_id,s.snapshot
+                    FROM public.viblio_library_bases s JOIN act_users au ON au.user_id=s.user_id
+                    ORDER BY s.user_id,s.revision DESC),
+                matched_books AS MATERIALIZED (
+                    SELECT ab.user_id,e->>'id' book_id
+                    FROM act_bases ab
+                    JOIN public.viblio_club_proposals selected ON selected.id=%s
+                    CROSS JOIN LATERAL jsonb_array_elements(ab.snapshot->'library'->'books') e
+                    WHERE coalesce(e->>'archived','false')='false'
+                    AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(ab.snapshot->'library'->'collections') parent WHERE parent->>'id'=e->>'collectionId' AND coalesce(parent->>'archived','false')='true')
+                    AND (ab.user_id=coalesce(selected.source_user_id,selected.proposed_by) AND e->>'id'=selected.book_id
+                        OR selected.catalog_id IS NOT NULL AND concat(e->>'catalogSource',':',e->>'catalogId')=selected.catalog_id AND (e->>'totalPages')::int=selected.pages)),
+                timeline AS (
                 SELECT concat('e:',e.id) key,e.created_at at,e.user_id,e.kind,e.data,NULL::uuid stage_id FROM public.viblio_club_events e WHERE e.round_id=%s
                 UNION ALL SELECT concat('m:',m.id),m.sent_at,m.user_id,'comment',jsonb_build_object('body',m.body,'page_limit',s.page_limit),s.id
                 FROM public.viblio_club_messages m JOIN public.viblio_club_stages s ON s.id=m.stage_id WHERE s.round_id=%s AND (s.is_open OR s.discuss_at<=now())
                 UNION ALL SELECT concat('a:',a.id),a.occurred_at,a.user_id,a.kind,a.data,NULL::uuid
-                FROM public.viblio_club_rounds r JOIN public.viblio_club_proposals selected ON selected.id=r.selected_id
-                JOIN public.viblio_club_members eligible ON eligible.club_id=r.club_id AND eligible.status='active'
-                JOIN LATERAL (SELECT snapshot FROM public.viblio_library_bases WHERE user_id=eligible.user_id ORDER BY revision DESC LIMIT 1) source ON true
-                CROSS JOIN LATERAL jsonb_array_elements(source.snapshot->'library'->'books') e
-                JOIN public.viblio_activity a ON a.user_id=eligible.user_id AND a.book_id=e->>'id'
-                WHERE r.id=%s AND a.occurred_at>=coalesce(r.started_at,r.created_at) AND (r.completed_at IS NULL OR a.occurred_at<=r.completed_at)
-                AND coalesce(e->>'archived','false')='false'
-                AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(source.snapshot->'library'->'collections') parent WHERE parent->>'id'=e->>'collectionId' AND coalesce(parent->>'archived','false')='true')
-                AND (a.user_id=coalesce(selected.source_user_id,selected.proposed_by) AND a.book_id=selected.book_id
-                    OR selected.catalog_id IS NOT NULL AND concat(e->>'catalogSource',':',e->>'catalogId')=selected.catalog_id AND (e->>'totalPages')::int=selected.pages))
+                FROM round_act a JOIN matched_books mb ON mb.user_id=a.user_id AND mb.book_id=a.book_id)
                 SELECT t.*,u.username FROM timeline t JOIN public.viblio_club_members member ON member.user_id=t.user_id AND member.club_id=%s AND member.status='active'
                 JOIN public.viblio_users u ON u.id=t.user_id WHERE (%s::timestamptz IS NULL OR (t.at,t.key)<(%s,%s))
-                ORDER BY t.at DESC,t.key DESC LIMIT 41""",(r['id'],r['id'],r['id'],c,at,at,key)).fetchall()
+                ORDER BY t.at DESC,t.key DESC LIMIT 41""",(c,r['started_at'] or r['created_at'],r['completed_at'],r['completed_at'],r['selected_id'],r['id'],r['id'],c,at,at,key)).fetchall()
         position=base64.urlsafe_b64encode((rows[39]['at'].isoformat()+'|'+rows[39]['key']).encode()).decode().rstrip('=') if len(rows)>40 else None
         return dict(items=[dict(id=row['key'],actor=dict(id=str(row['user_id']),username=row['username']),kind=row['kind'],occurred_at=int(row['at'].timestamp()*1000),data=row['data'],stage_id=str(row['stage_id']) if row['stage_id'] else None) for row in rows[:40]],next_cursor=position)
     @app.get('/v1/clubs/{c}/proposals/{identifier}/cover')
     def cover(c:uuid.UUID,identifier:uuid.UUID,user=Depends(current)):
         with connect() as db:
-            access(db,c,user['id']);r=db.execute('SELECT b.cover FROM public.viblio_club_proposals b JOIN public.viblio_club_rounds r ON r.id=b.round_id WHERE b.id=%s AND r.club_id=%s',(identifier,c)).fetchone()
+            access(db,c,user['id'],lock=False);r=db.execute('SELECT b.cover FROM public.viblio_club_proposals b JOIN public.viblio_club_rounds r ON r.id=b.round_id WHERE b.id=%s AND r.club_id=%s',(identifier,c)).fetchone()
             if not r or not r['cover']:raise HTTPException(404,'Capa indisponível.')
         return Response(bytes(r['cover']),media_type='image/jpeg',headers={'Cache-Control':'no-store'})

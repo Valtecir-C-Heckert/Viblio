@@ -14,7 +14,7 @@ import java.util.concurrent.Executors
 /** Private thumbnails: visible first, at most two jobs, RAM only, cleared on leaving Friends. */
 class FriendCoverLoader(private val fetch:(String)->ByteArray) {
     private val handler=Handler(Looper.getMainLooper())
-    private val worker=Executors.newFixedThreadPool(2)
+    private val worker=Executors.newFixedThreadPool(3)
     private val memory=object:LruCache<String,Bitmap>(4*1024*1024){override fun sizeOf(key:String,value:Bitmap)=value.byteCount}
     private val colors=mutableMapOf<String,Int?>()
     private val colorCallbacks=mutableMapOf<String,MutableList<(Int?)->Unit>>()
@@ -61,7 +61,7 @@ class FriendCoverLoader(private val fetch:(String)->ByteArray) {
         val rect=Rect();val visible=entries.toList().filter {it.first.getGlobalVisibleRect(rect)}
         visible.forEach {(view,path)->memory.get(path)?.let {view.setImageBitmap(it);entries.remove(view)}}
         for(path in (eagerColors.toList()+visible.map {it.second}).distinct()){
-            if(loading.size>=2)break
+            if(loading.size>=3)break
             if(path in loading || path in failed || memory.get(path)!=null)continue
             loading.add(path)
             worker.execute {

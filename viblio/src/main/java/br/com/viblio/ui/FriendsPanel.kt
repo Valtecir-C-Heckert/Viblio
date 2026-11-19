@@ -35,11 +35,12 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
     private var readingCover="";private var readingResolved=false;private var readingCursor:String?=null;private var readingPages=0
     private val handler=Handler(Looper.getMainLooper());private val worker=Executors.newSingleThreadExecutor()
     private var requestConnection:AccountConnection?=null;private var refreshConnection:AccountConnection?=null
-    private var client:AccountApi?=null;private var images:FriendCoverLoader?=null
+    private var client:AccountApi?=null;private var clientIdentity="";private var images:FriendCoverLoader?=null
     private var identity="";private var active=false;private var closed=false;private var generation=0
-    private var busy=false;private var loaded=false;private var scheduled=false;private var refreshWanted=false
+    private var busy=false;private var loaded=false;private var scheduled=false;private var refreshWanted=false;private var colorRedrawScheduled=false
     private var refreshing=false;private var refreshEpoch=-1;private var refreshScheduled=false;private var refreshDelay=30000L;private var lastEditAt=0L
     private val refreshTick=Runnable {refreshScheduled=false;refreshVisible();armRefresh()}
+    private val colorRedraw=Runnable {colorRedrawScheduled=false;if(active && !closed)changed()}
     private fun armRefresh(){if(active && !closed && !refreshScheduled){refreshScheduled=true;handler.postDelayed(refreshTick,refreshDelay)}}
     private var error="";private var friend:String?=null;private var friendName="";private var collection="";private var collectionName=""
     private var kind="all";private var query="";private var username="";private var revision=0L
@@ -58,15 +59,15 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
     private fun encode(value:String)=URLEncoder.encode(value,"UTF-8")
     fun save(out:Bundle){out.putInt("friends.columns",columns);out.putString("friends.selected",friend);out.putString("friends.kind",kind);out.putString("friends.collection",collection);out.putString("friends.query",query)}
     fun restore(state:Bundle?){columns=(state?.getInt("friends.columns",3) ?: 3).coerceIn(2,6);friend=state?.getString("friends.selected")?.let(::uuid);kind=state?.getString("friends.kind").takeIf {it in listOf("all","book","manga","comic")} ?: "all";collection=state?.getString("friends.collection").orEmpty().take(200);query=state?.getString("friends.query").orEmpty().take(80)}
-    fun hide(resetSelection:Boolean=false){infoDialog?.dismiss();infoDialog=null;if(resetSelection){friend=null;collection="";kind="all";query=""};active=false;requestConnection?.cancel();requestConnection=null;refreshConnection?.cancel();refreshConnection=null;refreshing=false;refreshEpoch=-1;refreshScheduled=false;refreshDelay=30000L;shelfGrid=null;readingBookId="";readingCover="";readingResolved=false;readingCursor=null;readingPages=0;friendColors.clear();generation++;busy=false;loaded=false;scheduled=false;refreshWanted=false;client?.close();client=null;images?.close();images=null;items.clear();requests=emptyList();identity="";friendName="";collectionName="";focusedInput=null;error="";handler.removeCallbacksAndMessages(null)}
-    fun close(){hide();closed=true;worker.shutdownNow()}
+    fun hide(resetSelection:Boolean=false){infoDialog?.dismiss();infoDialog=null;if(resetSelection){friend=null;collection="";kind="all";query=""};active=false;requestConnection?.cancel();requestConnection=null;refreshConnection?.cancel();refreshConnection=null;refreshing=false;refreshEpoch=-1;refreshScheduled=false;refreshDelay=30000L;colorRedrawScheduled=false;shelfGrid=null;readingBookId="";readingCover="";readingResolved=false;readingCursor=null;readingPages=0;friendColors.clear();generation++;busy=false;loaded=false;scheduled=false;refreshWanted=false;client?.cancel();images?.close();images=null;items.clear();requests=emptyList();identity="";friendName="";collectionName="";focusedInput=null;error="";handler.removeCallbacksAndMessages(null)}
+    fun close(){hide();closed=true;client?.close();client=null;clientIdentity="";worker.shutdownNow()}
     fun back():Boolean {
         if(friend==null)return false
         focusedInput=null
         if(collection.isNotBlank()){collection="";collectionName=""}else {friend=null;friendName="";kind="all";query="";readingCover="";readingResolved=false;readingCursor=null;readingPages=0}
         reset();changed();return true
     }
-    private fun reset(preserve:Boolean=false){generation++;requestConnection?.cancel();requestConnection=null;refreshConnection?.cancel();refreshConnection=null;client?.cancel();busy=false;refreshWanted=false;refreshing=false;refreshEpoch=-1;loaded=false;error="";conflictRetried=false;if(!preserve){items.clear();requests=emptyList()};cursor=null;libraryCursor=null;revision=0;images?.close();val api=client;images=api?.let {FriendCoverLoader(it::thumbnail)}}
+    private fun reset(preserve:Boolean=false){generation++;requestConnection?.cancel();requestConnection=null;refreshConnection?.cancel();refreshConnection=null;busy=false;refreshWanted=false;refreshing=false;refreshEpoch=-1;loaded=false;error="";conflictRetried=false;if(!preserve){items.clear();requests=emptyList()};cursor=null;libraryCursor=null;revision=0;if(images==null){val api=client;images=api?.let {FriendCoverLoader(it::thumbnail)}}}
     private fun later(){if(scheduled || busy || closed || !active)return;scheduled=true;handler.post {scheduled=false;if(active && !loaded && !busy)load()}}
     private fun failure(error:Throwable,path:String,method:String):String {
         if(error is AccountFailure && error.code==404 && path.substringBefore('?')=="/v1/friends" && method=="GET")return "Atualize a API do servidor para habilitar Amigos."
@@ -189,12 +190,16 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
             ui.label(parent,if(ui.rectilinear)"AMIGOS" else "Amigos",30,bold=true).typeface=Typeface.create("serif",Typeface.BOLD)
             ui.label(parent,"Entre para ver seus amigos.",14,ui.muted);return
         }
-        if(identity!=ownIdentity()){
+        val currentWho=ownIdentity()
+        if(identity!=currentWho){
             val switching=identity.isNotBlank()
             // Invalidate old replies and release loading state before attaching the new session.
             // Preserve a selection restored at initial construction, never one from another account.
-            hide(resetSelection=switching);active=true;identity=ownIdentity()
-            val api=AccountApi(accounts.address,accounts.catalogToken().orEmpty());client=api;images=FriendCoverLoader(api::thumbnail)
+            hide(resetSelection=switching);active=true;identity=currentWho
+            if(client==null || clientIdentity!=currentWho){client?.close();client=AccountApi(accounts.address,accounts.catalogToken().orEmpty());clientIdentity=currentWho;images?.close();images=null}
+            if(images==null)images=FriendCoverLoader(client!!::thumbnail)
+        }else if(images==null && client!=null){
+            images=FriendCoverLoader(client!!::thumbnail)
         }
         armRefresh()
         if(friend!=null)ui.scopedReadingColor(friendColors[readingCover])else ui.inheritReadingPalette(baseUi)
@@ -245,7 +250,7 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
             items.forEach {entry->val id=uuid(entry.str("id")) ?: return@forEach;val reading=entry.get("current")?.takeUnless {it.isJsonNull}?.asJsonObject
                 val path=reading?.str("cover").orEmpty()
                 val rowUi=DisplayUi(activity).apply {scopedReadingColor(friendColors[path])}
-                images?.color(path){color->if(!friendColors.containsKey(path) || friendColors[path]!=color){friendColors[path]=color;if(active)changed()}}
+                images?.color(path){color->if(!friendColors.containsKey(path) || friendColors[path]!=color){friendColors[path]=color;if(active && !colorRedrawScheduled){colorRedrawScheduled=true;handler.postDelayed(colorRedraw,60)}}}
                 val card=ui.row().apply {background=rowUi.outlined();setPadding(ui.dp(12),ui.dp(12),ui.dp(12),ui.dp(12));isFocusable=true;contentDescription="Estante de @${entry.str("username")}";tag="friend:$id"};rows.addView(card,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
                 cover(card,reading?.str("cover").orEmpty(),46,66)
                 val labels=ui.column();card.addView(labels,LinearLayout.LayoutParams(0,-2,1f))
