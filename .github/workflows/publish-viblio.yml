@@ -58,10 +58,30 @@ jobs:
               checksums.append(f'{digest}  {path.name}\n')
           sums = root / f'viblio-{version}-SHA256SUMS.txt'
           sums.write_text(''.join(checksums))
+          api_versions = []
+          for path in root.glob('viblio-api-*.zip'):
+              match = re.fullmatch(r'viblio-api-(\d+)\.(\d+)\.(\d+)\.zip', path.name)
+              if match:
+                  api_versions.append((tuple(map(int, match.groups())), path))
+          standalone_api_ver = ''
+          standalone_api = ''
+          standalone_sums = ''
+          if api_versions:
+              max_api_tuple, max_api_path = max(api_versions)
+              if max_api_tuple > max(versions)[0]:
+                  digest = hashlib.sha256(max_api_path.read_bytes()).hexdigest()
+                  if manifest.get(max_api_path.name) != digest:
+                      raise SystemExit(f'Checksum mismatch: {max_api_path.name}')
+                  standalone_api_ver = max_api_path.name.removeprefix('viblio-api-').removesuffix('.zip')
+                  standalone_api = str(max_api_path)
+                  s_sums = root / f'viblio-api-{standalone_api_ver}-SHA256SUMS.txt'
+                  s_sums.write_text(f'{digest}  {max_api_path.name}\n')
+                  standalone_sums = str(s_sums)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               api_path = str(api) if api.is_file() else ''
               out.write(f'preview={preview if preview.is_file() else ""}\n')
               out.write(f'version={version}\napk={apk}\napi={api_path}\nsums={sums}\n')
+              out.write(f'standalone_api_ver={standalone_api_ver}\nstandalone_api={standalone_api}\nstandalone_sums={standalone_sums}\n')
           PY
       - name: Publish downloadable attachments, preserving existing assets
         env:
@@ -72,6 +92,9 @@ jobs:
           API: ${{ steps.files.outputs.api }}
           SUMS: ${{ steps.files.outputs.sums }}
           PREVIEW: ${{ steps.files.outputs.preview }}
+          STANDALONE_API_VER: ${{ steps.files.outputs.standalone_api_ver }}
+          STANDALONE_API: ${{ steps.files.outputs.standalone_api }}
+          STANDALONE_SUMS: ${{ steps.files.outputs.standalone_sums }}
         shell: bash
         run: |
           set -euo pipefail
@@ -103,4 +126,27 @@ jobs:
           ready="tags/viblio-download-ready-${VERSION}"
           if ! gh api "repos/${GH_REPO}/git/ref/${ready}" >/dev/null 2>&1; then
             gh api --method POST "repos/${GH_REPO}/git/refs" -f "ref=refs/${ready}" -f "sha=${GITHUB_SHA}" >/dev/null
+          fi
+          if [[ -n "$STANDALONE_API_VER" && -n "$STANDALONE_API" ]]; then
+            api_tag="viblio-api-v${STANDALONE_API_VER}"
+            api_notes="${RUNNER_TEMP}/viblio-api-notes.md"
+            cat > "$api_notes" <<'ANOTES'
+          Pacote da API Viblio verificado por SHA-256 para atualização do servidor antes do APK correspondente.
+          Preserve .env, banco, capas, identidade do catálogo e migrações já aplicadas.
+          ANOTES
+            if ! gh release view "$api_tag" >/dev/null 2>&1; then
+              gh release create "$api_tag" --draft --latest=false --target "$GITHUB_SHA" --title "Viblio API ${STANDALONE_API_VER}" --notes-file "$api_notes"
+            fi
+            for file in "$STANDALONE_API" "$STANDALONE_SUMS"; do
+              [[ -n "$file" ]] || continue
+              name="$(basename "$file")"
+              existing="$(mktemp -d)"
+              if gh release download "$api_tag" --pattern "$name" --dir "$existing" >/dev/null 2>&1; then
+                cmp "$file" "$existing/$name"
+              else
+                gh release upload "$api_tag" "$file"
+              fi
+              rm -rf "$existing"
+            done
+            gh release edit "$api_tag" --draft=false --latest=false
           fi
