@@ -1,4 +1,4 @@
-# Atualizar API 0.4.2 → 0.4.3
+# Atualizar API 0.4.2 → 0.4.6
 
 Atualize a API antes do APK 0.4.6. Esta versão adiciona suporte aditivo ao redesenho
 da aba **Clubes**: contadores de mensagens não lidas por etapa/clube, resumo da etapa
@@ -13,15 +13,15 @@ volumes são preservados.
 ## Enviar pelo PC (PowerShell)
 
 ```powershell
-scp "$env:USERPROFILE\Downloads\viblio-api-0.4.3.zip" <usuario>@<ip-do-servidor>:~/
+scp "$env:USERPROFILE\Downloads\viblio-api-0.4.6.zip" <usuario>@<ip-do-servidor>:~/
 ssh <usuario>@<ip-do-servidor>
 ```
 
 ## Atualizar no servidor (Debian)
 
 ```bash
-ls -lh ~/viblio-api-0.4.3.zip
-python3 ~/atualizar-viblio.py --zip ~/viblio-api-0.4.3.zip --sha256 SHA256_PUBLICADO_COM_ESTE_ZIP
+ls -lh ~/viblio-api-0.4.6.zip
+python3 ~/atualizar-viblio.py --zip ~/viblio-api-0.4.6.zip --sha256 SHA256_PUBLICADO_COM_ESTE_ZIP
 ```
 
 O atualizador faz backup automático do banco, arquivos privados/capas, `.env` e

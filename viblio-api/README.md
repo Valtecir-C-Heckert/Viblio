@@ -1,12 +1,12 @@
 # API do novo Viblio
 
-## Atualização 0.4.3
+## Atualização 0.4.6
 
 Suporte aditivo ao redesenho da aba Clubes: resumo da etapa/votação e contador de
 não lidas nos cards, autor do convite (`invited_by`), autor da indicação
 (`proposed_by`) e respostas encadeadas (`reply_to_id`) restritas à mesma etapa.
 Requer **`012_club_redesign.sql`**; histórico 001–011 intacto. `clubs_api: 3`,
-health `api_version: 9`. Atualize a API antes do APK 0.4.6. [Guia](UPDATE_0_4_3.md).
+health `api_version: 9`. Atualize a API antes do APK 0.4.6. [Guia](UPDATE_0_4_6.md).
 
 ## Atualização 0.4.2
 
