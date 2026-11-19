@@ -1,0 +1,171 @@
+name: Release Viblio (Signed APK + API)
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: viblio-release
+  cancel-in-progress: false
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    env:
+      EXPECTED_CERT_SHA256: "5953e6c8ec5145afca3d40fb202e54522418b1599015dda43361e08b7757ede0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install pinned Android SDK packages
+        run: |
+          SDKMANAGER="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Decode and validate preserved Android keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.VIBLIO_DEBUG_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${KEYSTORE_B64}" ]]; then
+            echo "::error::Secret VIBLIO_DEBUG_KEYSTORE_B64 não está definido ou está vazio."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/android-user"
+          chmod 700 "${RUNNER_TEMP}/android-user"
+          printf '%s' "${KEYSTORE_B64}" | tr -d ' \t\r\n' | base64 -d > "${RUNNER_TEMP}/android-user/debug.keystore"
+          chmod 600 "${RUNNER_TEMP}/android-user/debug.keystore"
+          KS_SHA256="$(keytool -list -v -keystore "${RUNNER_TEMP}/android-user/debug.keystore" -storepass android -alias androiddebugkey | awk '/SHA256:/ {gsub(/:/,"",$2); print tolower($2); exit}')"
+          if [[ "${KS_SHA256}" != "${EXPECTED_CERT_SHA256}" ]]; then
+            echo "::error::Certificado do keystore não corresponde ao certificado do Viblio 0.4.5."
+            echo "Esperado:   ${EXPECTED_CERT_SHA256}"
+            echo "Encontrado: ${KS_SHA256}"
+            exit 1
+          fi
+          echo "Keystore validado: SHA-256 corresponde exatamente ao certificado 0.4.5 (${KS_SHA256})."
+      - name: Build signed release APK and run unit tests
+        env:
+          ANDROID_USER_HOME: ${{ runner.temp }}/android-user
+        run: |
+          ./gradlew --no-daemon :viblio:testDebugUnitTest :viblio:assembleRelease
+      - name: Verify APK signature, package, versionCode and non-debuggable release
+        id: verify
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools/35.0.0"
+          APKSIGNER="${BUILD_TOOLS}/apksigner"
+          AAPT2="${BUILD_TOOLS}/aapt2"
+          APK_SRC="viblio/build/outputs/apk/release/viblio-release.apk"
+          [[ -f "${APK_SRC}" ]] || { echo "::error::APK release não encontrado."; exit 1; }
+
+          echo "=== apksigner verify (0.4.5 publicado) ==="
+          PREV_CERTS="$("${APKSIGNER}" verify --print-certs downloads/viblio-0.4.5.apk)"
+          echo "${PREV_CERTS}"
+          PREV_SHA256="$(printf '%s\n' "${PREV_CERTS}" | awk '/Signer #1 certificate SHA-256 digest:/ {print tolower($NF); exit}')"
+
+          echo "=== apksigner verify (novo APK release) ==="
+          NEW_CERTS="$("${APKSIGNER}" verify --verbose --print-certs "${APK_SRC}")"
+          echo "${NEW_CERTS}"
+          NEW_SHA256="$(printf '%s\n' "${NEW_CERTS}" | awk '/Signer #1 certificate SHA-256 digest:/ {print tolower($NF); exit}')"
+
+          if [[ "${NEW_SHA256}" != "${EXPECTED_CERT_SHA256}" || "${NEW_SHA256}" != "${PREV_SHA256}" ]]; then
+            echo "::error::Assinatura do APK não confere com o 0.4.5 (${PREV_SHA256}) / esperado (${EXPECTED_CERT_SHA256})."
+            exit 1
+          fi
+
+          BADGING="$("${AAPT2}" dump badging "${APK_SRC}")"
+          PKG="$(printf '%s\n' "${BADGING}" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -n1)"
+          VCODE="$(printf '%s\n' "${BADGING}" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -n1)"
+          VNAME="$(printf '%s\n' "${BADGING}" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -n1)"
+          echo "package=${PKG} versionCode=${VCODE} versionName=${VNAME}"
+
+          [[ "${PKG}" == "br.com.viblio" ]] || { echo "::error::applicationId inesperado: ${PKG}"; exit 1; }
+          (( VCODE > 41 )) || { echo "::error::versionCode (${VCODE}) precisa ser maior que 41."; exit 1; }
+          if printf '%s\n' "${BADGING}" | grep -q "application-debuggable"; then
+            echo "::error::APK release está marcado como debuggable."
+            exit 1
+          fi
+          echo "Non-debuggable release verified (application-debuggable absent)."
+
+          OUT_DIR="${RUNNER_TEMP}/release"
+          mkdir -p "${OUT_DIR}"
+          APK_OUT="${OUT_DIR}/viblio-${VNAME}.apk"
+          cp "${APK_SRC}" "${APK_OUT}"
+          APK_SHA256="$(sha256sum "${APK_OUT}" | awk '{print $1}')"
+
+          API_SRC="downloads/viblio-api-${VNAME}.zip"
+          API_OUT=""
+          API_SHA256=""
+          SUMS_OUT="${OUT_DIR}/viblio-${VNAME}-SHA256SUMS.txt"
+          printf '%s  %s\n' "${APK_SHA256}" "$(basename "${APK_OUT}")" > "${SUMS_OUT}"
+
+          if [[ -f "${API_SRC}" ]]; then
+            EXPECTED_API_SHA="$(awk -v name="$(basename "${API_SRC}")" '$2==name {print $1}' downloads/SHA256SUMS)"
+            API_SHA256="$(sha256sum "${API_SRC}" | awk '{print $1}')"
+            if [[ -z "${EXPECTED_API_SHA}" || "${API_SHA256}" != "${EXPECTED_API_SHA}" ]]; then
+              echo "::error::Checksum de ${API_SRC} não confere com downloads/SHA256SUMS."
+              exit 1
+            fi
+            API_OUT="${OUT_DIR}/$(basename "${API_SRC}")"
+            cp "${API_SRC}" "${API_OUT}"
+            printf '%s  %s\n' "${API_SHA256}" "$(basename "${API_OUT}")" >> "${SUMS_OUT}"
+          fi
+
+          echo "=== SHA256SUMS ==="
+          cat "${SUMS_OUT}"
+          {
+            echo "version=${VNAME}"
+            echo "vcode=${VCODE}"
+            echo "apk=${APK_OUT}"
+            echo "apk_sha256=${APK_SHA256}"
+            echo "api=${API_OUT}"
+            echo "api_sha256=${API_SHA256}"
+            echo "sums=${SUMS_OUT}"
+          } >> "${GITHUB_OUTPUT}"
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.verify.outputs.version }}
+          VCODE: ${{ steps.verify.outputs.vcode }}
+          APK: ${{ steps.verify.outputs.apk }}
+          API: ${{ steps.verify.outputs.api }}
+          SUMS: ${{ steps.verify.outputs.sums }}
+        run: |
+          set -euo pipefail
+          tag="viblio-v${VERSION}"
+          notes="${RUNNER_TEMP}/viblio-notes.md"
+          cat > "$notes" <<NOTES
+          APK assinado com o certificado preservado do Viblio (versionCode ${VCODE}, release não depurável) para atualizar por cima do Viblio 0.4.5 sem desinstalar nem perder dados locais.
+
+          Atualize a API no servidor com \`viblio-api-${VERSION}.zip\` antes de instalar o APK.
+          NOTES
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --draft --target "$GITHUB_SHA" --title "Viblio ${VERSION}" --notes-file "$notes"
+          fi
+          for file in "$APK" "$API" "$SUMS"; do
+            [[ -n "$file" ]] || continue
+            name="$(basename "$file")"
+            existing="$(mktemp -d)"
+            if gh release download "$tag" --pattern "$name" --dir "$existing" >/dev/null 2>&1; then
+              cmp "$file" "$existing/$name"
+            else
+              gh release upload "$tag" "$file"
+            fi
+            rm -rf "$existing"
+          done
+          gh release edit "$tag" --draft=false --latest
+          ready="tags/viblio-download-ready-${VERSION}"
+          if ! gh api "repos/${GH_REPO}/git/ref/${ready}" >/dev/null 2>&1; then
+            gh api --method POST "repos/${GH_REPO}/git/refs" -f "ref=refs/${ready}" -f "sha=${GITHUB_SHA}" >/dev/null
+          fi
+      - name: Clean up temporary keystore
+        if: always()
+        run: |
+          if [[ -f "${RUNNER_TEMP}/android-user/debug.keystore" ]]; then
+            shred -u "${RUNNER_TEMP}/android-user/debug.keystore" || rm -f "${RUNNER_TEMP}/android-user/debug.keystore"
+          fi
+          rm -rf "${RUNNER_TEMP}/android-user"
