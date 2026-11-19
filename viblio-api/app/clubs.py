@@ -52,12 +52,19 @@ class Stage(Input):
         return v
 class Message(Input):
     body:str=Field(min_length=1,max_length=2000)
+    reply_to_id:int|None=Field(default=None,ge=1,strict=True)
     @field_validator('body')
     @classmethod
     def trim(cls,v):
         if not v.strip():raise ValueError('Escreva uma mensagem.')
         return v.strip()
 def catalog(b):return str(b['catalogSource'])+':'+str(b['catalogId']) if b.get('catalogSource') and b.get('catalogId') else None
+
+def mark_stage_read(db,stage_id,user_id,message_id):
+    if not message_id or message_id<1:return
+    db.execute("""INSERT INTO public.viblio_club_stage_reads(stage_id,user_id,last_read_message_id,read_at)
+        VALUES (%s,%s,%s,now()) ON CONFLICT(stage_id,user_id) DO UPDATE
+        SET last_read_message_id=GREATEST(viblio_club_stage_reads.last_read_message_id,EXCLUDED.last_read_message_id),read_at=now()""",(stage_id,user_id,message_id))
 
 def club_event(db,round_id,owner,kind,data):
     db.execute('INSERT INTO public.viblio_club_events(round_id,user_id,kind,data) VALUES (%s,%s,%s,%s)',(round_id,owner,kind,Jsonb(data)))
@@ -127,20 +134,58 @@ def mount_clubs(app,connect,storage,current):
                 AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(s.snapshot->'library'->'collections') parent WHERE parent->>'id'=e->>'collectionId' AND coalesce(parent->>'archived','false')='true') LIMIT 1) book
                 FROM public.viblio_library_bases s WHERE s.user_id=m.user_id AND p.book_id IS NOT NULL AND %s='reading' ORDER BY revision DESC LIMIT 1) live ON true
             WHERE m.club_id=%s ORDER BY (m.role='admin') DESC,u.username LIMIT 100""",(round['id'],round['selected_id'],round['state'],c)).fetchall()
-        proposals=db.execute("""SELECT b.id,b.title,b.author,b.pages,b.cover IS NOT NULL has_cover,count(v.user_id) FILTER(WHERE m.status='active') votes,coalesce(bool_or(v.user_id=%s),false) mine
-            FROM public.viblio_club_proposals b LEFT JOIN public.viblio_club_votes v ON v.proposal_id=b.id LEFT JOIN public.viblio_club_members m ON m.user_id=v.user_id AND m.club_id=%s
-            WHERE b.round_id=%s GROUP BY b.id ORDER BY votes DESC,b.title LIMIT 30""",(u,c,round['id'])).fetchall()
-        stages=db.execute('SELECT s.id,s.page_limit,s.discuss_at,(s.is_open OR s.discuss_at<=now()) is_open,(SELECT count(*) FROM public.viblio_club_messages m WHERE m.stage_id=s.id) comments FROM public.viblio_club_stages s WHERE s.round_id=%s ORDER BY s.page_limit LIMIT 20',(round['id'],)).fetchall()
+        proposals=db.execute("""SELECT b.id,b.title,b.author,b.pages,b.cover IS NOT NULL has_cover,pu.username proposed_by,count(v.user_id) FILTER(WHERE m.status='active') votes,coalesce(bool_or(v.user_id=%s),false) mine
+            FROM public.viblio_club_proposals b LEFT JOIN public.viblio_users pu ON pu.id=b.proposed_by
+            LEFT JOIN public.viblio_club_votes v ON v.proposal_id=b.id LEFT JOIN public.viblio_club_members m ON m.user_id=v.user_id AND m.club_id=%s
+            WHERE b.round_id=%s GROUP BY b.id,pu.username ORDER BY votes DESC,b.title LIMIT 30""",(u,c,round['id'])).fetchall()
+        stages=db.execute("""SELECT s.id,s.page_limit,s.discuss_at,(s.is_open OR s.discuss_at<=now()) is_open,
+            (SELECT count(*) FROM public.viblio_club_messages m WHERE m.stage_id=s.id) comments,
+            CASE WHEN (s.is_open OR s.discuss_at<=now()) THEN
+                (SELECT count(*) FROM public.viblio_club_messages m WHERE m.stage_id=s.id AND m.user_id<>%s AND m.id>coalesce(sr.last_read_message_id,0))
+            ELSE 0 END unread
+            FROM public.viblio_club_stages s
+            LEFT JOIN public.viblio_club_stage_reads sr ON sr.stage_id=s.id AND sr.user_id=%s
+            WHERE s.round_id=%s ORDER BY s.page_limit LIMIT 20""",(u,u,round['id'])).fetchall()
         history=db.execute('SELECT r.id,r.state,r.due_at,r.completed_at,b.title,b.author,b.cover IS NOT NULL has_cover,b.id proposal_id FROM public.viblio_club_rounds r LEFT JOIN public.viblio_club_proposals b ON b.id=r.selected_id WHERE r.club_id=%s ORDER BY r.created_at DESC LIMIT 100',(c,)).fetchall()
-        return dict(id=str(c),name=db.execute('SELECT name FROM public.viblio_clubs WHERE id=%s',(c,)).fetchone()['name'],role=role['role'],round=dict(id=str(round['id']),state=round['state'],selected_id=str(round['selected_id']) if round['selected_id'] else None,due_at=round['due_at'],started_at=round['started_at'],completed_at=round['completed_at']),members=[dict(id=str(m['id']),username=m['username'],role=m['role'],status=m['status'],page=m['page']) for m in members],proposals=[dict(id=str(p['id']),title=p['title'],author=p['author'],pages=p['pages'],votes=p['votes'],mine=p['mine'],cover=f"/v1/clubs/{c}/proposals/{p['id']}/cover" if p['has_cover'] else '') for p in proposals],stages=[dict(id=str(s['id']),page_limit=s['page_limit'],discuss_at=s['discuss_at'],is_open=s['is_open'],comments=s['comments']) for s in stages],history=[dict(id=str(h['id']),state=h['state'],title=h['title'],author=h['author'],due_at=h['due_at'],completed_at=h['completed_at'],cover=f"/v1/clubs/{c}/proposals/{h['proposal_id']}/cover" if h['has_cover'] else '') for h in history])
+        return dict(id=str(c),name=db.execute('SELECT name FROM public.viblio_clubs WHERE id=%s',(c,)).fetchone()['name'],role=role['role'],round=dict(id=str(round['id']),state=round['state'],selected_id=str(round['selected_id']) if round['selected_id'] else None,due_at=round['due_at'],started_at=round['started_at'],completed_at=round['completed_at']),members=[dict(id=str(m['id']),username=m['username'],role=m['role'],status=m['status'],page=m['page']) for m in members],proposals=[dict(id=str(p['id']),title=p['title'],author=p['author'],pages=p['pages'],proposed_by=p['proposed_by'] or '',votes=p['votes'],mine=p['mine'],cover=f"/v1/clubs/{c}/proposals/{p['id']}/cover" if p['has_cover'] else '') for p in proposals],stages=[dict(id=str(s['id']),page_limit=s['page_limit'],discuss_at=s['discuss_at'],is_open=s['is_open'],comments=s['comments'],unread=s['unread']) for s in stages],history=[dict(id=str(h['id']),state=h['state'],title=h['title'],author=h['author'],due_at=h['due_at'],completed_at=h['completed_at'],cover=f"/v1/clubs/{c}/proposals/{h['proposal_id']}/cover" if h['has_cover'] else '') for h in history])
     @app.get('/v1/clubs')
     def clubs(user=Depends(current)):
-        with connect() as db:rows=db.execute("""SELECT c.id,c.name,m.role,m.status,r.state,r.due_at,b.id proposal_id,b.title,b.cover IS NOT NULL has_cover
+        with connect() as db:rows=db.execute("""SELECT c.id,c.name,m.role,m.status,r.state,r.due_at,
+            b.id proposal_id,b.title,b.author,b.pages,b.cover IS NOT NULL has_cover,
+            inv.username invited_by,
+            (SELECT count(*) FROM public.viblio_club_members am WHERE am.club_id=c.id AND am.status='active') member_count,
+            (SELECT count(*) FROM public.viblio_club_stages s
+                JOIN public.viblio_club_messages msg ON msg.stage_id=s.id
+                LEFT JOIN public.viblio_club_stage_reads sr ON sr.stage_id=s.id AND sr.user_id=%s
+                WHERE s.round_id=r.id AND (s.is_open OR s.discuss_at<=now())
+                AND msg.user_id<>%s AND msg.id>coalesce(sr.last_read_message_id,0)) unread_count,
+            st.id stage_id,st.stage_index,st.page_limit stage_page_limit,st.is_open stage_is_open,st.discuss_at stage_discuss_at,
+            (SELECT count(*) FROM public.viblio_club_proposals p WHERE p.round_id=r.id) proposal_count,
+            (SELECT count(*) FROM public.viblio_club_votes v JOIN public.viblio_club_members vm ON vm.club_id=c.id AND vm.user_id=v.user_id AND vm.status='active' WHERE v.round_id=r.id) vote_count
             FROM public.viblio_clubs c JOIN public.viblio_club_members m ON m.club_id=c.id
+            LEFT JOIN public.viblio_users inv ON inv.id=m.invited_by
             LEFT JOIN LATERAL (SELECT * FROM public.viblio_club_rounds WHERE club_id=c.id ORDER BY created_at DESC LIMIT 1) r ON true
             LEFT JOIN public.viblio_club_proposals b ON b.id=r.selected_id
-            WHERE m.user_id=%s ORDER BY c.created_at DESC LIMIT 50""",(user['id'],)).fetchall()
-        return dict(items=[dict(id=str(r['id']),name=r['name'],role=r['role'],status=r['status'],state=r['state'],due_at=r['due_at'],book=dict(title=r['title'],cover=f"/v1/clubs/{r['id']}/proposals/{r['proposal_id']}/cover" if r['has_cover'] and r['status']=='active' else '') if r['title'] and r['status']=='active' else None) for r in rows])
+            LEFT JOIN LATERAL (
+                SELECT s.id,s.page_limit,s.discuss_at,(s.is_open OR s.discuss_at<=now()) is_open,s.stage_index
+                FROM (SELECT id,page_limit,discuss_at,is_open,row_number() OVER (ORDER BY page_limit) stage_index FROM public.viblio_club_stages WHERE round_id=r.id) s
+                ORDER BY (s.is_open OR s.discuss_at<=now()) DESC, CASE WHEN (s.is_open OR s.discuss_at<=now()) THEN -s.page_limit ELSE s.page_limit END ASC
+                LIMIT 1
+            ) st ON r.state='reading'
+            WHERE m.user_id=%s ORDER BY c.created_at DESC LIMIT 50""",(user['id'],user['id'],user['id'])).fetchall()
+        def project(r):
+            active=r['status']=='active'
+            return dict(
+                id=str(r['id']),name=r['name'],role=r['role'],status=r['status'],
+                state=r['state'] if active else None,due_at=r['due_at'] if active else None,
+                invited_by=r['invited_by'] if not active and r['invited_by'] else None,
+                member_count=r['member_count'] if active else None,
+                unread_count=r['unread_count'] if active else 0,
+                stage=dict(id=str(r['stage_id']),index=r['stage_index'],page_limit=r['stage_page_limit'],is_open=r['stage_is_open'],discuss_at=r['stage_discuss_at']) if active and r['stage_id'] else None,
+                voting=dict(proposals=r['proposal_count'],votes=r['vote_count']) if active and r['state']=='voting' else None,
+                book=dict(title=r['title'],author=r['author'],pages=r['pages'],cover=f"/v1/clubs/{r['id']}/proposals/{r['proposal_id']}/cover" if r['has_cover'] else '') if active and r['title'] else None,
+            )
+        return dict(items=[project(r) for r in rows])
     @app.post('/v1/clubs')
     def create(body:Name,user=Depends(current)):
         c=uuid.uuid4()
@@ -159,7 +204,7 @@ def mount_clubs(app,connect,storage,current):
             if not db.execute('SELECT id FROM public.viblio_users WHERE id=%s AND username IS NOT NULL FOR UPDATE',(body.user_id,)).fetchone():raise HTTPException(404,'Pessoa não encontrada.')
             if db.execute('SELECT count(*) n FROM public.viblio_club_members WHERE club_id=%s',(c,)).fetchone()['n']>=100:raise HTTPException(409,'Limite de 100 participantes.')
             if db.execute('SELECT count(*) n FROM public.viblio_club_members WHERE user_id=%s',(body.user_id,)).fetchone()['n']>=50:raise HTTPException(409,'Essa pessoa atingiu o limite de clubes.')
-            db.execute("INSERT INTO public.viblio_club_members(club_id,user_id,role,status) VALUES (%s,%s,'member','invited') ON CONFLICT DO NOTHING",(c,body.user_id))
+            db.execute("INSERT INTO public.viblio_club_members(club_id,user_id,role,status,invited_by) VALUES (%s,%s,'member','invited',%s) ON CONFLICT DO NOTHING",(c,body.user_id,user['id']))
         return dict(ok=True)
     @app.post('/v1/clubs/{c}/join')
     def join(c:uuid.UUID,user=Depends(current)):
@@ -185,7 +230,7 @@ def mount_clubs(app,connect,storage,current):
     @app.delete('/v1/clubs/{c}/members/{other}')
     def remove(c:uuid.UUID,other:uuid.UUID,user=Depends(current)):
         with connect() as db:
-            access(db,c,user['id'],True);keep_admin(db,c,other);db.execute('DELETE FROM public.viblio_club_members WHERE club_id=%s AND user_id=%s',(c,other));db.execute('DELETE FROM public.viblio_club_votes WHERE user_id=%s AND round_id IN (SELECT id FROM public.viblio_club_rounds WHERE club_id=%s)',(other,c))
+            access(db,c,user['id'],True);keep_admin(db,c,other);db.execute('DELETE FROM public.viblio_club_members WHERE club_id=%s AND user_id=%s',(c,other));db.execute('DELETE FROM public.viblio_club_votes WHERE user_id=%s AND round_id IN (SELECT id FROM public.viblio_club_rounds WHERE club_id=%s)',(other,c));db.execute('DELETE FROM public.viblio_club_stage_reads WHERE user_id=%s AND stage_id IN (SELECT s.id FROM public.viblio_club_stages s JOIN public.viblio_club_rounds r ON r.id=s.round_id WHERE r.club_id=%s)',(other,c))
         events.publish(c)
         return dict(ok=True)
     @app.post('/v1/clubs/{c}/leave')
@@ -193,7 +238,7 @@ def mount_clubs(app,connect,storage,current):
         with connect() as db:
             m=access(db,c,user['id'],invited=True)
             if m['status']=='active':keep_admin(db,c,user['id'])
-            db.execute('DELETE FROM public.viblio_club_members WHERE club_id=%s AND user_id=%s',(c,user['id']));db.execute('DELETE FROM public.viblio_club_votes WHERE user_id=%s AND round_id IN (SELECT id FROM public.viblio_club_rounds WHERE club_id=%s)',(user['id'],c))
+            db.execute('DELETE FROM public.viblio_club_members WHERE club_id=%s AND user_id=%s',(c,user['id']));db.execute('DELETE FROM public.viblio_club_votes WHERE user_id=%s AND round_id IN (SELECT id FROM public.viblio_club_rounds WHERE club_id=%s)',(user['id'],c));db.execute('DELETE FROM public.viblio_club_stage_reads WHERE user_id=%s AND stage_id IN (SELECT s.id FROM public.viblio_club_stages s JOIN public.viblio_club_rounds r ON r.id=s.round_id WHERE r.club_id=%s)',(user['id'],c))
         events.publish(c)
         return dict(ok=True)
     @app.delete('/v1/clubs/{c}')
@@ -339,17 +384,27 @@ def mount_clubs(app,connect,storage,current):
         with connect() as db:
             r,role=discussion(db,c,identifier,user['id'])
             if not r['opened']:raise HTTPException(403,'A discussão ainda não abriu.')
-            rows=db.execute('SELECT m.id,m.user_id,u.username,m.body,m.sent_at FROM public.viblio_club_messages m JOIN public.viblio_users u ON u.id=m.user_id WHERE m.stage_id=%s AND (%s::bigint IS NULL OR m.id<%s) ORDER BY m.id DESC LIMIT 41',(identifier,before,before)).fetchall()
-        return dict(stage=dict(id=str(identifier),page_limit=r['page_limit'],discuss_at=r['discuss_at'],is_open=r['opened']),items=[dict(id=r['id'],user_id=str(r['user_id']),username=r['username'],body=r['body'],sent_at=r['sent_at'],can_delete=r['user_id']==user['id'] or role['role']=='admin') for r in rows[:40]],next_cursor=rows[39]['id'] if len(rows)>40 else None)
+            rows=db.execute("""SELECT m.id,m.user_id,u.username,m.body,m.sent_at,
+                p.id reply_id,pu.username reply_username,p.body reply_body
+                FROM public.viblio_club_messages m
+                JOIN public.viblio_users u ON u.id=m.user_id
+                LEFT JOIN public.viblio_club_messages p ON p.id=m.reply_to_id AND p.stage_id=m.stage_id
+                LEFT JOIN public.viblio_users pu ON pu.id=p.user_id
+                WHERE m.stage_id=%s AND (%s::bigint IS NULL OR m.id<%s)
+                ORDER BY m.id DESC LIMIT 41""",(identifier,before,before)).fetchall()
+            if before is None and rows:mark_stage_read(db,identifier,user['id'],rows[0]['id'])
+        return dict(stage=dict(id=str(identifier),page_limit=r['page_limit'],discuss_at=r['discuss_at'],is_open=r['opened']),items=[dict(id=row['id'],user_id=str(row['user_id']),username=row['username'],body=row['body'],sent_at=row['sent_at'],reply_to=dict(id=row['reply_id'],username=row['reply_username'],body=row['reply_body'][:120]) if row['reply_id'] else None,can_delete=row['user_id']==user['id'] or role['role']=='admin') for row in rows[:40]],next_cursor=rows[39]['id'] if len(rows)>40 else None)
     @app.post('/v1/clubs/{c}/stages/{identifier}/messages')
     def post(c:uuid.UUID,identifier:uuid.UUID,body:Message,user=Depends(current)):
         with connect() as db:
             r,_=discussion(db,c,identifier,user['id'])
             if not r['opened']:raise HTTPException(403,'A discussão ainda não abriu.')
             if db.execute('SELECT count(*) n FROM public.viblio_club_messages m JOIN public.viblio_club_stages s ON s.id=m.stage_id JOIN public.viblio_club_rounds r ON r.id=s.round_id WHERE r.club_id=%s',(c,)).fetchone()['n']>=10000:raise HTTPException(409,'Limite de mensagens deste clube atingido.')
-            db.execute('INSERT INTO public.viblio_club_messages(stage_id,user_id,body) VALUES (%s,%s,%s)',(identifier,user['id'],body.body))
+            if body.reply_to_id is not None and not db.execute('SELECT 1 FROM public.viblio_club_messages WHERE id=%s AND stage_id=%s',(body.reply_to_id,identifier)).fetchone():raise HTTPException(422,'Mensagem respondida não encontrada nesta etapa.')
+            created=db.execute('INSERT INTO public.viblio_club_messages(stage_id,user_id,body,reply_to_id) VALUES (%s,%s,%s,%s) RETURNING id',(identifier,user['id'],body.body,body.reply_to_id)).fetchone()
+            mark_stage_read(db,identifier,user['id'],created['id'])
         events.publish(c,identifier)
-        return dict(ok=True)
+        return dict(ok=True,id=created['id'])
     @app.delete('/v1/clubs/{c}/stages/{identifier}/messages/{message}')
     def delete_message(c:uuid.UUID,identifier:uuid.UUID,message:int,user=Depends(current)):
         with connect() as db:

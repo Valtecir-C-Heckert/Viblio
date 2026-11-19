@@ -17,7 +17,8 @@ class FriendCoverLoader(private val fetch:(String)->ByteArray) {
     private val worker=Executors.newFixedThreadPool(2)
     private val memory=object:LruCache<String,Bitmap>(4*1024*1024){override fun sizeOf(key:String,value:Bitmap)=value.byteCount}
     private val colors=mutableMapOf<String,Int?>()
-    private val colorCallbacks=mutableMapOf<String,(Int?)->Unit>()
+    private val colorCallbacks=mutableMapOf<String,MutableList<(Int?)->Unit>>()
+    private val bitmapCallbacks=mutableMapOf<String,MutableList<(Bitmap?)->Unit>>()
     private val eagerColors=mutableSetOf<String>()
     private val entries=linkedMapOf<ImageView,String>()
     private val loading=mutableSetOf<String>();private val failed=mutableSetOf<String>()
@@ -37,11 +38,20 @@ class FriendCoverLoader(private val fetch:(String)->ByteArray) {
         })
     }
     fun bind(view:ImageView,path:String){if(closed || path.isBlank())return;memory.get(path)?.let {view.setImageBitmap(it);return};entries[view]=path;schedule()}
-    /** Reuses visible thumbnails; only the selected friend's current book is eager. */
+    /** Reuses visible thumbnails; only selected book themes are eager. */
     fun color(path:String,eager:Boolean=false,done:(Int?)->Unit){
         if(closed || path.isBlank())return
         if(colors.containsKey(path)){handler.post {if(!closed)done(colors[path])};return}
-        colorCallbacks[path]=done
+        colorCallbacks.getOrPut(path){mutableListOf()}.add(done)
+        if(eager)eagerColors.add(path)
+        schedule()
+    }
+    /** Reuses the decoded RAM thumbnail for blurred club chat backdrops without extra fetches. */
+    fun bitmap(path:String,eager:Boolean=false,done:(Bitmap?)->Unit){
+        if(closed || path.isBlank())return
+        memory.get(path)?.let {cached->handler.post {if(!closed && !cached.isRecycled)done(cached)};return}
+        if(path in failed){handler.post {if(!closed)done(null)};return}
+        bitmapCallbacks.getOrPut(path){mutableListOf()}.add(done)
         if(eager)eagerColors.add(path)
         schedule()
     }
@@ -66,9 +76,9 @@ class FriendCoverLoader(private val fetch:(String)->ByteArray) {
                         color=br.com.centralcasa.books.CoverColors.dominant(pixels)
                     }
                 }.getOrNull()
-                handler.post {loading.remove(path);if(closed){bitmap?.recycle();return@post};if(bitmap==null)failed.add(path) else memory.put(path,bitmap);eagerColors.remove(path);colors[path]=color;colorCallbacks.remove(path)?.invoke(color);schedule()}
+                handler.post {loading.remove(path);if(closed){bitmap?.recycle();return@post};if(bitmap==null)failed.add(path) else memory.put(path,bitmap);eagerColors.remove(path);colors[path]=color;colorCallbacks.remove(path)?.forEach {it(color)};bitmapCallbacks.remove(path)?.forEach {it(bitmap)};schedule()}
             }
         }
     }
-    fun close(){closed=true;observer?.takeIf {it.isAlive}?.removeOnScrollChangedListener(listener);root?.removeOnLayoutChangeListener(layout);root=null;entries.clear();colors.clear();colorCallbacks.clear();eagerColors.clear();memory.evictAll();worker.shutdownNow();handler.removeCallbacksAndMessages(null)}
+    fun close(){closed=true;observer?.takeIf {it.isAlive}?.removeOnScrollChangedListener(listener);root?.removeOnLayoutChangeListener(layout);root=null;entries.clear();colors.clear();colorCallbacks.clear();bitmapCallbacks.clear();eagerColors.clear();memory.evictAll();worker.shutdownNow();handler.removeCallbacksAndMessages(null)}
 }

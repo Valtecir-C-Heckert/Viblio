@@ -1,5 +1,13 @@
 # API do novo Viblio
 
+## Atualização 0.4.3
+
+Suporte aditivo ao redesenho da aba Clubes: resumo da etapa/votação e contador de
+não lidas nos cards, autor do convite (`invited_by`), autor da indicação
+(`proposed_by`) e respostas encadeadas (`reply_to_id`) restritas à mesma etapa.
+Requer **`012_club_redesign.sql`**; histórico 001–011 intacto. `clubs_api: 3`,
+health `api_version: 9`. Atualize a API antes do APK 0.4.6. [Guia](UPDATE_0_4_3.md).
+
 ## Atualização 0.4.2
 
 Comentários de etapas ao vivo por SSE autenticado, com reconexão e revogação de
@@ -49,6 +57,7 @@ docker exec -i viblio-postgres psql -v ON_ERROR_STOP=1 -U viblio -d viblio < mig
 docker exec -i viblio-postgres psql -v ON_ERROR_STOP=1 -U viblio -d viblio < migrations/009_book_clubs.sql
 docker exec -i viblio-postgres psql -v ON_ERROR_STOP=1 -U viblio -d viblio < migrations/010_club_home.sql
 docker exec -i viblio-postgres psql -v ON_ERROR_STOP=1 -U viblio -d viblio < migrations/011_automatic_activity.sql
+docker exec -i viblio-postgres psql -v ON_ERROR_STOP=1 -U viblio -d viblio < migrations/012_club_redesign.sql
 python3 scripts/configure.py
 docker compose -p viblio-catalog-api -f compose.api.yaml up -d --build
 docker compose -p viblio-catalog-api -f compose.api.yaml ps

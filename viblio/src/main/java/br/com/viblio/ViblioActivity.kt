@@ -105,7 +105,9 @@ class ViblioActivity : Activity() {
                 .setPositiveButton("Abrir cadastro") { _,_->open() }.setNegativeButton("Continuar editando") { _,_->switchTab("shelf") }.show()
             else open()
         }
-    private fun makeFriends()=br.com.viblio.ui.SocialPanel(this,ui,accounts){if(tab=="friends")render()}
+    private fun makeFriends()=br.com.viblio.ui.SocialPanel(this,ui,accounts){if(tab=="friends")render()}.apply {
+        onBackdrop={if(tab=="friends" && !needsLogin())applyBackground(displayTheme)}
+    }
     private fun makeLibrary()=BooksPanel(this,ui,{homeAssistant.changed();accounts.localChanged();if(tab=="shelf")render()}).apply {
         onAccount={switchTab("account")}
         jsonAllowed={accounts.signedIn && accounts.admin};useGroupedReadingHistory=true;useContrastCoverBorders=true;useSpineLayout=true;useCollectionInventory=true;useAsyncShelfImages=true;useCoverProgressColor=true;useManualShelfOrder=true;usePersonalArchive=true;separateShelfStatistics=true;pinchStep=1.4
@@ -149,8 +151,8 @@ class ViblioActivity : Activity() {
         updateReadingTheme()
         content.setPadding(ui.dp(20),ui.dp(12),ui.dp(20),ui.dp(24))
         content.removeAllViews()
-        navigation.visibility=if(needsLogin())android.view.View.GONE else android.view.View.VISIBLE
         if(needsLogin()){
+            navigation.visibility=android.view.View.GONE
             applyBackground(ui)
             scroll.moveBook=null;scroll.pinchColumns=null;scroll.canPinchAt={_,_->false}
             account.renderLogin(content){offline=true;tab="shelf";render();if(started)library.onStart();scroll.scrollTo(0,0);openIncomingReading(intent)}
@@ -166,6 +168,8 @@ class ViblioActivity : Activity() {
             }
             else->account.render(content)
         }
+        val hideNav=tab=="friends" && friends.hideNavigation
+        navigation.visibility=if(hideNav)android.view.View.GONE else android.view.View.VISIBLE
         val navUi=if(tab=="friends")friends.displayTheme else ui
         applyBackground(navUi)
         scroll.pinchStep=1.4
@@ -212,8 +216,14 @@ class ViblioActivity : Activity() {
     }
     private fun applyBackground(theme:DisplayUi){
         val libraryVisible=tab=="shelf" && !needsLogin()
+        val friendsVisible=tab=="friends" && !needsLogin()
         val color=if(libraryVisible)library.detailBackgroundColor() ?: theme.background else theme.background
-        root.background=if(libraryVisible)library.screenBackground() ?: theme.shape(color,0) else theme.shape(color,0)
+        val backdrop=when {
+            libraryVisible->library.screenBackground()
+            friendsVisible->friends.screenBackground()
+            else->null
+        }
+        root.background=backdrop ?: theme.shape(color,0)
         navigation.setBackgroundColor(color)
         window.statusBarColor=color
         window.navigationBarColor=color

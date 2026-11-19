@@ -117,3 +117,56 @@ def test_candidate_and_feed_pagination_have_no_duplicates(api):
     first=get(api,b,f'/v1/clubs/{group}/feed');second=get(api,b,f'/v1/clubs/{group}/feed?cursor='+first['next_cursor'])
     assert len(first['items'])==40 and len(second['items'])==5 and second['next_cursor'] is None
     assert not ({x['id'] for x in first['items']} & {x['id'] for x in second['items']})
+
+
+def test_club_cards_unread_counts_inviter_isolation_and_scoped_replies(api):
+    a,b,outsider=setup(api);group=club(api,a,'Clube Aurora');other_group=club(api,outsider,'Clube Externo')
+    result(sync(api,a,snapshot()));result(sync(api,outsider,snapshot()))
+    call(api,a,f'/v1/clubs/{group}/invite',{'user_id':b['user']['id']})
+    # Invited user sees inviter name, never private club internals before accepting.
+    pending=next(e for e in get(api,b,'/v1/clubs')['items'] if e['id']==group)
+    assert pending['status']=='invited' and pending['invited_by']==a['user']['username']
+    assert pending['member_count'] is None and pending['book'] is None and pending['stage'] is None and pending['voting'] is None and pending['unread_count']==0
+    call(api,b,f'/v1/clubs/{group}/join')
+    proposal=call(api,a,f'/v1/clubs/{group}/proposals',{'book_id':'book'})['id']
+    call(api,a,f'/v1/clubs/{group}/vote',{'proposal_id':proposal})
+    voting_card=next(e for e in get(api,b,'/v1/clubs')['items'] if e['id']==group)
+    assert voting_card['member_count']==2 and voting_card['voting']=={'proposals':1,'votes':1}
+    assert get(api,b,f'/v1/clubs/{group}')['proposals'][0]['proposed_by']==a['user']['username']
+    call(api,a,f'/v1/clubs/{group}/start',{'proposal_id':proposal,'due_at':future(30)})
+    s1=call(api,a,f'/v1/clubs/{group}/stages',{'page_limit':40,'discuss_at':future(5),'is_open':True})['id']
+    s2=call(api,a,f'/v1/clubs/{group}/stages',{'page_limit':80,'discuss_at':future(10),'is_open':True})['id']
+    # Create a message in outsider's club to test cross-club reply isolation.
+    other_p=call(api,outsider,f'/v1/clubs/{other_group}/proposals',{'book_id':'book'})['id']
+    call(api,outsider,f'/v1/clubs/{other_group}/vote',{'proposal_id':other_p})
+    call(api,outsider,f'/v1/clubs/{other_group}/start',{'proposal_id':other_p,'due_at':future(30)})
+    other_stage=call(api,outsider,f'/v1/clubs/{other_group}/stages',{'page_limit':50,'discuss_at':future(5),'is_open':True})['id']
+    foreign_msg=call(api,outsider,f'/v1/clubs/{other_group}/stages/{other_stage}/messages',{'body':'Privado'})['id']
+    # Author's own message is read for author, unread for b.
+    m1=call(api,a,f'/v1/clubs/{group}/stages/{s1}/messages',{'body':'Primeira impressão sobre o livro'})['id']
+    m2=call(api,a,f'/v1/clubs/{group}/stages/{s2}/messages',{'body':'Etapa 2'})['id']
+    assert next(e for e in get(api,a,'/v1/clubs')['items'] if e['id']==group)['unread_count']==0
+    card_b=next(e for e in get(api,b,'/v1/clubs')['items'] if e['id']==group)
+    assert card_b['unread_count']==2 and card_b['stage']['id']==s2 and card_b['stage']['index']==2 and card_b['book']['pages']==100
+    stages_b=get(api,b,f'/v1/clubs/{group}')['stages']
+    assert [s['unread'] for s in stages_b]==[1,1]
+    # Reject cross-stage, cross-club and invalid reply_to_id.
+    call(api,b,f'/v1/clubs/{group}/stages/{s1}/messages',{'body':'x','reply_to_id':m2},code=422)
+    call(api,b,f'/v1/clubs/{group}/stages/{s1}/messages',{'body':'x','reply_to_id':foreign_msg},code=422)
+    call(api,b,f'/v1/clubs/{group}/stages/{s1}/messages',{'body':'x','reply_to_id':True},code=422)
+    # Valid same-stage reply and read-watermark update.
+    reply=call(api,b,f'/v1/clubs/{group}/stages/{s1}/messages',{'body':'Concordo totalmente!','reply_to_id':m1})['id']
+    items=get(api,b,f'/v1/clubs/{group}/stages/{s1}/messages')['items']
+    child=next(x for x in items if x['id']==reply)
+    assert child['reply_to']=={'id':m1,'username':a['user']['username'],'body':'Primeira impressão sobre o livro'}
+    assert [s['unread'] for s in get(api,b,f'/v1/clubs/{group}')['stages']]==[0,1]
+    assert next(e for e in get(api,a,'/v1/clubs')['items'] if e['id']==group)['unread_count']==1
+    # Deleting parent clears reply_to without deleting child.
+    call(api,a,f'/v1/clubs/{group}/stages/{s1}/messages/{m1}',method='DELETE')
+    items_after=get(api,a,f'/v1/clubs/{group}/stages/{s1}/messages')['items']
+    assert len(items_after)==1 and items_after[0]['id']==reply and items_after[0]['reply_to'] is None
+    assert [s['unread'] for s in get(api,a,f'/v1/clubs/{group}')['stages']]==[0,0]
+    # Health and auth/info advertise clubs_api 3 / api_version 9.
+    assert api.get('/v1/auth/info').json()['clubs_api']==3
+    assert get(api,a,'/v1/health')['api_version']==9
+
