@@ -166,7 +166,7 @@ def test_club_cards_unread_counts_inviter_isolation_and_scoped_replies(api):
     items_after=get(api,a,f'/v1/clubs/{group}/stages/{s1}/messages')['items']
     assert len(items_after)==1 and items_after[0]['id']==reply and items_after[0]['reply_to'] is None
     assert [s['unread'] for s in get(api,a,f'/v1/clubs/{group}')['stages']]==[0,0]
-    # Health and auth/info advertise clubs_api 3 / api_version 9.
+    # Health and auth/info advertise clubs_api 3 / api_version 10.
     assert api.get('/v1/auth/info').json()['clubs_api']==3
-    assert get(api,a,'/v1/health')['api_version']==9
+    assert get(api,a,'/v1/health')['api_version']==10
 

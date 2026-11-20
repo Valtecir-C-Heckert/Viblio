@@ -14,6 +14,8 @@ data class CatalogBook(val id:String,val source:String,val title:String,val auth
 
 data class CatalogCover(val id:String,val url:String,val primary:Boolean=false,val bookId:String="",val title:String="",val publisher:String="",val isbn:String="",val pages:Int?=null,val sequence:Int?=null)
 data class CatalogCoverPage(val source:String,val items:List<CatalogCover>,val nextCursor:Int?=null,val truncated:Boolean=false)
+data class RecommendationSection(val key:String,val title:String,val tag:String,val items:List<CatalogBook>)
+data class CatalogRecommendations(val anchorTitle:String,val anchorKind:String,val sections:List<RecommendationSection>)
 
 /** Optional catalogue capability. The Central leaves this null; the Viblio hosts its adapter. */
 interface BookCatalog {
@@ -30,5 +32,9 @@ interface BookCatalog {
     }
     fun loadCover(book:CatalogBook,done:(Result<String>)->Unit)
     fun chooseCover(id:String,source:String,done:(Result<CatalogCover>)->Unit) { done(Result.failure(IllegalStateException("Capas alternativas indisponíveis neste catálogo."))) }
+    fun recommendations(kind:String="all",seed:Int=0,done:(Result<CatalogRecommendations>)->Unit) { done(Result.success(CatalogRecommendations("","none",emptyList()))) }
+    fun wishlist(done:(Result<List<CatalogBook>>)->Unit) { done(Result.success(emptyList())) }
+    fun addWishlist(book:CatalogBook,done:(Result<CatalogBook>)->Unit) { done(Result.failure(IllegalStateException("Lista de desejos indisponível neste catálogo."))) }
+    fun removeWishlist(catalogId:String,done:(Result<Unit>)->Unit) { done(Result.success(Unit)) }
     fun saved(book:LibraryBook)
 }

@@ -214,6 +214,8 @@ def create_app(database_url=None, api_token=None, storage=None, public_url=None)
     mount_activity(app,connect,current_user)
     from .clubs import mount_clubs
     mount_clubs(app,connect,storage,current_user)
+    from .recommendations import mount_recommendations
+    mount_recommendations(app,connect,current_user,catalog_source,public_url,COLUMNS,present)
     def authenticate(request:Request,credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)]):
         if credentials and hmac.compare_digest(credentials.credentials,api_token):return
         lookup_user(credentials.credentials if credentials else '',request)
@@ -240,7 +242,8 @@ def create_app(database_url=None, api_token=None, storage=None, public_url=None)
             connection.execute('SELECT invited_by FROM public.viblio_club_members LIMIT 1')
             connection.execute('SELECT reply_to_id FROM public.viblio_club_messages LIMIT 1')
             connection.execute('SELECT 1 FROM public.viblio_club_stage_reads LIMIT 1')
-        return {'ok': True, 'catalog_source': catalog_source, 'api_version': 9, 'friends_api': 1, 'feed_api': 1, 'clubs_api': 3, 'club_events_api': 1, 'account_api': 1, 'username_login': True}
+            connection.execute('SELECT 1 FROM public.viblio_wishlist LIMIT 1')
+        return {'ok': True, 'catalog_source': catalog_source, 'api_version': 10, 'friends_api': 1, 'feed_api': 1, 'clubs_api': 3, 'club_events_api': 1, 'account_api': 1, 'recommendations_api': 1, 'wishlist_api': 1, 'username_login': True}
     @app.get('/v1/books', dependencies=[Depends(authenticate)])
     def search(q: str = Query('', max_length=300), author: str = Query('', max_length=300),
                isbn: str = Query('', max_length=32), limit: int = Query(20, ge=1, le=50),

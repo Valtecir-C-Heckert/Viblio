@@ -67,6 +67,11 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
         if(collection.isNotBlank()){collection="";collectionName=""}else {friend=null;friendName="";kind="all";query="";readingCover="";readingResolved=false;readingCursor=null;readingPages=0}
         reset();changed();return true
     }
+    fun openFriend(id:String,name:String){
+        val valid=uuid(id) ?: return
+        focusedInput=null;friend=valid;friendName=name.take(32);readingCover="";readingBookId="";readingResolved=false;readingCursor=null;readingPages=0;collection="";kind="all";query=""
+        reset()
+    }
     private fun reset(preserve:Boolean=false){generation++;requestConnection?.cancel();requestConnection=null;refreshConnection?.cancel();refreshConnection=null;busy=false;refreshWanted=false;refreshing=false;refreshEpoch=-1;loaded=false;error="";conflictRetried=false;if(!preserve){items.clear();requests=emptyList()};cursor=null;libraryCursor=null;revision=0;if(images==null){val api=client;images=api?.let {FriendCoverLoader(it::thumbnail)}}}
     private fun later(){if(scheduled || busy || closed || !active)return;scheduled=true;handler.post {scheduled=false;if(active && !loaded && !busy)load()}}
     private fun failure(error:Throwable,path:String,method:String):String {
@@ -212,7 +217,7 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
             AlertDialog.Builder(activity).setItems(arrayOf("Remover amizade")){_,_->AlertDialog.Builder(activity).setTitle("Remover amizade?").setMessage("Vocês deixarão de ter acesso às estantes um do outro.").setPositiveButton("Remover"){_,_->val id=friend ?: return@setPositiveButton;request("/v1/friends/$id","DELETE"){friend=null;collection="";query="";kind="all";reset();load()}}.setNegativeButton("Cancelar",null).show()}.show()
         }
         if(friend==null){
-            if(onDiscover!=null)ui.action(parent,"Adicionar amigos"){onDiscover.invoke()}.tag="friends-discover"
+            if(onDiscover!=null){if(!embedded)ui.action(parent,"Adicionar amigos"){onDiscover.invoke()}.tag="friends-discover"}
             else {
             ui.label(parent,accounts.username.takeIf(String::isNotBlank)?.let {"Seu nome: @$it"} ?: "Defina seu nome de usuário em Conta para adicionar amigos.",12,ui.muted)
             val row=ui.row();parent.addView(row)

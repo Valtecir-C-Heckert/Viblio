@@ -63,6 +63,38 @@ class ViblioCatalog(private val activity:Activity,private val changed:(Boolean)-
     override fun search(title:String,author:String,isbn:String,done:(Result<List<CatalogBook>>)->Unit) {
         browse.execute { val response=runCatching { api().search(title,author,isbn).also { rows->rows.firstOrNull()?.let { prefs.edit().putString("source",it.source).apply() } } };post { done(response) } }
     }
+    override fun recommendations(kind:String,seed:Int,done:(Result<CatalogRecommendations>)->Unit) {
+        if(!configured || !personalMode()) { done(Result.success(CatalogRecommendations("","none",emptyList())));return }
+        browse.execute {
+            val response=runCatching { api().recommendations(kind,seed) }.recoverCatching { err ->
+                if(err is CatalogHttpException && err.status in listOf(404,405)) CatalogRecommendations("","none",emptyList()) else throw err
+            }
+            post { done(response) }
+        }
+    }
+    override fun wishlist(done:(Result<List<CatalogBook>>)->Unit) {
+        if(!configured || !personalMode()) { done(Result.success(emptyList()));return }
+        browse.execute {
+            val response=runCatching { api().wishlist() }.recoverCatching { err ->
+                if(err is CatalogHttpException && err.status in listOf(404,405)) emptyList() else throw err
+            }
+            post { done(response) }
+        }
+    }
+    override fun addWishlist(book:CatalogBook,done:(Result<CatalogBook>)->Unit) {
+        if(!configured || !personalMode()) { done(Result.failure(IllegalStateException("Entre na sua conta para salvar em Quero comprar.")));return }
+        browse.execute {
+            val response=runCatching { api().addWishlist(book) }
+            post { done(response) }
+        }
+    }
+    override fun removeWishlist(catalogId:String,done:(Result<Unit>)->Unit) {
+        if(!configured || !personalMode()) { done(Result.success(Unit));return }
+        browse.execute {
+            val response=runCatching { api().removeWishlist(catalogId) }
+            post { done(response) }
+        }
+    }
     override fun loadCover(book:CatalogBook,done:(Result<String>)->Unit) {
         browse.execute {
             val response=runCatching { api().image(book.coverUrl,images::save).also { prefs.edit().putBoolean("cached:$it",true).commit() } }

@@ -19,7 +19,7 @@ import kotlin.math.sin
  * Every control point converges to the exact official ic_books_nav.png silhouette (97.1% pixel IoU).
  */
 internal object ViblioIntroMotion {
-    const val DURATION_MS = 1850L
+    const val DURATION_MS = 2000L
     const val START_SCALE = 0.68f
     const val PHI_COVER = 1.15f
     const val PHI_PAGE1 = 1.05f

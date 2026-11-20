@@ -35,6 +35,7 @@ def prepare_database():
         db.execute(Path('migrations/010_club_home.sql').read_text())
         db.execute(Path('migrations/011_automatic_activity.sql').read_text())
         db.execute(Path('migrations/012_club_redesign.sql').read_text())
+        db.execute(Path('migrations/013_wishlist.sql').read_text())
         for _ in range(2):
             for statement in Path('migrations/006_cover_groups.sql').read_text().split(';'):
                 if statement.strip():db.execute(statement)
@@ -45,6 +46,7 @@ def prepare_database():
         db.execute(Path('migrations/010_club_home.sql').read_text())
         db.execute(Path('migrations/011_automatic_activity.sql').read_text())
         db.execute(Path('migrations/012_club_redesign.sql').read_text())
+        db.execute(Path('migrations/013_wishlist.sql').read_text())
         assert db.execute("SELECT titulo FROM valteca WHERE id=9007199254740993").fetchone()[0]=='O Temor do Sábio'
 @pytest.fixture
 def client(tmp_path):

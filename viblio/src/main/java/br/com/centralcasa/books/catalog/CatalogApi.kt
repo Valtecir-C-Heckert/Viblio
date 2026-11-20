@@ -7,6 +7,7 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.net.URI
 import java.util.concurrent.TimeUnit
@@ -40,6 +41,61 @@ class CatalogApi(val address:String,private val token:String) {
             .addQueryParameter("q",title).addQueryParameter("author",author).addQueryParameter("isbn",isbn).addQueryParameter("limit","20").build()
         val body=call(Request.Builder().url(url));val source=body.get("catalog_source").asString
         return body.getAsJsonArray("items").map { decode(it.asJsonObject,source) }
+    }
+    fun recommendations(kind:String="all",seed:Int=0):CatalogRecommendations {
+        val safeKind=if(kind in listOf("all","book","manga","comic")) kind else "all"
+        val safeSeed=seed.coerceIn(0,10000)
+        val url=okhttp3.HttpUrl.Builder().scheme(URI(address).scheme).host(URI(address).host).port(URI(address).port.takeIf { it>0 } ?: if(URI(address).scheme=="https") 443 else 80)
+            .addPathSegments(URI(address).path.trim('/')+if(URI(address).path.trim('/').isBlank()) "v1/books/recommendations" else "/v1/books/recommendations")
+            .addQueryParameter("kind",safeKind).addQueryParameter("seed",safeSeed.toString()).addQueryParameter("per_section","10").build()
+        val body=call(Request.Builder().url(url))
+        val source=body.get("catalog_source")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+        val anchorTitle=body.get("anchor_title")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+        val anchorKind=body.get("anchor_kind")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+        val sections=body.getAsJsonArray("sections")?.mapNotNull { el ->
+            val obj=el.asJsonObject
+            val key=obj.get("key")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+            val title=obj.get("title")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+            val tag=obj.get("tag")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+            val items=obj.getAsJsonArray("items")?.mapNotNull { item -> runCatching { decode(item.asJsonObject,source) }.getOrNull() } ?: emptyList()
+            if(items.isEmpty()) null else RecommendationSection(key,title,tag,items)
+        } ?: emptyList()
+        return CatalogRecommendations(anchorTitle,anchorKind,sections)
+    }
+    fun wishlist():List<CatalogBook> {
+        val body=call(Request.Builder().url(address.trimEnd('/')+"/v1/me/wishlist"))
+        val source=body.get("catalog_source")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+        return body.getAsJsonArray("items")?.mapNotNull { item ->
+            val obj=item.asJsonObject
+            val itemSource=obj.get("source")?.takeUnless { it.isJsonNull }?.asString?.ifBlank { source } ?: source
+            runCatching { decode(obj,itemSource) }.getOrNull()
+        } ?: emptyList()
+    }
+    fun addWishlist(book:CatalogBook):CatalogBook {
+        require(book.id.toLongOrNull()!=null) { "Identificador do catálogo inválido." }
+        val payload=JsonObject().apply {
+            addProperty("catalog_id",book.id)
+            addProperty("source",book.source)
+            addProperty("title",book.title.take(500))
+            addProperty("author",book.author.take(300))
+            addProperty("genre",book.genre.take(200))
+            addProperty("subgenre",book.subgenre.take(300))
+            addProperty("publisher",book.publisher.take(200))
+            addProperty("saga",book.saga.take(200))
+            book.pages?.let { addProperty("pages",it) }
+            book.sequence?.let { addProperty("sequence",it) }
+            addProperty("cover_url",book.coverUrl.take(2048))
+            addProperty("isbn",book.isbn.take(32))
+            addProperty("category",book.category.take(100))
+            addProperty("type",book.type.take(100))
+        }
+        val body=call(Request.Builder().url(address.trimEnd('/')+"/v1/me/wishlist").post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())))
+        val source=body.get("catalog_source")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+        return decode(body.getAsJsonObject("item"),book.source.ifBlank { source })
+    }
+    fun removeWishlist(catalogId:String) {
+        require(catalogId.toLongOrNull()!=null) { "Identificador do catálogo inválido." }
+        call(Request.Builder().url(address.trimEnd('/')+"/v1/me/wishlist/$catalogId").delete())
     }
     fun write(metadata:String,cover:File?):Triple<CatalogBook,String,String?> {
         val multipart=MultipartBody.Builder().setType(MultipartBody.FORM).addFormDataPart("metadata",metadata)

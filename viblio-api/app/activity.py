@@ -29,7 +29,7 @@ def record_activity(db,owner,previous,snapshot,revision):
     sessions=lib.get('sessions',[]);keys=['session:'+r['id'] for r in sessions]
     db.execute('DELETE FROM public.viblio_activity WHERE user_id=%s AND (NOT(book_id=ANY(%s::text[])) OR occurred_at<%s OR (event_key LIKE \'session:%%\' AND NOT(event_key=ANY(%s::text[]))))',(owner,list(books),now-timedelta(days=RETENTION_DAYS),keys))
     changed=[r for r in sessions if r['bookId'] in books and old_sessions.get(r['id'])!=r and floor<=r['finishedAt']<=ceiling]
-    invalid_keys=['session:'+r['id'] for r in sessions if old_sessions.get(r['id'])!=r and (r['bookId'] not in books or not floor<=r['finishedAt']<=ceiling or not r['durationMs'] and r['endPage']==r['startPage'])]
+    invalid_keys=['session:'+r['id'] for r in sessions if old_sessions.get(r['id'])!=r and (r['bookId'] not in books or not floor<=r['finishedAt']<=ceiling or (r['durationMs']<1000 and r['endPage']==r['startPage']))]
     if invalid_keys:db.execute('DELETE FROM public.viblio_activity WHERE user_id=%s AND event_key=ANY(%s::text[])',(owner,invalid_keys))
     changed=sorted(changed,key=lambda r:(r['finishedAt'],r['id']),reverse=True)[:MAX_EVENTS_PER_SYNC]
     durations={};first_read={}
@@ -43,7 +43,7 @@ def record_activity(db,owner,previous,snapshot,revision):
         if key not in events or kind!='started' or row['occurred_at']<events[key]['occurred_at']:events[key]=row
     for r in changed:
         b=books[r['bookId']];pages=max(0,r['endPage']-r['startPage'])
-        if not pages and not r['durationMs']:continue
+        if not pages and r['durationMs']<1000:continue
         finished=b.get('pagesKnown',True) and r['endPage']>=b['totalPages']
         data=dict(start_page=r['startPage'],end_page=r['endPage'],pages=pages,duration_ms=r['durationMs'],pages_known=b.get('pagesKnown',True))
         if finished:data.update(total_duration_ms=durations.get(b['id'],0),rating=b.get('rating'));finished_books.add(b['id'])
