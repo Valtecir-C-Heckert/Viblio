@@ -17,6 +17,7 @@ internal object FeedGrouping {
         val actorUsername: String,
         val book: JsonObject,
         val bookId: String,
+        val hasAdded: Boolean,
         val hasStarted: Boolean,
         val hasFinished: Boolean,
         val hasRead: Boolean,
@@ -35,6 +36,8 @@ internal object FeedGrouping {
                 hasFinished -> "finished"
                 hasRated && !hasRead && !hasStarted -> "rated"
                 hasStarted && !hasRead -> "started"
+                hasRead -> "read"
+                hasAdded -> "added"
                 else -> "read"
             }
     }
@@ -89,6 +92,7 @@ internal object FeedGrouping {
             val book = latest.obj("book")
             val whenMs = latest.num("occurred_at")
 
+            var hasAdded = false
             var hasStarted = false
             var hasFinished = false
             var hasRead = false
@@ -104,6 +108,7 @@ internal object FeedGrouping {
 
             for (ev in sorted) {
                 when (ev.str("kind")) {
+                    "added" -> hasAdded = true
                     "started" -> hasStarted = true
                     "finished" -> {
                         hasFinished = true
@@ -145,6 +150,7 @@ internal object FeedGrouping {
                     actorUsername = actor.str("username"),
                     book = book,
                     bookId = book.str("id"),
+                    hasAdded = hasAdded,
                     hasStarted = hasStarted,
                     hasFinished = hasFinished,
                     hasRead = hasRead,
@@ -167,6 +173,7 @@ internal object FeedGrouping {
         "read" -> entry.hasRead || entry.hasStarted
         "finished" -> entry.hasFinished
         "rated" -> entry.hasRated || entry.rating != null
+        "added" -> entry.hasAdded
         else -> true
     }
 
@@ -179,14 +186,15 @@ internal object FeedGrouping {
             entry.hasStarted && entry.pagesKnown && entry.pagesRead > 0L -> "Começou · +${entry.pagesRead}p"
             entry.hasStarted -> "Começou"
             entry.pagesKnown && entry.pagesRead > 0L -> "+${entry.pagesRead} págs"
+            entry.hasRead -> "Leu"
+            entry.hasAdded -> "Adicionou"
             else -> "Leu"
         }
     }
 
     fun formatRating(rating: Double): String {
         val rounded = (rating * 10.0).roundToInt() / 10.0
-        return if (rounded % 1.0 == 0.0) String.format(java.util.Locale.US, "%.1f", rounded)
-        else String.format(java.util.Locale.US, "%.1f", rounded)
+        return String.format(java.util.Locale.US, "%.1f", rounded)
     }
 
     fun stars(rating: Double): String {
@@ -195,6 +203,7 @@ internal object FeedGrouping {
     }
 
     fun progressPercent(entry: Entry): Int? {
+        if (entry.primaryType == "added") return null
         if (entry.hasFinished || entry.book.bool("complete")) return 100
         val total = entry.book.num("pages")
         if (total <= 0L) return null

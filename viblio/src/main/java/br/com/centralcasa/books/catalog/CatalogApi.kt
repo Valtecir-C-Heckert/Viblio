@@ -42,16 +42,20 @@ class CatalogApi(val address:String,private val token:String) {
         val body=call(Request.Builder().url(url));val source=body.get("catalog_source").asString
         return body.getAsJsonArray("items").map { decode(it.asJsonObject,source) }
     }
-    fun recommendations(kind:String="all",seed:Int=0):CatalogRecommendations {
+    fun recommendations(kind:String="all",seed:Int=0,anchorTitle:String="",anchorAuthor:String="",anchorGenre:String="",anchorSubgenre:String=""):CatalogRecommendations {
         val safeKind=if(kind in listOf("all","book","manga","comic")) kind else "all"
         val safeSeed=seed.coerceIn(0,10000)
-        val url=okhttp3.HttpUrl.Builder().scheme(URI(address).scheme).host(URI(address).host).port(URI(address).port.takeIf { it>0 } ?: if(URI(address).scheme=="https") 443 else 80)
+        val urlBuilder=okhttp3.HttpUrl.Builder().scheme(URI(address).scheme).host(URI(address).host).port(URI(address).port.takeIf { it>0 } ?: if(URI(address).scheme=="https") 443 else 80)
             .addPathSegments(URI(address).path.trim('/')+if(URI(address).path.trim('/').isBlank()) "v1/books/recommendations" else "/v1/books/recommendations")
-            .addQueryParameter("kind",safeKind).addQueryParameter("seed",safeSeed.toString()).addQueryParameter("per_section","10").build()
-        val body=call(Request.Builder().url(url))
+            .addQueryParameter("kind",safeKind).addQueryParameter("seed",safeSeed.toString()).addQueryParameter("per_section","10")
+        if(anchorTitle.isNotBlank()) urlBuilder.addQueryParameter("anchor_title",anchorTitle.trim().take(200))
+        if(anchorAuthor.isNotBlank()) urlBuilder.addQueryParameter("anchor_author",anchorAuthor.trim().take(200))
+        if(anchorGenre.isNotBlank()) urlBuilder.addQueryParameter("anchor_genre",anchorGenre.trim().take(200))
+        if(anchorSubgenre.isNotBlank()) urlBuilder.addQueryParameter("anchor_subgenre",anchorSubgenre.trim().take(200))
+        val body=call(Request.Builder().url(urlBuilder.build()))
         val source=body.get("catalog_source")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
-        val anchorTitle=body.get("anchor_title")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
-        val anchorKind=body.get("anchor_kind")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+        val resAnchorTitle=body.get("anchor_title")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+        val resAnchorKind=body.get("anchor_kind")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
         val sections=body.getAsJsonArray("sections")?.mapNotNull { el ->
             val obj=el.asJsonObject
             val key=obj.get("key")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
@@ -60,7 +64,7 @@ class CatalogApi(val address:String,private val token:String) {
             val items=obj.getAsJsonArray("items")?.mapNotNull { item -> runCatching { decode(item.asJsonObject,source) }.getOrNull() } ?: emptyList()
             if(items.isEmpty()) null else RecommendationSection(key,title,tag,items)
         } ?: emptyList()
-        return CatalogRecommendations(anchorTitle,anchorKind,sections)
+        return CatalogRecommendations(resAnchorTitle,resAnchorKind,sections)
     }
     fun wishlist():List<CatalogBook> {
         val body=call(Request.Builder().url(address.trimEnd('/')+"/v1/me/wishlist"))

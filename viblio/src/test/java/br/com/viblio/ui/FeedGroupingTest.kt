@@ -99,4 +99,20 @@ class FeedGroupingTest {
         assertTrue(FeedGrouping.matchesFilter(item, "read"))
         assertFalse(FeedGrouping.matchesFilter(item, "finished"))
     }
+
+    @Test
+    fun handlesAddedBookEventsAndFilter() {
+        val base = 1732030000000L
+        val added = event("e10", "added", base, bookId = "b3", title = "Condição Artificial", bookPages = 160)
+        val out = FeedGrouping.consolidate(listOf(added))
+        assertEquals(1, out.size)
+        val item = out[0]
+        assertTrue(item.hasAdded)
+        assertEquals("added", item.primaryType)
+        assertEquals("Adicionou", FeedGrouping.actionBadge(item))
+        assertEquals(null, FeedGrouping.progressPercent(item))
+        assertTrue(FeedGrouping.matchesFilter(item, "all"))
+        assertTrue(FeedGrouping.matchesFilter(item, "added"))
+        assertFalse(FeedGrouping.matchesFilter(item, "read"))
+    }
 }

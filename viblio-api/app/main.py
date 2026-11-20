@@ -243,7 +243,7 @@ def create_app(database_url=None, api_token=None, storage=None, public_url=None)
             connection.execute('SELECT reply_to_id FROM public.viblio_club_messages LIMIT 1')
             connection.execute('SELECT 1 FROM public.viblio_club_stage_reads LIMIT 1')
             connection.execute('SELECT 1 FROM public.viblio_wishlist LIMIT 1')
-        return {'ok': True, 'catalog_source': catalog_source, 'api_version': 10, 'friends_api': 1, 'feed_api': 1, 'clubs_api': 3, 'club_events_api': 1, 'account_api': 1, 'recommendations_api': 1, 'wishlist_api': 1, 'username_login': True}
+        return {'ok': True, 'catalog_source': catalog_source, 'api_version': 11, 'friends_api': 1, 'feed_api': 1, 'clubs_api': 3, 'club_events_api': 1, 'account_api': 1, 'recommendations_api': 1, 'wishlist_api': 1, 'username_login': True}
     @app.get('/v1/books', dependencies=[Depends(authenticate)])
     def search(q: str = Query('', max_length=300), author: str = Query('', max_length=300),
                isbn: str = Query('', max_length=32), limit: int = Query(20, ge=1, le=50),

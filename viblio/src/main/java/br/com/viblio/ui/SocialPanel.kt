@@ -373,7 +373,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         val filterScroll=HorizontalScrollView(activity).apply {isHorizontalScrollBarEnabled=false}
         val filterRow=ui.row();filterScroll.addView(filterRow)
         parent.addView(filterScroll,LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(6);bottomMargin=ui.dp(4)})
-        listOf("all" to "Tudo","read" to "Leituras","finished" to "Concluídos","rated" to "Notas").forEach {(key,label)->
+        listOf("all" to "Tudo","read" to "Leituras","finished" to "Concluídos","rated" to "Notas","added" to "Adicionados").forEach {(key,label)->
             val on=feedFilter==key
             val chip=TextView(activity).apply {
                 tag="feed-filter:$key";text=label;textSize=11f;gravity=Gravity.CENTER;maxLines=1
@@ -478,6 +478,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 entry.durationMs>0L -> duration(entry.durationMs)
                 entry.totalDurationMs>0L -> duration(entry.totalDurationMs)
                 entry.hasStarted -> "Iniciou leitura"
+                entry.hasAdded -> "Adicionou à estante"
                 else -> ""
             }
             val secondaryMetric=when {
@@ -488,6 +489,10 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                     "${entry.startPage}→${entry.endPage}$sess"
                 }
                 entry.pagesKnown && entry.pagesRead>0L -> "${entry.pagesRead} págs"
+                entry.primaryType=="added" -> listOfNotNull(
+                    book.s("genre").takeIf {it.isNotBlank()},
+                    book.n("pages").takeIf {it>0L}?.let {"$it págs"},
+                ).joinToString(" · ")
                 else -> ""
             }
             if(primaryMetric.isNotBlank()){

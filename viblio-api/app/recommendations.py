@@ -9,12 +9,26 @@ from pydantic import BaseModel, ConfigDict, Field
 
 MAX_WISHLIST_ITEMS = 500
 CATALOG_ID_RE = re.compile(r'^-?[0-9]{1,19}$')
+ROLE_PARENS_RE = re.compile(r'\s*[\(\[][^\)\]]*[\)\]]')
+VOLUME_MARKER_RE = re.compile(
+    r'\b(?:vol(?:ume)?|livro|book|tomo|parte|pt|n[oº°]?)\s*#?\s*0*(\d{1,4})\b|#\s*0*(\d{1,4})\b',
+    re.IGNORECASE,
+)
+TRAILING_NUM_RE = re.compile(r'^(.*\S)\s+0*(\d{1,3})$')
+SUBTITLE_SPLIT_RE = re.compile(r'\s*(?::|\s[-–—|]\s)\s*')
+AUTHOR_SPLIT_RE = re.compile(r'\s*(?:;|/|\||&|\be\b)\s*', re.IGNORECASE)
+TAG_SPLIT_RE = re.compile(r'\s*[;,/|]\s*')
 
 
 def _norm(value: str | None) -> str:
     text = unicodedata.normalize('NFKD', (value or '').strip().lower())
     text = ''.join(ch for ch in text if not unicodedata.combining(ch))
     return re.sub(r'[^a-z0-9]+', ' ', text).strip()
+
+
+def _clean_isbn(value: str | None) -> str:
+    cleaned = re.sub(r'[^0-9X]', '', (value or '').upper())
+    return cleaned if len(cleaned) in (10, 13) else ''
 
 
 def _like_escape(value: str) -> str:
@@ -40,6 +54,207 @@ def _kind_clause(kind: str) -> str:
     return "TRUE"
 
 
+def _split_authors(raw: str | None) -> list[str]:
+    if not raw or not isinstance(raw, str):
+        return []
+    cleaned = ROLE_PARENS_RE.sub('', raw).strip()
+    if not cleaned:
+        return []
+    parts = [p.strip() for p in AUTHOR_SPLIT_RE.split(cleaned) if p.strip()]
+    out: list[str] = []
+    seen: set[frozenset[str]] = set()
+    for part in parts:
+        # Handle catalog "Last, First" format cleanly -> "First Last"
+        if part.count(',') == 1:
+            left, right = (s.strip() for s in part.split(',', 1))
+            if left and right and len(left.split()) <= 3 and len(right.split()) <= 3:
+                part = f'{right} {left}'
+        tokens = frozenset(_norm(part).split())
+        if not tokens or tokens in seen:
+            continue
+        seen.add(tokens)
+        out.append(part)
+    return out
+
+
+def _author_tokens(name: str | None) -> list[str]:
+    cleaned = ROLE_PARENS_RE.sub('', name or '').strip()
+    return [t for t in _norm(cleaned).split() if t]
+
+
+def _author_matches(row_author: str | None, target_author: str) -> bool:
+    target_tokens = _author_tokens(target_author)
+    if not target_tokens:
+        return False
+    sig_tokens = [t for t in target_tokens if len(t) >= 2]
+    initials = [t for t in target_tokens if len(t) == 1]
+    segments = _split_authors(row_author)
+    if not segments and row_author:
+        segments = [row_author]
+    for seg in segments:
+        seg_tokens = set(_author_tokens(seg))
+        if not seg_tokens:
+            continue
+        if sig_tokens:
+            if not all(tok in seg_tokens for tok in sig_tokens):
+                continue
+            if initials and not all(any(st.startswith(init) for st in seg_tokens) for init in initials):
+                continue
+            return True
+        elif all(tok in seg_tokens for tok in target_tokens):
+            return True
+    return False
+
+
+def _tag_matches(row_value: str | None, term: str) -> bool:
+    target = _norm(term)
+    if len(target) < 2 or not row_value:
+        return False
+    padded_target = f' {target} '
+    for seg in TAG_SPLIT_RE.split(row_value):
+        ns = _norm(seg)
+        if not ns:
+            continue
+        if ns == target or padded_target in f' {ns} ':
+            return True
+    return False
+
+
+def _extract_volume(title: str | None, sequence=None) -> int | None:
+    if sequence is not None:
+        try:
+            val = int(sequence)
+            if val == float(sequence) and 1 <= val <= 10000:
+                return val
+        except (TypeError, ValueError):
+            pass
+    if not title:
+        return None
+    norm = _norm(title)
+    m = VOLUME_MARKER_RE.search(norm)
+    if m:
+        num = int(m.group(1) or m.group(2))
+        if 1 <= num <= 10000:
+            return num
+    m2 = TRAILING_NUM_RE.match(norm)
+    if m2:
+        prefix, num_str = m2.group(1), m2.group(2)
+        num = int(num_str)
+        if len(prefix) >= 3 and 1 <= num <= 500:
+            return num
+    return None
+
+
+def _base_title(title: str | None) -> str:
+    if not title:
+        return ''
+    stripped = ROLE_PARENS_RE.sub('', title).strip()
+    parts = SUBTITLE_SPLIT_RE.split(stripped, maxsplit=1)
+    head = parts[0].strip() if parts else stripped
+    chosen = head if len(_norm(head)) >= 4 else stripped
+    norm = _norm(chosen)
+    # Strip volume suffix so "Vagabond Vol. 1" -> base "vagabond" (volume compared separately).
+    no_vol = VOLUME_MARKER_RE.sub('', norm).strip()
+    if len(no_vol) >= 3:
+        norm = re.sub(r'\s+', ' ', no_vol).strip()
+    m = TRAILING_NUM_RE.match(norm)
+    if m and len(m.group(1)) >= 3 and 1 <= int(m.group(2)) <= 500:
+        norm = m.group(1).strip()
+    return norm
+
+
+def _authors_overlap(a1: frozenset[str], a2: frozenset[str]) -> bool:
+    if not a1 or not a2:
+        return False
+    sig1 = {t for t in a1 if len(t) >= 3}
+    sig2 = {t for t in a2 if len(t) >= 3}
+    if sig1 and sig2:
+        return bool(sig1 & sig2)
+    return bool(a1 & a2)
+
+
+def _same_work(
+    t1_full: str, t1_base: str, a1: frozenset[str], v1: int | None,
+    t2_full: str, t2_base: str, a2: frozenset[str], v2: int | None,
+) -> bool:
+    if not t1_full or not t2_full:
+        return False
+    # Never conflate different volumes of the same series (e.g. Vol. 1 vs Vol. 2).
+    if v1 is not None and v2 is not None and v1 != v2:
+        return False
+    both_authors = bool(a1 and a2)
+    if both_authors and not _authors_overlap(a1, a2):
+        return False
+    if t1_full == t2_full:
+        return True
+    if t1_base and t1_base == t2_base:
+        return len(t1_base) >= (3 if both_authors else 5)
+    if both_authors and t1_base and t2_base:
+        shorter, longer = (t1_base, t2_full) if len(t1_base) <= len(t2_base) else (t2_base, t1_full)
+        if len(shorter) >= 5 and longer.startswith(shorter + ' '):
+            return True
+    return False
+
+
+class _WorkIndex:
+    """Tracks owned or already-selected works across catalog IDs, work_keys, ISBNs and title/edition variants."""
+
+    def __init__(self):
+        self.ids: set[str] = set()
+        self.work_keys: set[str] = set()
+        self.isbns: set[str] = set()
+        self.works: list[tuple[str, str, frozenset[str], int | None]] = []
+
+    def add(self, *, catalog_id: str | None = None, work_key: str | None = None,
+            isbn: str | None = None, title: str | None = None,
+            author: str | None = None, sequence=None):
+        if catalog_id is not None and str(catalog_id).strip():
+            self.ids.add(str(catalog_id).strip())
+        wk = (work_key or '').strip()
+        if wk:
+            self.work_keys.add(wk)
+        ci = _clean_isbn(isbn)
+        if ci:
+            self.isbns.add(ci)
+        tf = _norm(title)
+        if tf:
+            tb = _base_title(title)
+            at = frozenset(_author_tokens(author))
+            vol = _extract_volume(title, sequence)
+            self.works.append((tf, tb, at, vol))
+
+    def matches_row(self, row: dict) -> bool:
+        rid = str(row['id'])
+        if rid in self.ids:
+            return True
+        wk = (row.get('work_key') or '').strip()
+        if wk and wk in self.work_keys:
+            return True
+        ci = _clean_isbn(row.get('isbn'))
+        if ci and ci in self.isbns:
+            return True
+        tf = _norm(row.get('titulo'))
+        if not tf:
+            return False
+        tb = _base_title(row.get('titulo'))
+        at = frozenset(_author_tokens(row.get('autor')))
+        vol = _extract_volume(row.get('titulo'), row.get('ordem'))
+        for ow_tf, ow_tb, ow_at, ow_vol in self.works:
+            if _same_work(tf, tb, at, vol, ow_tf, ow_tb, ow_at, ow_vol):
+                return True
+        return False
+
+    def add_row(self, row: dict):
+        self.add(
+            catalog_id=str(row['id']),
+            work_key=row.get('work_key'),
+            isbn=row.get('isbn'),
+            title=row.get('titulo'),
+            author=row.get('autor'),
+            sequence=row.get('ordem'),
+        )
+
+
 def _subgenres_of(book: dict) -> list[str]:
     out: list[str] = []
     raw_list = book.get('subgenres')
@@ -49,7 +264,7 @@ def _subgenres_of(book: dict) -> list[str]:
                 out.append(item.strip())
     raw_str = book.get('subgenre')
     if isinstance(raw_str, str) and raw_str.strip():
-        for part in raw_str.split(';'):
+        for part in TAG_SPLIT_RE.split(raw_str):
             if part.strip():
                 out.append(part.strip())
     seen = set()
@@ -62,44 +277,50 @@ def _subgenres_of(book: dict) -> list[str]:
     return unique
 
 
-def _extract_profile(library: dict | None):
-    if not isinstance(library, dict):
-        return None, 'none', [], [], [], set(), set()
-    collections = {c.get('id'): c for c in (library.get('collections') or []) if isinstance(c, dict) and c.get('id')}
-    all_books = [b for b in (library.get('books') or []) if isinstance(b, dict)]
-    active_books = [
-        b for b in all_books
-        if not b.get('archived', False) and not collections.get(b.get('collectionId'), {}).get('archived', False)
-    ]
+def _extract_profile(library: dict | None, live_anchor: dict | None = None):
+    owned = _WorkIndex()
+    active_books: list[dict] = []
+    if isinstance(library, dict):
+        collections = {c.get('id'): c for c in (library.get('collections') or []) if isinstance(c, dict) and c.get('id')}
+        all_books = [b for b in (library.get('books') or []) if isinstance(b, dict)]
+        active_books = [
+            b for b in all_books
+            if not b.get('archived', False) and not collections.get(b.get('collectionId'), {}).get('archived', False)
+        ]
+        for b in active_books:
+            owned.add(
+                catalog_id=b.get('catalogId'),
+                isbn=b.get('isbn'),
+                title=b.get('title'),
+                author=b.get('author'),
+                sequence=b.get('sequenceNumber'),
+            )
 
-    owned_ids: set[str] = set()
-    owned_keys: set[tuple[str, str]] = set()
-    for b in all_books:
-        cid = b.get('catalogId')
-        if cid is not None and str(cid).strip():
-            owned_ids.add(str(cid).strip())
-        nt = _norm(b.get('title'))
-        na = _norm(b.get('author'))
-        if nt:
-            owned_keys.add((nt, na))
-
-    current_id = library.get('currentBookId') or library.get('currentId')
     anchor = None
     anchor_kind = 'none'
-    if current_id:
-        for b in active_books:
-            if b.get('id') == current_id:
-                anchor = b
-                anchor_kind = 'current'
-                break
-    if anchor is None:
-        finished = [b for b in active_books if _book_complete(b)]
-        if finished:
-            anchor = max(finished, key=lambda b: (b.get('updatedAt') or 0, b.get('rating') or 0))
-            anchor_kind = 'last_finished'
-    if anchor is None and active_books:
-        anchor = max(active_books, key=lambda b: (b.get('rating') or 0, b.get('updatedAt') or 0))
-        anchor_kind = 'favorite'
+    if live_anchor and any(live_anchor.get(k) for k in ('title', 'author', 'genre', 'subgenre')):
+        anchor = live_anchor
+        anchor_kind = 'current'
+        owned.add(
+            title=live_anchor.get('title'),
+            author=live_anchor.get('author'),
+        )
+    elif isinstance(library, dict):
+        current_id = library.get('currentBookId') or library.get('currentId')
+        if current_id:
+            for b in active_books:
+                if b.get('id') == current_id:
+                    anchor = b
+                    anchor_kind = 'current'
+                    break
+        if anchor is None:
+            finished = [b for b in active_books if _book_complete(b)]
+            if finished:
+                anchor = max(finished, key=lambda b: (b.get('updatedAt') or 0, b.get('rating') or 0))
+                anchor_kind = 'last_finished'
+        if anchor is None and active_books:
+            anchor = max(active_books, key=lambda b: (b.get('rating') or 0, b.get('updatedAt') or 0))
+            anchor_kind = 'favorite'
 
     author_scores: dict[str, tuple[float, str]] = {}
     subgenre_scores: dict[str, tuple[float, str]] = {}
@@ -117,10 +338,12 @@ def _extract_profile(library: dict | None):
 
     for b in active_books:
         rating = b.get('rating')
-        is_anchor = anchor is not None and b.get('id') == anchor.get('id')
+        is_anchor = anchor is not None and anchor.get('id') and b.get('id') == anchor.get('id')
         weight = 6.0 if is_anchor else (3.0 if (isinstance(rating, (int, float)) and rating >= 4.0) else (2.0 if _book_complete(b) else 1.0))
-        bump(author_scores, b.get('author'), weight)
-        bump(genre_scores, b.get('genre'), weight)
+        for a in _split_authors(b.get('author')):
+            bump(author_scores, a, weight)
+        for g in TAG_SPLIT_RE.split(b.get('genre') or ''):
+            bump(genre_scores, g, weight)
         for sub in _subgenres_of(b):
             bump(subgenre_scores, sub, weight)
 
@@ -136,11 +359,11 @@ def _extract_profile(library: dict | None):
             if key not in seen:
                 seen.add(key)
                 ordered.append(label)
-        return ordered[:5]
+        return ordered[:3]
 
-    anchor_authors = [anchor.get('author', '')] if anchor and anchor.get('author') else []
+    anchor_authors = _split_authors(anchor.get('author')) if anchor else []
     anchor_subgenres = _subgenres_of(anchor) if anchor else []
-    anchor_genres = [anchor.get('genre', '')] if anchor and anchor.get('genre') else []
+    anchor_genres = [g.strip() for g in TAG_SPLIT_RE.split(anchor.get('genre') or '') if g.strip()] if anchor else []
 
     return (
         anchor,
@@ -148,8 +371,7 @@ def _extract_profile(library: dict | None):
         ranked(author_scores, anchor_authors),
         ranked(subgenre_scores, anchor_subgenres),
         ranked(genre_scores, anchor_genres),
-        owned_ids,
-        owned_keys,
+        owned,
     )
 
 
@@ -201,17 +423,36 @@ def _present_wishlist(row: dict, default_source: str) -> dict:
     }
 
 
+def _seed_rank(row_id: int, seed: int) -> int:
+    return ((abs(int(row_id)) * 2654435761) + (int(seed) * 1000003)) & 0xFFFFFFFF
+
+
 def mount_recommendations(app, connect, current, catalog_source, public_url, columns, present):
+    rec_columns = f'{columns}, work_key'
+
     @app.get('/v1/books/recommendations')
     def recommendations(
         kind: Literal['all', 'book', 'manga', 'comic'] = 'all',
         seed: int = Query(0, ge=0, le=10000),
         per_section: int = Query(10, ge=3, le=12),
+        anchor_title: str = Query('', max_length=200),
+        anchor_author: str = Query('', max_length=200),
+        anchor_genre: str = Query('', max_length=200),
+        anchor_subgenre: str = Query('', max_length=200),
         user=Depends(current),
     ):
         from .cover_gallery import canonical_rows
 
         kind_sql = _kind_clause(kind)
+        live_anchor = None
+        if any(s.strip() for s in (anchor_title, anchor_author, anchor_genre, anchor_subgenre)):
+            live_anchor = {
+                'title': anchor_title.strip(),
+                'author': anchor_author.strip(),
+                'genre': anchor_genre.strip(),
+                'subgenre': anchor_subgenre.strip(),
+            }
+
         with connect() as db:
             base = db.execute(
                 """SELECT snapshot->'library' AS library
@@ -226,63 +467,108 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
             ).fetchall()
             wishlist_ids = {r['catalog_id'] for r in wish_rows}
 
-            anchor, anchor_kind, authors, subgenres, genres, owned_ids, owned_keys = _extract_profile(
-                base['library'] if base else None
+            anchor, anchor_kind, authors, subgenres, genres, owned = _extract_profile(
+                base['library'] if base else None,
+                live_anchor=live_anchor,
             )
 
-            used_ids: set[str] = set(owned_ids)
-            used_keys: set[tuple[str, str]] = set(owned_keys)
+            # Enrich owned index with work_key, ISBN and canonical titles from public.valteca in 1 fast PK query.
+            numeric_ids = [int(cid) for cid in owned.ids if CATALOG_ID_RE.fullmatch(cid)]
+            if numeric_ids:
+                owned_cat_rows = db.execute(
+                    'SELECT id, work_key, titulo, autor, isbn, ordem FROM public.valteca WHERE id = ANY(%s)',
+                    (numeric_ids[:2000],),
+                ).fetchall()
+                for orow in owned_cat_rows:
+                    owned.add_row(orow)
 
-            def filter_and_take(rows: list[dict], limit: int) -> list[dict]:
+            shown = _WorkIndex()
+
+            def filter_and_take(rows: list[dict], limit: int, verifier) -> list[dict]:
                 if not rows:
                     return []
-                resolved = canonical_rows(rows, db, public_url)
-                # Prefer items not yet in wishlist first, while still allowing discovery.
+                matched = [r for r in rows if verifier(r) and not owned.matches_row(r) and not shown.matches_row(r)]
+                if not matched:
+                    return []
+                resolved = canonical_rows(matched, db, public_url)
                 ordered = sorted(
                     resolved,
-                    key=lambda r: (1 if str(r['id']) in wishlist_ids else 0, 0 if (r.get('capa_url') or '').strip() else 1),
+                    key=lambda r: (
+                        0 if (r.get('capa_url') or '').strip() else 1,
+                        1 if str(r['id']) in wishlist_ids else 0,
+                        _seed_rank(r['id'], seed),
+                        len(r.get('titulo') or ''),
+                    ),
                 )
                 picked: list[dict] = []
                 for row in ordered:
-                    rid = str(row['id'])
-                    key = (_norm(row.get('titulo')), _norm(row.get('autor')))
-                    if rid in used_ids or (key[0] and key in used_keys):
+                    if owned.matches_row(row) or shown.matches_row(row):
                         continue
-                    used_ids.add(rid)
-                    if key[0]:
-                        used_keys.add(key)
+                    shown.add_row(row)
                     picked.append(present(row))
                     if len(picked) >= limit:
                         break
                 return picked
 
-            def query_column(column: str, terms: list[str], limit: int) -> tuple[str, list[dict]]:
-                if not terms:
-                    return '', []
-                collected: list[dict] = []
-                primary_label = ''
-                order_expr = f"(CASE WHEN coalesce(capa_url,'')<>'' THEN 0 ELSE 1 END), mod(abs(id) + {int(seed) * 997}, 1000003), id"
+            def query_author_section(terms: list[str], limit: int) -> tuple[str, list[dict]]:
                 for term in terms:
-                    if len(collected) >= limit:
-                        break
-                    pattern = '%' + _like_escape(term) + '%'
+                    tokens = sorted([t for t in _author_tokens(term) if len(t) >= 3], key=len, reverse=True)[:3]
+                    if not tokens:
+                        norm_term = _norm(term)
+                        if len(norm_term) < 2:
+                            continue
+                        tokens = [norm_term]
+                    # Uses viblio_author_search GIN index directly (no coalesce wrapper, no full-table ORDER BY).
+                    clauses = [
+                        "public.viblio_normalize(autor) LIKE public.viblio_normalize(%s) ESCAPE E'\\\\'"
+                        for _ in tokens
+                    ]
+                    params = ['%' + _like_escape(tok) + '%' for tok in tokens]
                     rows = db.execute(
-                        f"""SELECT {columns} FROM public.valteca
+                        f"""SELECT {rec_columns} FROM public.valteca
                             WHERE {kind_sql}
-                              AND public.viblio_normalize(coalesce({column},'')) LIKE public.viblio_normalize(%s) ESCAPE E'\\\\'
-                            ORDER BY {order_expr}
-                            LIMIT %s""",
-                        (pattern, limit * 4),
+                              AND {' AND '.join(clauses)}
+                            LIMIT 160""",
+                        params,
                     ).fetchall()
-                    batch = filter_and_take(rows, limit - len(collected))
-                    if batch and not primary_label:
-                        primary_label = term
-                    collected.extend(batch)
-                return primary_label, collected
+                    batch = filter_and_take(rows, limit, lambda r, t=term: _author_matches(r.get('autor'), t))
+                    if batch:
+                        # Strict 1-author-per-section: never mix other authors under this author's heading.
+                        return term, batch
+                return '', []
+
+            def query_tag_section(column: str, terms: list[str], limit: int) -> tuple[str, list[dict]]:
+                offset = (int(seed) % 8) * 20
+                for term in terms:
+                    norm_term = _norm(term)
+                    if len(norm_term) < 2:
+                        continue
+                    pattern = '%' + _like_escape(term) + '%'
+                    # Uses viblio_genre_search / viblio_subgenre_search GIN index without sorting tens of thousands of rows.
+                    rows = db.execute(
+                        f"""SELECT {rec_columns} FROM public.valteca
+                            WHERE {kind_sql}
+                              AND public.viblio_normalize({column}) LIKE public.viblio_normalize(%s) ESCAPE E'\\\\'
+                            LIMIT 160 OFFSET %s""",
+                        (pattern, offset),
+                    ).fetchall()
+                    if offset > 0 and len(rows) < limit * 2:
+                        rows = db.execute(
+                            f"""SELECT {rec_columns} FROM public.valteca
+                                WHERE {kind_sql}
+                                  AND public.viblio_normalize({column}) LIKE public.viblio_normalize(%s) ESCAPE E'\\\\'
+                                LIMIT 160""",
+                            (pattern,),
+                        ).fetchall()
+                    batch = filter_and_take(rows, limit, lambda r, t=term, c=column: _tag_matches(r.get(c), t))
+                    if batch:
+                        # Strict 1-tag-per-section: never mix unrelated genres/subgenres under this heading.
+                        return term, batch
+                return '', []
 
             sections: list[dict] = []
 
-            author_label, author_items = query_column('autor', authors, per_section)
+            author_label, author_items = query_author_section(authors, per_section)
             if author_items:
                 sections.append({
                     'key': 'author',
@@ -291,7 +577,7 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
                     'items': author_items,
                 })
 
-            sub_label, sub_items = query_column('subgenero', subgenres, per_section)
+            sub_label, sub_items = query_tag_section('subgenero', subgenres, per_section)
             if sub_items:
                 sections.append({
                     'key': 'subgenre',
@@ -300,7 +586,7 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
                     'items': sub_items,
                 })
 
-            genre_label, genre_items = query_column('genero', genres, per_section)
+            genre_label, genre_items = query_tag_section('genero', genres, per_section)
             if genre_items:
                 sections.append({
                     'key': 'genre',
@@ -309,17 +595,22 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
                     'items': genre_items,
                 })
 
-            # Fallback when library is empty or catalog has no matches for the user's current metadata.
+            # Fallback only when library is empty or catalog has zero matches for user metadata.
             if not sections:
-                order_expr = f"(CASE WHEN coalesce(capa_url,'')<>'' THEN 0 ELSE 1 END), mod(abs(id) + {int(seed) * 997}, 1000003), id"
+                offset = (int(seed) % 10) * 15
                 rows = db.execute(
-                    f"""SELECT {columns} FROM public.valteca
+                    f"""SELECT {rec_columns} FROM public.valteca
                         WHERE {kind_sql}
-                        ORDER BY {order_expr}
-                        LIMIT %s""",
-                    (per_section * 3,),
+                        LIMIT 120 OFFSET %s""",
+                    (offset,),
                 ).fetchall()
-                fallback_items = filter_and_take(rows, per_section)
+                if offset > 0 and not rows:
+                    rows = db.execute(
+                        f"""SELECT {rec_columns} FROM public.valteca
+                            WHERE {kind_sql}
+                            LIMIT 120""",
+                    ).fetchall()
+                fallback_items = filter_and_take(rows, per_section, lambda _r: True)
                 if fallback_items:
                     sections.append({
                         'key': 'featured',

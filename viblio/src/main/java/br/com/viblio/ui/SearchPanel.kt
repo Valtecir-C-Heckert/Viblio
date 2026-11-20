@@ -33,7 +33,8 @@ class SearchPanel(
     private var results = emptyList<CatalogBook>()
     private var resultsQuery = ""
     private var recsCache = mutableMapOf<String, CatalogRecommendations>()
-    private var recsLoading = false
+    private var recsFingerprint = ""
+    private var recsLoadingKey: String? = null
     private var wishlistItems = emptyList<CatalogBook>()
     private var wishlistLoaded = false
     private var wishlistLoading = false
@@ -73,6 +74,7 @@ class SearchPanel(
         active = false
         generation++
         recGeneration++
+        recsLoadingKey = null
         pending?.let(handler::removeCallbacks)
         pending = null
         covers.detach()
@@ -390,23 +392,28 @@ class SearchPanel(
             drawWishlist(target)
             return
         }
+        val fp = catalog.libraryFingerprint()
+        if (fp != recsFingerprint) {
+            recsFingerprint = fp
+            recsCache.clear()
+        }
         val cacheKey = "$kind:$recSeed"
         val cached = recsCache[cacheKey]
         if (cached != null) {
             drawRecommendations(target, cached)
             return
         }
-        if (recsLoading) {
+        if (recsLoadingKey == cacheKey) {
             status?.visibility = View.VISIBLE
             status?.text = "Carregando recomendações…"
             return
         }
         val epoch = ++recGeneration
-        recsLoading = true
+        recsLoadingKey = cacheKey
         status?.visibility = View.VISIBLE
         status?.text = "Carregando recomendações…"
         catalog.recommendations(kind, recSeed) { response ->
-            recsLoading = false
+            if (recsLoadingKey == cacheKey) recsLoadingKey = null
             if (!active || closed || recGeneration != epoch || query.trim().length >= 3 || browseTab != "discover") return@recommendations
             response.fold({ data ->
                 recsCache[cacheKey] = data

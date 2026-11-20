@@ -50,15 +50,22 @@ def record_activity(db,owner,previous,snapshot,revision):
         event('session:'+r['id'],b['id'],'finished' if finished else 'read',r['finishedAt'],data)
         if b['id'] not in first_read and not before.get(b['id'],{}).get('currentPage',0):
             event('started:'+b['id'],b['id'],'started',r['startedAt'],{})
+    newly_added=[]
     for identifier,b in books.items():
         prior=before.get(identifier)
-        if not prior:continue  # Adding/importing an already-read book is not a new reading activity.
+        if not prior or prior.get('archived',False):
+            if previous is not None:newly_added.append((identifier,b))
+            continue
         at=b.get('updatedAt',0)
         if not prior.get('currentPage',0) and b.get('currentPage',0)>0 and identifier not in changed_books:event('started:'+identifier,identifier,'started',at,{})
         if complete(b) and not complete(prior) and identifier not in finished_books:
             event('finished:'+identifier+':'+str(revision),identifier,'finished',at,dict(total_duration_ms=durations.get(identifier,0),rating=b.get('rating')))
         if b.get('rating') is not None and b.get('rating')!=prior.get('rating'):
             event('rated:'+identifier+':'+str(revision),identifier,'rated',int(now.timestamp()*1000),dict(rating=b['rating']))
+    if 1<=len(newly_added)<=5:
+        for identifier,b in newly_added:
+            at=b.get('updatedAt') or int(now.timestamp()*1000)
+            event('added:'+identifier,identifier,'added',at,{})
     events=sorted(events.values(),key=lambda e:(e['occurred_at'],e['id']),reverse=True)[:MAX_EVENTS_PER_SYNC]
     if events:
         db.execute('''INSERT INTO public.viblio_activity(id,user_id,event_key,book_id,kind,occurred_at,data)

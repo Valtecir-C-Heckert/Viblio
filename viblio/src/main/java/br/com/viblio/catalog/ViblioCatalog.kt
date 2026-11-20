@@ -63,10 +63,36 @@ class ViblioCatalog(private val activity:Activity,private val changed:(Boolean)-
     override fun search(title:String,author:String,isbn:String,done:(Result<List<CatalogBook>>)->Unit) {
         browse.execute { val response=runCatching { api().search(title,author,isbn).also { rows->rows.firstOrNull()?.let { prefs.edit().putString("source",it.source).apply() } } };post { done(response) } }
     }
+    override fun libraryFingerprint():String {
+        val cur=library.currentId().orEmpty()
+        val books=library.books()
+        val curUpdated=books.firstOrNull { it.id==cur }?.updatedAt ?: 0L
+        return "$cur|${books.size}|$curUpdated"
+    }
     override fun recommendations(kind:String,seed:Int,done:(Result<CatalogRecommendations>)->Unit) {
         if(!configured || !personalMode()) { done(Result.success(CatalogRecommendations("","none",emptyList())));return }
         browse.execute {
-            val response=runCatching { api().recommendations(kind,seed) }.recoverCatching { err ->
+            val response=runCatching {
+                val owned=library.books()
+                val curId=library.currentId()
+                val currentBook=curId?.let { id -> owned.firstOrNull { it.id==id } }
+                val sub=currentBook?.let { b ->
+                    (b.subgenres.filter { it.isNotBlank() }.ifEmpty { listOf(b.subgenre).filter { it.isNotBlank() } }).joinToString(";")
+                }.orEmpty()
+                val raw=api().recommendations(
+                    kind=kind,
+                    seed=seed,
+                    anchorTitle=currentBook?.title.orEmpty(),
+                    anchorAuthor=currentBook?.author.orEmpty(),
+                    anchorGenre=currentBook?.genre.orEmpty(),
+                    anchorSubgenre=sub,
+                )
+                val filteredSections=raw.sections.mapNotNull { sec ->
+                    val unowned=OwnedBookMatcher.filterUnowned(sec.items,owned)
+                    if(unowned.isEmpty()) null else sec.copy(items=unowned)
+                }
+                raw.copy(sections=filteredSections)
+            }.recoverCatching { err ->
                 if(err is CatalogHttpException && err.status in listOf(404,405)) CatalogRecommendations("","none",emptyList()) else throw err
             }
             post { done(response) }

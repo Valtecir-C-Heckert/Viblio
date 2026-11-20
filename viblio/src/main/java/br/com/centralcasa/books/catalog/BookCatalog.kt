@@ -33,6 +33,7 @@ interface BookCatalog {
     fun loadCover(book:CatalogBook,done:(Result<String>)->Unit)
     fun chooseCover(id:String,source:String,done:(Result<CatalogCover>)->Unit) { done(Result.failure(IllegalStateException("Capas alternativas indisponíveis neste catálogo."))) }
     fun recommendations(kind:String="all",seed:Int=0,done:(Result<CatalogRecommendations>)->Unit) { done(Result.success(CatalogRecommendations("","none",emptyList()))) }
+    fun libraryFingerprint():String = ""
     fun wishlist(done:(Result<List<CatalogBook>>)->Unit) { done(Result.success(emptyList())) }
     fun addWishlist(book:CatalogBook,done:(Result<CatalogBook>)->Unit) { done(Result.failure(IllegalStateException("Lista de desejos indisponível neste catálogo."))) }
     fun removeWishlist(catalogId:String,done:(Result<Unit>)->Unit) { done(Result.success(Unit)) }

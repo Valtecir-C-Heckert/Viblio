@@ -94,7 +94,7 @@ def mount_accounts(app,connect,install_key,source,limits):
     @app.get('/v1/auth/info')
     def info():
         with connect() as db:ready=db.execute('SELECT EXISTS(SELECT 1 FROM public.viblio_users) AS ready').fetchone()['ready']
-        return dict(account_api=1,username_login=True,friends_api=1,feed_api=1,clubs_api=3,club_events_api=1,server_id=source,initialized=ready,registration='invitation')
+        return dict(api_version=11,account_api=1,username_login=True,friends_api=1,feed_api=1,clubs_api=3,club_events_api=1,recommendations_api=1,wishlist_api=1,server_id=source,initialized=ready,registration='invitation')
     @app.post('/v1/auth/bootstrap',dependencies=[Depends(installation)])
     def bootstrap(body:Login):
         hashed=password_hash(body.password)
