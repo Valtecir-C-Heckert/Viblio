@@ -154,10 +154,11 @@ def test_recommendations_search_saga_subgenre_pagination_and_wishlist(api):
 
     # Infinite horizontal pagination (/v1/books/recommendations/more): zero overlap with page 0!
     first_page_ids = [i['id'] for i in m_keys['subgenre']['items']]
+    exclude = first_page_ids + ['770010']
     more = get(
         api,
         b,
-        f"/v1/books/recommendations/more?section=subgenre&term={m_keys['subgenre']['term']}&kind=book&cursor={m_keys['subgenre']['next_cursor']}&limit=5&exclude_ids={','.join(first_page_ids)}",
+        f"/v1/books/recommendations/more?section=subgenre&term={m_keys['subgenre']['term']}&kind=book&cursor={m_keys['subgenre']['next_cursor']}&limit=5&exclude_ids={','.join(exclude)}",
     )
     more_ids = [i['id'] for i in more['items']]
     assert len(more_ids) == 5

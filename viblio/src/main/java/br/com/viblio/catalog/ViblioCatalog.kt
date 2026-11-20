@@ -74,7 +74,7 @@ class ViblioCatalog(private val activity:Activity,private val changed:(Boolean)-
                     val client=api()
                     val byTitle=runCatching { client.search(query) }.getOrDefault(emptyList())
                     val byAuthor=runCatching { client.search("",author=query) }.getOrDefault(emptyList())
-                    CatalogSearchPage(CatalogSearch.filter(CatalogSearch.merge(byTitle,byAuthor),kind),null)
+                    CatalogSearchPage(br.com.viblio.ui.CatalogSearch.filter(br.com.viblio.ui.CatalogSearch.merge(byTitle,byAuthor),kind),null)
                 } else throw err
             }
             post { done(response) }
@@ -123,7 +123,9 @@ class ViblioCatalog(private val activity:Activity,private val changed:(Boolean)-
         browse.execute {
             val response=runCatching {
                 val owned=library.books()
-                val page=api().recommendationsMore(section,term,kind,cursor,seed,excludeIds)
+                val curCid=library.currentId()?.let { id -> owned.firstOrNull { it.id==id }?.catalogId }
+                val allExclude=if(curCid.isNullOrBlank()) excludeIds else excludeIds + curCid
+                val page=api().recommendationsMore(section,term,kind,cursor,seed,allExclude)
                 page.copy(items=OwnedBookMatcher.filterUnowned(page.items,owned))
             }.recoverCatching { err ->
                 if(err is CatalogHttpException && err.status in listOf(404,405)) RecommendationPage(emptyList(),false,cursor) else throw err
