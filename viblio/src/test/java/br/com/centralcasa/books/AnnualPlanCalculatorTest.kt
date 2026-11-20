@@ -58,7 +58,16 @@ class AnnualPlanCalculatorTest {
         ).validated()
 
         // Timed session: 45 pages in 1 hour -> 45 pages/hour
-        val session = ReadingSession("s1", "b1", 0, 45, 3_600_000L, 1000L, 3_601_000L, "2027-01-10")
+        val session = ReadingSession(
+            id = "s1",
+            bookId = "b1",
+            startedAt = 1000L,
+            finishedAt = 3_601_000L,
+            durationMs = 3_600_000L,
+            startPage = 0,
+            endPage = 45,
+            readingDay = "2027-01-10",
+        )
         val summary = AnnualPlanCalculator.summarizeAt(
             plan = plan,
             books = listOf(bDone, bPendingPast, bCurrent, bHeavy1, bHeavy2),
