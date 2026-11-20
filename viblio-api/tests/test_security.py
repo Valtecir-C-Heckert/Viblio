@@ -87,7 +87,9 @@ def test_non_ascii_bearer_and_bigint_bounds_and_v1_covers_cache(tmp_path):
     import pytest
     with TestClient(create_app(DSN,TOKEN,tmp_path,'http://localhost:8088')) as api:
         # Non-ASCII bearer must return 401, never 500 TypeError
-        bad=api.get('/v1/health',headers={'Authorization':'Bearer \xe9\xe9\xe9'})
+        from app.accounts import _token_matches
+        assert _token_matches('ééé', TOKEN) is False
+        bad=api.get('/v1/health',headers=[(b'authorization',b'Bearer \xe9\xe9\xe9')])
         assert bad.status_code==401
         # Unauthenticated sync rejected before reading body
         unauth_sync=api.post('/v1/me/library/sync',content=b'{}')

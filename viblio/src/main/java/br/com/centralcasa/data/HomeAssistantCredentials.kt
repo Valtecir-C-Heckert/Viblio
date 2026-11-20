@@ -5,7 +5,6 @@ import android.content.Context
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.util.Base64
 import java.security.GeneralSecurityException
 import java.security.KeyStore
@@ -55,12 +54,12 @@ class HomeAssistantCredentials(context: Context, private val preferenceName: Str
         }.generateKey()
     }
     companion object {
-        internal fun isIrrecoverable(error: Throwable): Boolean = when (error) {
-            is AEADBadTagException,
-            is BadPaddingException,
-            is IllegalBlockSizeException,
-            is KeyPermanentlyInvalidatedException,
-            is IllegalArgumentException -> true
+        internal fun isIrrecoverable(error: Throwable): Boolean = when {
+            error is AEADBadTagException ||
+                error is BadPaddingException ||
+                error is IllegalBlockSizeException ||
+                error is IllegalArgumentException ||
+                error.javaClass.name == "android.security.keystore.KeyPermanentlyInvalidatedException" -> true
             else -> error.cause?.let { it !== error && isIrrecoverable(it) } == true
         }
     }
