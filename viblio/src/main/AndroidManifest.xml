@@ -19,30 +19,36 @@
             </intent-filter>
         </activity>
 
-        <!-- 4 Home Screen Widget sizes (1x2, 2x2, 3x2, 4x2), all resizable -->
-        <receiver android:name="br.com.viblio.widget.ViblioWidget1x2" android:label="Viblio · Capa (1×2)" android:exported="true">
+        <!-- 5 Home Screen Widget sizes (1x1, 2x1, 3x1, 4x1, 5x1), compact 1-row & resizable -->
+        <receiver android:name="br.com.viblio.widget.ViblioWidget1x1" android:label="Viblio · Capa (1×1)" android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
-            <meta-data android:name="android.appwidget.provider" android:resource="@xml/viblio_widget_1x2_info" />
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/viblio_widget_1x1_info" />
         </receiver>
-        <receiver android:name="br.com.viblio.widget.ViblioWidget2x2" android:label="Viblio · Compacto (2×2)" android:exported="true">
+        <receiver android:name="br.com.viblio.widget.ViblioWidget2x1" android:label="Viblio · Compacto (2×1)" android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
-            <meta-data android:name="android.appwidget.provider" android:resource="@xml/viblio_widget_2x2_info" />
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/viblio_widget_2x1_info" />
         </receiver>
-        <receiver android:name="br.com.viblio.widget.ViblioWidget3x2" android:label="Viblio · Leitura (3×2)" android:exported="true">
+        <receiver android:name="br.com.viblio.widget.ViblioWidget3x1" android:label="Viblio · Leitura (3×1)" android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
-            <meta-data android:name="android.appwidget.provider" android:resource="@xml/viblio_widget_3x2_info" />
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/viblio_widget_3x1_info" />
         </receiver>
-        <receiver android:name="br.com.viblio.widget.ViblioWidget4x2" android:label="Viblio · Editorial (4×2)" android:exported="true">
+        <receiver android:name="br.com.viblio.widget.ViblioWidget4x1" android:label="Viblio · Editorial (4×1)" android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
-            <meta-data android:name="android.appwidget.provider" android:resource="@xml/viblio_widget_4x2_info" />
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/viblio_widget_4x1_info" />
+        </receiver>
+        <receiver android:name="br.com.viblio.widget.ViblioWidget5x1" android:label="Viblio · Largo (5×1)" android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/viblio_widget_5x1_info" />
         </receiver>
 
         <!-- Optional local daily reading reminder -->

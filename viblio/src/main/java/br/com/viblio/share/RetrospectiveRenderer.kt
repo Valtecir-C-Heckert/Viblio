@@ -66,7 +66,12 @@ object RetrospectiveRenderer {
             letterSpacing = 0.18f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         }
-        c.drawText("VIBLIO · RETROSPECTIVA", padX, y, kickerPaint)
+        val iconSize = 32f
+        val markTop = y - iconSize + 5f
+        val mark = br.com.viblio.ui.ViblioBookMarkDrawable(accent, Color.WHITE)
+        mark.setBounds(padX.toInt(), markTop.toInt(), (padX + iconSize).toInt(), (markTop + iconSize).toInt())
+        mark.draw(c)
+        c.drawText("VIBLIO · RETROSPECTIVA", padX + iconSize + 12f, y, kickerPaint)
         val periodW = mutedPaint.measureText(data.periodLabel.uppercase(Locale("pt", "BR")))
         c.drawText(data.periodLabel.uppercase(Locale("pt", "BR")), w - padX - periodW, y, mutedPaint)
 
@@ -209,7 +214,12 @@ object RetrospectiveRenderer {
         // Footer
         val footerY = h - 94f
         c.drawLine(padX, footerY - 46f, w - padX, footerY - 46f, linePaint)
-        c.drawText("VIBLIO", padX, footerY, mutedPaint)
+        val footIcon = 28f
+        val footTop = footerY - footIcon + 4f
+        val footMark = br.com.viblio.ui.ViblioBookMarkDrawable(accent, Color.WHITE)
+        footMark.setBounds(padX.toInt(), footTop.toInt(), (padX + footIcon).toInt(), (footTop + footIcon).toInt())
+        footMark.draw(c)
+        c.drawText("VIBLIO", padX + footIcon + 10f, footerY, mutedPaint)
         val rightFoot = data.periodLabel.uppercase(Locale("pt", "BR"))
         c.drawText(rightFoot, w - padX - mutedPaint.measureText(rightFoot), footerY, mutedPaint)
 

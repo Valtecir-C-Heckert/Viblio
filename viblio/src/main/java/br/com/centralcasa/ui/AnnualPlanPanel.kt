@@ -44,13 +44,14 @@ class AnnualPlanPanel(
     private val dialogs = mutableSetOf<AlertDialog>()
     private val numbers = NumberFormat.getIntegerInstance(Locale("pt", "BR"))
     private var goalsPanel: ReadingGoalsPanel? = null
+    private var exportDialog: AnnualPlanExportDialog? = null
     private var selectedYear = Calendar.getInstance().get(Calendar.YEAR)
     private var selectedMonth = Calendar.getInstance().get(Calendar.MONTH) + 1
     private var sagasExpanded = false
     private var closed = false
 
     val isEditing: Boolean
-        get() = dialogs.any { it.isShowing } || (goalsPanel?.isEditing == true)
+        get() = dialogs.any { it.isShowing } || (goalsPanel?.isEditing == true) || (exportDialog?.isShowing == true)
 
     private val colorGreen = Color.rgb(127, 176, 134)
     private val colorAmber = Color.rgb(226, 176, 112)
@@ -68,6 +69,8 @@ class AnnualPlanPanel(
         dialogs.clear()
         goalsPanel?.close()
         goalsPanel = null
+        exportDialog?.destroy()
+        exportDialog = null
     }
 
     private fun tracked(dialog: AlertDialog): AlertDialog {
@@ -324,6 +327,20 @@ class AnnualPlanPanel(
         }.also { topRow.addView(it, LinearLayout.LayoutParams(-2, -2)) }
 
         topRow.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f))
+
+        TextView(activity).apply {
+            tag = "plan-export-list"
+            text = "Lista"
+            textSize = 11.5f
+            setTextColor(ui.text)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            background = ui.outlined(ui.surface, ui.lineColor, 0)
+            setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(6))
+            setOnClickListener {
+                val dlg = exportDialog ?: AnnualPlanExportDialog(activity, ui).also { exportDialog = it }
+                dlg.show(summary)
+            }
+        }.also { topRow.addView(it, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) }) }
 
         TextView(activity).apply {
             tag = "goal-configure"

@@ -19,13 +19,14 @@ import br.com.centralcasa.books.BookImages
 import br.com.centralcasa.books.LibraryBook
 import br.com.centralcasa.books.LibraryRepository
 import br.com.viblio.ViblioActivity
+import br.com.viblio.ui.ViblioBookMarkDrawable
 
-enum class WidgetSize { SIZE_1X2, SIZE_2X2, SIZE_3X2, SIZE_4X2 }
+enum class WidgetSize { SIZE_1X1, SIZE_2X1, SIZE_3X1, SIZE_4X1, SIZE_5X1 }
 
 /**
- * Shared editorial Home Screen widget provider supporting 1x2, 2x2, 3x2 and 4x2 sizes
+ * Shared 1-row editorial Home Screen widget provider supporting 1x1, 2x1, 3x1, 4x1 and 5x1 sizes
  * with dynamic resize adaptation, real current-book cover (memory-bounded for RemoteViews IPC),
- * and cover-derived accent color.
+ * cover-derived accent color, and the Viblio book icon (book cover color + white pages) beside VIBLIO.
  */
 abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
@@ -75,13 +76,7 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
 
     private fun resolveSize(options: Bundle?, fallback: WidgetSize): WidgetSize {
         val minW = options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0) ?: 0
-        if (minW <= 0) return fallback
-        return when {
-            minW < 105 -> WidgetSize.SIZE_1X2
-            minW < 175 -> WidgetSize.SIZE_2X2
-            minW < 245 -> WidgetSize.SIZE_3X2
-            else -> WidgetSize.SIZE_4X2
-        }
+        return resolveWidgetSize(minW, fallback)
     }
 
     private class WidgetSnapshot(
@@ -101,6 +96,27 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
         private const val MAX_COVER_W = 240
         private const val MAX_COVER_H = 360
         private val widgetExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+        internal fun resolveWidgetSize(minWidthDp: Int, fallback: WidgetSize): WidgetSize {
+            if (minWidthDp <= 0) return fallback
+            return when {
+                minWidthDp < 100 -> WidgetSize.SIZE_1X1
+                minWidthDp < 165 -> WidgetSize.SIZE_2X1
+                minWidthDp < 230 -> WidgetSize.SIZE_3X1
+                minWidthDp < 295 -> WidgetSize.SIZE_4X1
+                else -> WidgetSize.SIZE_5X1
+            }
+        }
+
+        internal fun brandMarkBitmap(coverColor: Int, sizePx: Int = 48): Bitmap {
+            val s = sizePx.coerceIn(16, 128)
+            val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            val drawable = ViblioBookMarkDrawable(coverColor, Color.WHITE)
+            drawable.setBounds(0, 0, s, s)
+            drawable.draw(canvas)
+            return bmp
+        }
 
         private fun loadSnapshot(context: Context): WidgetSnapshot {
             val repo = LibraryRepository(context)
@@ -123,10 +139,11 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
             val appCtx = context.applicationContext
             val manager = runCatching { AppWidgetManager.getInstance(appCtx) }.getOrNull() ?: return
             val providers = listOf(
-                ViblioWidget1x2::class.java to WidgetSize.SIZE_1X2,
-                ViblioWidget2x2::class.java to WidgetSize.SIZE_2X2,
-                ViblioWidget3x2::class.java to WidgetSize.SIZE_3X2,
-                ViblioWidget4x2::class.java to WidgetSize.SIZE_4X2,
+                ViblioWidget1x1::class.java to WidgetSize.SIZE_1X1,
+                ViblioWidget2x1::class.java to WidgetSize.SIZE_2X1,
+                ViblioWidget3x1::class.java to WidgetSize.SIZE_3X1,
+                ViblioWidget4x1::class.java to WidgetSize.SIZE_4X1,
+                ViblioWidget5x1::class.java to WidgetSize.SIZE_5X1,
             )
             val targets = providers.flatMap { (cls, defSize) ->
                 val ids = runCatching { manager.getAppWidgetIds(ComponentName(appCtx, cls)) }.getOrNull() ?: IntArray(0)
@@ -138,12 +155,7 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
                 targets.forEach { (id, defSize) ->
                     val opts = manager.getAppWidgetOptions(id)
                     val minW = opts?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0) ?: 0
-                    val size = if (minW <= 0) defSize else when {
-                        minW < 105 -> WidgetSize.SIZE_1X2
-                        minW < 175 -> WidgetSize.SIZE_2X2
-                        minW < 245 -> WidgetSize.SIZE_3X2
-                        else -> WidgetSize.SIZE_4X2
-                    }
+                    val size = resolveWidgetSize(minW, defSize)
                     runCatching { updateOne(appCtx, manager, id, size, snap) }
                 }
             } finally {
@@ -200,10 +212,11 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
 
         private fun updateOne(context: Context, manager: AppWidgetManager, widgetId: Int, size: WidgetSize, snap: WidgetSnapshot) {
             val layoutId = when (size) {
-                WidgetSize.SIZE_1X2 -> R.layout.widget_reading_1x2
-                WidgetSize.SIZE_2X2 -> R.layout.widget_reading_2x2
-                WidgetSize.SIZE_3X2 -> R.layout.widget_reading_3x2
-                WidgetSize.SIZE_4X2 -> R.layout.widget_reading_4x2
+                WidgetSize.SIZE_1X1 -> R.layout.widget_reading_1x1
+                WidgetSize.SIZE_2X1 -> R.layout.widget_reading_2x1
+                WidgetSize.SIZE_3X1 -> R.layout.widget_reading_3x1
+                WidgetSize.SIZE_4X1 -> R.layout.widget_reading_4x1
+                WidgetSize.SIZE_5X1 -> R.layout.widget_reading_5x1
             }
             val views = RemoteViews(context.packageName, layoutId)
             val book = snap.book
@@ -216,34 +229,31 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
             }
             val progBmp = progressBitmap(pct, readableAccent)
             var barBmp: Bitmap? = null
+            var markBmp: Bitmap? = null
             try {
                 views.setImageViewBitmap(R.id.widget_cover, snap.coverBmp)
                 views.setImageViewBitmap(R.id.widget_progress_img, progBmp)
 
-                if (size != WidgetSize.SIZE_1X2) {
+                if (size != WidgetSize.SIZE_1X1) {
                     barBmp = solidBitmap(readableAccent)
                     views.setImageViewBitmap(R.id.widget_accent_bar, barBmp)
-                    views.setTextColor(R.id.widget_kicker, readableAccent)
                     if (book != null) {
-                        views.setTextViewText(R.id.widget_kicker, if (size == WidgetSize.SIZE_2X2) "LENDO" else "LENDO AGORA")
                         views.setTextViewText(R.id.widget_title, book.title)
-                        views.setTextViewText(R.id.widget_author, book.author.ifBlank { book.saga })
                         val pagesText = when {
                             !book.pagesKnown -> if (book.complete) "Concluído" else "Em andamento"
-                            size == WidgetSize.SIZE_2X2 -> "${book.currentPage} / ${book.totalPages} ›"
-                            size == WidgetSize.SIZE_3X2 -> "${book.currentPage}/${book.totalPages} · $pct%"
-                            else -> "${book.currentPage} / ${book.totalPages} págs · $pct%"
+                            size == WidgetSize.SIZE_2X1 -> "${book.currentPage}/${book.totalPages}"
+                            size == WidgetSize.SIZE_3X1 -> "${book.currentPage}/${book.totalPages} págs · $pct%"
+                            size == WidgetSize.SIZE_4X1 -> "${book.currentPage} / ${book.totalPages} págs · $pct%"
+                            else -> "${book.currentPage} / ${book.totalPages} págs · $pct% concluído"
                         }
                         views.setTextViewText(R.id.widget_pages, pagesText)
                     } else {
-                        views.setTextViewText(R.id.widget_kicker, "VIBLIO")
                         views.setTextViewText(R.id.widget_title, "Nenhuma leitura atual")
-                        views.setTextViewText(R.id.widget_author, "Toque para abrir a Estante")
-                        views.setTextViewText(R.id.widget_pages, "")
+                        views.setTextViewText(R.id.widget_pages, "Abrir Estante")
                     }
                 }
 
-                if (size == WidgetSize.SIZE_1X2 || size == WidgetSize.SIZE_2X2) {
+                if (size == WidgetSize.SIZE_1X1 || size == WidgetSize.SIZE_2X1) {
                     views.setTextColor(R.id.widget_percent, readableAccent)
                     val pctText = when {
                         book == null -> "—"
@@ -253,9 +263,30 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
                     }
                     views.setTextViewText(R.id.widget_percent, pctText)
                 }
-                if (size == WidgetSize.SIZE_4X2) {
+
+                if (size == WidgetSize.SIZE_3X1 || size == WidgetSize.SIZE_4X1 || size == WidgetSize.SIZE_5X1) {
+                    markBmp = brandMarkBitmap(readableAccent, 48)
+                    views.setImageViewBitmap(R.id.widget_brand_icon, markBmp)
+                    views.setTextColor(R.id.widget_kicker, readableAccent)
+                    val kicker = when {
+                        book == null -> "VIBLIO"
+                        size == WidgetSize.SIZE_3X1 -> "LENDO"
+                        else -> "LENDO AGORA"
+                    }
+                    views.setTextViewText(R.id.widget_kicker, kicker)
+                }
+
+                if (size == WidgetSize.SIZE_4X1 || size == WidgetSize.SIZE_5X1) {
+                    // 5x1 intentionally omits saga for a cleaner layout (title + author only).
+                    val authorText = if (book != null) book.author else "Toque para abrir a Estante"
+                    views.setTextViewText(R.id.widget_author, authorText)
                     views.setTextColor(R.id.widget_cta, readableAccent)
-                    views.setTextViewText(R.id.widget_cta, if (book != null) "Continuar ›" else "Abrir ›")
+                    val ctaText = when {
+                        book == null -> "Abrir ›"
+                        size == WidgetSize.SIZE_5X1 -> "Continuar leitura ›"
+                        else -> "Continuar ›"
+                    }
+                    views.setTextViewText(R.id.widget_cta, ctaText)
                 }
 
                 val openIntent = if (book != null) {
@@ -274,6 +305,7 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
             } finally {
                 if (!progBmp.isRecycled) progBmp.recycle()
                 if (barBmp != null && !barBmp.isRecycled) barBmp.recycle()
+                if (markBmp != null && !markBmp.isRecycled) markBmp.recycle()
             }
         }
 
@@ -287,7 +319,8 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
     }
 }
 
-class ViblioWidget1x2 : BaseViblioReadingWidget(WidgetSize.SIZE_1X2)
-class ViblioWidget2x2 : BaseViblioReadingWidget(WidgetSize.SIZE_2X2)
-class ViblioWidget3x2 : BaseViblioReadingWidget(WidgetSize.SIZE_3X2)
-class ViblioWidget4x2 : BaseViblioReadingWidget(WidgetSize.SIZE_4X2)
+class ViblioWidget1x1 : BaseViblioReadingWidget(WidgetSize.SIZE_1X1)
+class ViblioWidget2x1 : BaseViblioReadingWidget(WidgetSize.SIZE_2X1)
+class ViblioWidget3x1 : BaseViblioReadingWidget(WidgetSize.SIZE_3X1)
+class ViblioWidget4x1 : BaseViblioReadingWidget(WidgetSize.SIZE_4X1)
+class ViblioWidget5x1 : BaseViblioReadingWidget(WidgetSize.SIZE_5X1)

@@ -34,3 +34,91 @@ data class PeriodReading(val bookIds:Set<String>,val pages:Long,val durationMs:L
         }
     }
 }
+
+data class PeriodBarBucket(val label:String,val value:Long,val targetAnchor:String? = null)
+
+object PeriodInsights {
+    /** Signed percentage change vs previous period, or null when previous had 0 pages. */
+    fun deltaPercent(current:Long,previous:Long):Int? {
+        if(previous<=0L) return null
+        return kotlin.math.round(((current-previous).toDouble()/previous.toDouble())*100.0).toInt()
+    }
+
+    fun buckets(
+        anchor:String,
+        unit:ReadingPeriodUnit,
+        books:List<LibraryBook>,
+        sessions:List<ReadingSession>,
+        dates:List<ReadingDate>,
+    ):List<PeriodBarBucket> {
+        val byId=books.filterNot {it.archived}.associateBy {it.id}
+        val range=ReadingPeriods.range(anchor,unit)
+        val summary=PeriodReading.from(books,sessions,dates,range)
+        return when(unit){
+            ReadingPeriodUnit.YEAR -> {
+                val monthInitials=listOf("J","F","M","A","M","J","J","A","S","O","N","D")
+                ReadingPeriods.months(anchor).mapIndexed { idx,m ->
+                    val data=PeriodReading.from(books,sessions,dates,m)
+                    val done=PeriodCompletions.completedBookIds(books,sessions,dates,m).size.toLong()
+                    val v=if(data.pages>0L) data.pages else done
+                    PeriodBarBucket(monthInitials[idx],v,m.start)
+                }
+            }
+            ReadingPeriodUnit.MONTH -> {
+                val pagesByDay=summary.sessions
+                    .filter {byId[it.bookId]?.pagesKnown==true}
+                    .groupBy {it.readingDay ?: ReadingDays.at(it.startedAt)}
+                    .mapValues {(_,list)->list.sumOf {it.pages.coerceAtLeast(0).toLong()}}
+                val activeDates=summary.dates.map {it.day}.toSet()
+                val year=range.start.substring(0,4).toInt()
+                val month=range.start.substring(5,7).toInt()
+                val cal=Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {clear();set(year,month-1,1)}
+                val daysInMonth=cal.getActualMaximum(Calendar.DAY_OF_MONTH)
+                val weekCount=((daysInMonth-1)/7)+1
+                (0 until weekCount).map { wIdx ->
+                    val dStart=wIdx*7+1
+                    val dEnd=minOf(dStart+6,daysInMonth)
+                    var total=0L
+                    var touches=0L
+                    for(d in dStart..dEnd){
+                        val key=String.format(Locale.US,"%04d-%02d-%02d",year,month,d)
+                        total+=pagesByDay[key] ?: 0L
+                        if(key in activeDates || (pagesByDay[key] ?: 0L)>0L) touches++
+                    }
+                    val v=if(summary.pages>0L) total else touches
+                    PeriodBarBucket("Sem ${wIdx+1}",v)
+                }
+            }
+            ReadingPeriodUnit.WEEK -> {
+                val dayLabels=listOf("S","T","Q","Q","S","S","D")
+                val fmt=SimpleDateFormat("yyyy-MM-dd",Locale.US).apply {timeZone=TimeZone.getTimeZone("UTC");isLenient=false}
+                val startCal=Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {time=fmt.parse(range.start)!!}
+                val pagesByDay=summary.sessions
+                    .filter {byId[it.bookId]?.pagesKnown==true}
+                    .groupBy {it.readingDay ?: ReadingDays.at(it.startedAt)}
+                    .mapValues {(_,list)->list.sumOf {it.pages.coerceAtLeast(0).toLong()}}
+                val activeDates=summary.dates.map {it.day}.toSet()
+                (0 until 7).map { i ->
+                    val c=(startCal.clone() as Calendar).apply {add(Calendar.DAY_OF_YEAR,i)}
+                    val key=fmt.format(c.time)
+                    val p=pagesByDay[key] ?: 0L
+                    val v=if(summary.pages>0L) p else if(key in activeDates) 1L else 0L
+                    PeriodBarBucket(dayLabels[i],v,key)
+                }
+            }
+            ReadingPeriodUnit.DAY -> {
+                val slots=listOf("00–06h" to (0..5),"06–12h" to (6..11),"12–18h" to (12..17),"18–24h" to (18..23))
+                val cal=Calendar.getInstance()
+                val pagesByHour=IntArray(24)
+                summary.sessions.forEach { s ->
+                    if(byId[s.bookId]?.pagesKnown==true){
+                        cal.timeInMillis=s.startedAt
+                        val h=cal.get(Calendar.HOUR_OF_DAY).coerceIn(0,23)
+                        pagesByHour[h]+=s.pages.coerceAtLeast(0)
+                    }
+                }
+                slots.map { (lbl,hrs) -> PeriodBarBucket(lbl,hrs.sumOf {pagesByHour[it].toLong()}) }
+            }
+        }
+    }
+}

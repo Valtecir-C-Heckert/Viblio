@@ -22,6 +22,13 @@ data class YearHeatmapSummary(
     val weeks: List<List<String?>>, // Each inner list has 7 entries (Sun..Sat); null outside [year]
 )
 
+data class MonthHeatmapGrid(
+    val year: Int,
+    val month: Int, // 1..12
+    val activeDaysInMonth: Int,
+    val rows: List<List<String?>>, // Each row has 7 entries (Sun..Sat); null outside [month]
+)
+
 data class RetrospectiveBook(
     val id: String,
     val title: String,
@@ -198,6 +205,41 @@ object ReadingHeatmap {
             bestStreak = bestStreakIn(sortedYearDays),
             weeks = weeks,
         )
+    }
+
+    fun shiftMonth(year: Int, month: Int, delta: Int): Pair<Int, Int> {
+        val total = (year * 12 + (month.coerceIn(1, 12) - 1)) + delta
+        val minTotal = 2020 * 12
+        val maxTotal = 2100 * 12 + 11
+        val clamped = total.coerceIn(minTotal, maxTotal)
+        return (clamped / 12) to (clamped % 12 + 1)
+    }
+
+    fun monthGrid(year: Int, month: Int, summary: YearHeatmapSummary): MonthHeatmapGrid {
+        val m = month.coerceIn(1, 12)
+        val fmt = utcDayFormatter()
+        val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+            clear()
+            set(year, m - 1, 1)
+        }
+        val rows = mutableListOf<MutableList<String?>>()
+        var currentRow = MutableList<String?>(7) { null }
+        var activeCount = 0
+        while (cal.get(Calendar.YEAR) == year && cal.get(Calendar.MONTH) == m - 1) {
+            val dow = cal.get(Calendar.DAY_OF_WEEK) - Calendar.SUNDAY // 0=Sun..6=Sat
+            val dayStr = fmt.format(cal.time)
+            currentRow[dow] = dayStr
+            if (dayStr in summary.daysByDate) activeCount++
+            if (dow == 6) {
+                rows.add(currentRow)
+                currentRow = MutableList(7) { null }
+            }
+            cal.add(Calendar.DAY_OF_MONTH, 1)
+        }
+        if (currentRow.any { it != null }) {
+            rows.add(currentRow)
+        }
+        return MonthHeatmapGrid(year = year, month = m, activeDaysInMonth = activeCount, rows = rows)
     }
 
     fun hasReadToday(

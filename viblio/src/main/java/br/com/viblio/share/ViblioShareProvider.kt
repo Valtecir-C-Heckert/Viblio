@@ -19,7 +19,7 @@ class ViblioShareProvider : ContentProvider() {
     companion object {
         const val AUTHORITY = "br.com.viblio.share"
         private const val SUBDIR = "wrapped"
-        private val SAFE_NAME = Regex("^[a-z0-9_-]{1,64}\\.png$")
+        private val SAFE_NAME = Regex("^[a-z0-9_-]{1,64}\\.(png|pdf)$")
 
         fun directory(context: Context): File = File(context.cacheDir, SUBDIR).apply { mkdirs() }
 
@@ -32,7 +32,7 @@ class ViblioShareProvider : ContentProvider() {
                 .build()
         }
 
-        fun pruneOld(context: Context, keepMax: Int = 6) {
+        fun pruneOld(context: Context, keepMax: Int = 8) {
             val dir = directory(context)
             val files = dir.listFiles()?.filter { it.isFile && SAFE_NAME.matches(it.name) }
                 ?.sortedByDescending { it.lastModified() } ?: return
@@ -60,7 +60,10 @@ class ViblioShareProvider : ContentProvider() {
         return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
     }
 
-    override fun getType(uri: Uri): String = "image/png"
+    override fun getType(uri: Uri): String {
+        val name = uri.pathSegments.singleOrNull().orEmpty()
+        return if (name.endsWith(".pdf")) "application/pdf" else "image/png"
+    }
 
     override fun query(
         uri: Uri,
