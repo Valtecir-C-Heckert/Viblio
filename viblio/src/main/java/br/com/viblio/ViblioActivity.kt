@@ -48,12 +48,32 @@ class ViblioActivity : Activity() {
     private var needsRender=false
     private var started=false
     private var themeBookKey:String?=null
+    private fun cachedIntroCoverColor():Int {
+        if(needsLogin())return ui.accent
+        val prefs=getSharedPreferences("viblio_intro",MODE_PRIVATE)
+        return if(prefs.contains("cover_color"))prefs.getInt("cover_color",ui.accent) else ui.accent
+    }
+    private fun saveIntroCoverColor(color:Int?) {
+        val editor=getSharedPreferences("viblio_intro",MODE_PRIVATE).edit()
+        if(color==null)editor.remove("cover_color") else editor.putInt("cover_color",color)
+        editor.apply()
+    }
     private fun updateReadingTheme(){
-        if(needsLogin()){themeBookKey=null;ui.readingColor(null);return}
+        if(needsLogin()){themeBookKey=null;ui.readingColor(null);saveIntroCoverColor(null);return}
         val source=library;val key=source.currentAppearanceKey()
         if(key==themeBookKey)return
         themeBookKey=key
-        navigationCovers.execute {val color=runCatching {source.currentReadingColor()}.getOrNull();root.post {if(!isDestroyed && library===source && themeBookKey==key && !needsLogin() && ui.readingColor(color))render()}}
+        navigationCovers.execute {
+            val color=runCatching {source.currentReadingColor()}.getOrNull()
+            root.post {
+                if(!isDestroyed && library===source && themeBookKey==key && !needsLogin()){
+                    val changed=ui.readingColor(color)
+                    saveIntroCoverColor(ui.accent)
+                    introView?.updateCoverColor(ui.accent)
+                    if(changed)render()
+                }
+            }
+        }
     }
     private val positions=mutableMapOf<String,Int>()
 
@@ -64,6 +84,9 @@ class ViblioActivity : Activity() {
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+        if(android.os.Build.VERSION.SDK_INT >= 31){
+            splashScreen.setOnExitAnimationListener { it.remove() }
+        }
         ui = DisplayUi(this).apply {readingColor(null)}
         root = FrameLayout(this)
         content = ui.column().apply { setPadding(ui.dp(20), ui.dp(12), ui.dp(20), ui.dp(24)) }
@@ -113,13 +136,17 @@ class ViblioActivity : Activity() {
         tab=state?.getString("viblio.tab").takeIf { it in listOf("shelf","search","stats","account","friends") } ?: "shelf"
         listOf("shelf","search","stats","account","friends").forEach { positions[it]=state?.getInt("viblio.position.$it",0) ?: 0 }
         render()
-        scroll.post { scroll.scrollTo(0,positions[tab] ?: 0) }
-        root.requestApplyInsets()
         val isDeepLink=intent?.action==Intent.ACTION_VIEW && intent.data?.scheme=="viblio"
+        if(state==null && !needsLogin() && !isDeepLink && tab=="shelf" && library.repository.current()!=null){
+            library.openCurrent()
+        } else {
+            scroll.post { scroll.scrollTo(0,positions[tab] ?: 0) }
+        }
+        root.requestApplyInsets()
         openIncomingReading(intent)
         if(state==null && !introPlayed && !isDeepLink && br.com.viblio.ui.ViblioIntroView.animatorsEnabled(this)){
             introPlayed=true
-            val overlay=br.com.viblio.ui.ViblioIntroView(this,ui.accent){
+            val overlay=br.com.viblio.ui.ViblioIntroView(this,cachedIntroCoverColor()){
                 introView?.let {view->root.removeView(view)}
                 introView=null
             }
@@ -144,7 +171,7 @@ class ViblioActivity : Activity() {
         jsonAllowed={accounts.signedIn && accounts.admin};useGroupedReadingHistory=true;useContrastCoverBorders=true;useSpineLayout=true;useCollectionInventory=true;useAsyncShelfImages=true;useCoverProgressColor=true;useManualShelfOrder=true;usePersonalArchive=true;separateShelfStatistics=true;pinchStep=1.4
     }
     private fun reloadProfile() {
-        themeBookKey=null;ui.readingColor(null)
+        themeBookKey=null;ui.readingColor(null);saveIntroCoverColor(null)
         if(!accounts.signedIn)offline=false
         library.onStop();library.onDestroy();statistics?.onDestroy();statistics=null
         search.close();catalog.close();friends.close();friends=makeFriends()
@@ -188,7 +215,7 @@ class ViblioActivity : Activity() {
             navigation.visibility=android.view.View.GONE
             applyBackground(ui)
             scroll.moveBook=null;scroll.pinchColumns=null;scroll.canPinchAt={_,_->false}
-            account.renderLogin(content){offline=true;tab="shelf";render();if(started)library.onStart();scroll.scrollTo(0,0);openIncomingReading(intent)}
+            account.renderLogin(content){offline=true;tab="shelf";if(library.repository.current()!=null)library.openCurrent() else render();if(started)library.onStart();scroll.scrollTo(0,0);openIncomingReading(intent)}
             return
         }
         when(tab) {
@@ -218,8 +245,7 @@ class ViblioActivity : Activity() {
             navigation.addView(item,LinearLayout.LayoutParams(0,-1,1f).apply { marginStart=navUi.dp(2);marginEnd=navUi.dp(2) })
             val image=ImageView(this).apply {
                 when(key){
-                    "current" -> {setImageResource(R.drawable.ic_books_nav);setColorFilter(if(selectedTab==key)navUi.accent else navUi.muted)}
-                    "shelf" -> {setImageResource(R.drawable.ic_books_nav);setColorFilter(if(selectedTab==key) navUi.accent else navUi.muted)}
+                    "current","shelf" -> setImageDrawable(if(selectedTab==key) br.com.viblio.ui.ViblioBookMarkDrawable(navUi.accent,Color.WHITE) else br.com.viblio.ui.ViblioBookMarkDrawable(navUi.muted,navUi.muted))
                     else -> setImageDrawable(navUi.symbol(icon,if(selectedTab==key) navUi.accent else navUi.muted,25))
                 }
                 importantForAccessibility=android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO

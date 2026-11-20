@@ -26,7 +26,7 @@ class AccountPanel(private val activity:Activity,private val ui:DisplayUi,privat
     fun render(parent:LinearLayout,login:Boolean=false,offline:(()->Unit)?=null) {
         if(!login){val header=ui.row();parent.addView(header);ui.icon(header,"back","Voltar à Estante",44){shelf()};ui.label(header,if(ui.rectilinear)"CONTA" else "Conta",32,bold=true).apply {typeface=Typeface.create("serif",if(ui.rectilinear)Typeface.NORMAL else Typeface.BOLD);layoutParams=LinearLayout.LayoutParams(0,-2,1f)}}
         val brand=ui.row().apply {gravity=Gravity.CENTER_VERTICAL;setPadding(0,ui.dp(if(login)28 else 16),0,ui.dp(24))};parent.addView(brand)
-        brand.addView(ImageView(activity).apply {setImageResource(R.drawable.ic_books_nav);setColorFilter(ui.text);contentDescription="Viblio"},LinearLayout.LayoutParams(ui.dp(52),ui.dp(52)).apply {marginEnd=ui.dp(14)})
+        brand.addView(ImageView(activity).apply {setImageDrawable(ViblioBookMarkDrawable(ui.accent,android.graphics.Color.WHITE));contentDescription="Viblio"},LinearLayout.LayoutParams(ui.dp(52),ui.dp(52)).apply {marginEnd=ui.dp(14)})
         val name=ui.column();brand.addView(name);ui.label(name,"Viblio",34,bold=true).typeface=Typeface.create("serif",Typeface.BOLD);ui.label(name,"Sua estante, do seu jeito",13,ui.muted)
         val card=ui.column().apply {setPadding(ui.dp(18),ui.dp(18),ui.dp(18),ui.dp(18));background=ui.outlined(if(ui.rectilinear)ui.surface else 0xff141719.toInt(),if(ui.rectilinear)ui.lineColor else 0xff303639.toInt(),24)};parent.addView(card)
         if(accounts.signedIn){
