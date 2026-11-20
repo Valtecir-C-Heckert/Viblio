@@ -33,7 +33,34 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
     private fun title(parent:LinearLayout,value:String,size:Int=21,color:Int=ui.text)=ui.label(parent,value,size,color).apply {typeface=Typeface.create("serif",Typeface.NORMAL);includeFontPadding=true}
     private fun defaultName(metric:GoalMetric)=when(metric){GoalMetric.PAGES->"Páginas lidas";GoalMetric.BOOKS->"Livros concluídos";GoalMetric.PURCHASE->"Próxima compra"}
     private fun kindName(kind:String)=mapOf("book" to "Livros","manga" to "Mangás","comic" to "Quadrinhos","all" to "Todos").getValue(kind)
-    fun openCreateDialog(){edit(null)}
+    fun openCreateDialog(defaultMetric:GoalMetric?=null){edit(null,defaultMetric)}
+    fun openGoalDetailDialog(entry:ReadingGoalStore.Entry){
+        if(!valid())return
+        val goal=entry.goal ?: return
+        openGoals.add(goal.id)
+        val body=ui.column().apply {setPadding(ui.dp(16),ui.dp(12),ui.dp(16),ui.dp(12))}
+        renderEntries(body,listOf(entry))
+        var dlg:AlertDialog?=null
+        dlg=tracked(AlertDialog.Builder(activity)
+            .setView(ScrollView(activity).apply {addView(body)})
+            .setPositiveButton("Fechar",null)
+            .setNeutralButton("Editar"){_,_->dlg?.dismiss();edit(entry)}
+            .create())
+    }
+    fun openAllGoalsDialog(){
+        if(!valid())return
+        val entries=store.entries()
+        val body=ui.column().apply {setPadding(ui.dp(16),ui.dp(12),ui.dp(16),ui.dp(12))}
+        if(entries.isEmpty()) ui.label(body,"Nenhuma meta cadastrada.",12,ui.muted)
+        else renderEntries(body,entries)
+        var dlg:AlertDialog?=null
+        dlg=tracked(AlertDialog.Builder(activity)
+            .setTitle("Todas as metas")
+            .setView(ScrollView(activity).apply {addView(body)})
+            .setPositiveButton("Fechar",null)
+            .setNeutralButton("+ Nova meta"){_,_->dlg?.dismiss();edit(null)}
+            .create())
+    }
     fun renderEmbedded(parent:LinearLayout){
         if(!valid())return
         val section=ui.column().apply {tag="reading-goals-embedded";setPadding(ui.dp(12),ui.dp(10),ui.dp(12),ui.dp(10));background=ui.outlined(ui.surface,ui.lineColor,0)}
@@ -222,7 +249,7 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
         tracked(builder.create())
     }
     private fun remove(entry:ReadingGoalStore.Entry){tracked(AlertDialog.Builder(activity).setTitle("Remover meta?").setPositiveButton("Remover"){_,_->mutate {store.remove(entry)}}.setNegativeButton("Cancelar",null).create())}
-    private fun edit(entry:ReadingGoalStore.Entry?){
+    private fun edit(entry:ReadingGoalStore.Entry?,defaultMetric:GoalMetric?=null){
         if(!valid())return
         val old=entry?.goal
         val body=ui.column().apply {setPadding(ui.dp(20),ui.dp(8),ui.dp(20),ui.dp(8))}
@@ -230,7 +257,7 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
         fun input(hint:String,limit:Int,numeric:Boolean=false)=EditText(activity).apply {this.hint=hint;isSingleLine=true;filters=arrayOf(android.text.InputFilter.LengthFilter(limit));inputType=if(numeric)android.text.InputType.TYPE_CLASS_NUMBER else android.text.InputType.TYPE_CLASS_TEXT;setTextColor(ui.text);setHintTextColor(ui.muted);body.addView(this,LinearLayout.LayoutParams(-1,ui.dp(48)))}
         text("Nome da meta");val name=input("Nome",80).apply {tag="goal-name";setText(old?.name.orEmpty())}
         fun spinner(label:String,options:List<String>,position:Int)=Spinner(activity).apply {text(label);adapter=ArrayAdapter(activity,android.R.layout.simple_spinner_dropdown_item,options);setSelection(position);body.addView(this,LinearLayout.LayoutParams(-1,ui.dp(44)));contentDescription=label}
-        val metric=spinner("Tipo",GoalMetric.entries.map {it.label},old?.metric?.ordinal ?: 0).apply {isEnabled=old==null;tag="goal-metric"}
+        val metric=spinner("Tipo",GoalMetric.entries.map {it.label},old?.metric?.ordinal ?: defaultMetric?.ordinal ?: 0).apply {isEnabled=old==null;tag="goal-metric"}
         val targetLabel=text("Quantidade")
         val target=input("Quantidade",8,true).apply {tag="goal-target";setText((old?.target ?: 12).toString())}
         val rewardLabel=text("Livros para comprar");val reward=input("Quantidade",3,true).apply {tag="goal-reward";setText((old?.reward ?: 1).toString())}

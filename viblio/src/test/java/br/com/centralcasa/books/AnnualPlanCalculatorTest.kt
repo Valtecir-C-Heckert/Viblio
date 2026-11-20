@@ -46,44 +46,22 @@ class AnnualPlanCalculatorTest {
             dailyPagesTarget = 30,
             monthlyBooksTarget = 2,
             entries = listOf(
-                // Past month 1 (Jan): 1 book completed with 900 pages -> meets 30p/day * 31 * 0.85 -> COMPLETED (Green)
                 PlanEntry(month = 1, position = 0, kind = PlanEntryKind.SHELF_BOOK, bookId = "b1"),
-                // Past month 2 (Feb): 1 unfinished book -> MISSED (Red!)
                 PlanEntry(month = 2, position = 0, kind = PlanEntryKind.SHELF_BOOK, bookId = "b2"),
-                // Current month 6 (Jun, day 21 -> 10 remaining days): 300 remaining pages -> 30.0 p/day -> ON_PACE (Green)
                 PlanEntry(month = 6, position = 0, kind = PlanEntryKind.SHELF_BOOK, bookId = "b3"),
-                // Future month 7 (Jul, 31 days): 1250 pages -> 40.3 p/day > 30 -> INTENSE (Amber/Gold, NOT Red!)
                 PlanEntry(month = 7, position = 0, kind = PlanEntryKind.SHELF_BOOK, bookId = "b4"),
                 PlanEntry(month = 7, position = 1, kind = PlanEntryKind.SHELF_BOOK, bookId = "b5"),
             ),
         ).validated()
 
-        // Timed session in Jan: 900 pages -> 45 pages/hour (20h)
-        val janSession = ReadingSession(
-            id = "s1",
-            bookId = "b1",
-            startedAt = 1000L,
-            finishedAt = 72_001_000L,
-            durationMs = 72_000_000L,
-            startPage = 0,
-            endPage = 900,
-            readingDay = "2027-01-15",
-        )
-        // Partial session in Feb: 50 pages read -> barProgress should reflect real pages read (not 0 and not 100%)
-        val febSession = ReadingSession(
-            id = "s2",
-            bookId = "b2",
-            startedAt = 2000L,
-            finishedAt = 3_602_000L,
-            durationMs = 3_600_000L,
-            startPage = 0,
-            endPage = 50,
-            readingDay = "2027-02-10",
-        )
+        val janSession = ReadingSession("s1", "b1", 1000L, 72_001_000L, 72_000_000L, 0, 900, "2027-01-15")
+        val febSession = ReadingSession("s2", "b2", 2000L, 3_602_000L, 3_600_000L, 0, 50, "2027-02-10")
+
         val summary = AnnualPlanCalculator.summarizeAt(
             plan = plan,
             books = listOf(bDone, bPendingPast, bCurrent, bHeavy1, bHeavy2),
             sessions = listOf(janSession, febSession),
+            currentBookId = "b3",
             todayYear = 2027,
             todayMonth = 6,
             todayDay = 21,
@@ -93,14 +71,15 @@ class AnnualPlanCalculatorTest {
         assertTrue(summary.months[0].barProgress >= 0.95)
         assertEquals(MonthHealth.MISSED, summary.months[1].health)    // Feb (past & unfinished -> RED)
         assertTrue(summary.months[1].barProgress in 0.01..0.50)       // Real partial read progress in Feb!
-        // Jun has bCurrent (300 rem) + auto-included bPendingPast (330 rem, currently reading!)
-        assertTrue(summary.months[5].items.any { it.bookId == "b3" && it.status == PlanItemStatus.READING })
-        assertTrue(summary.months[5].items.any { it.bookId == "b2" && it.isAutoActivity && it.status == PlanItemStatus.READING })
+        // Jun has ONLY bCurrent (300 rem / 10 days = 30.0 p/day -> ON_PACE); paused bPendingPast MUST NOT invade Jun!
+        assertEquals(1, summary.months[5].items.size)
+        assertEquals("b3", summary.months[5].items.first().bookId)
+        assertEquals(MonthHealth.ON_PACE, summary.months[5].health)
+        assertEquals(30.0, summary.months[5].pacePagesPerDay, 0.01)
         assertEquals(MonthHealth.INTENSE, summary.months[6].health)   // Jul (heavy future -> AMBER, never RED!)
         assertEquals(0.0, summary.months[6].barProgress, 0.001)       // Nothing read in Jul yet -> bar is 0%
         assertEquals(MonthHealth.EMPTY, summary.months[7].health)     // Aug
 
-        // Saga tracking: The Witcher has 4 books in shelf/plan, 1 completed
         val witcher = summary.sagas.firstOrNull { it.name == "The Witcher" }
         assertNotNull(witcher)
         assertEquals(1, witcher!!.completedCount)
@@ -111,65 +90,72 @@ class AnnualPlanCalculatorTest {
     }
 
     @Test
-    fun autoPopulatesCompletedReadAndCurrentlyReadingBooksWithoutDuplication() {
-        // Book A: read in Oct (150p), completed in Nov (150p -> 300p)
-        val bMultiMonth = book("a", "Duna", 300, currentPage = 300)
-        // Book B: completed manually with ReadingDate in Nov (no sessions)
-        val bManualDate = book("b", "O Hobbit", 250, currentPage = 250)
-        // Book C: currently being read (no session in Nov, still appears automatically in current month Nov!)
-        val bReadingNow = book("c", "Mistborn", 500, currentPage = 120)
+    fun ignoresUndatedCatalogedBooksAndPausedOlderBooks() {
+        // Cataloged old read book: complete == true, updatedAt == TODAY, NO sessions, NO ReadingDates -> MUST NOT appear!
+        val bOldCataloged = book("old_no_date", "O Nome do Vento", 656, currentPage = 656, updatedAt = System.currentTimeMillis())
+        // Paused older book: currentPage > 0, NOT currentBookId, NO session in Nov -> MUST NOT appear in Nov!
+        val bPausedOld = book("paused_old", "Guerra dos Tronos", 592, currentPage = 90)
+        // Active current book -> MUST appear automatically as READING in current month (Nov)!
+        val bActiveCurrent = book("active_now", "Mistborn", 500, currentPage = 120)
+        // Book completed via ReadingDate in Nov -> MUST appear as COMPLETED in Nov!
+        val bManualDate = book("dated_nov", "O Hobbit", 250, currentPage = 250)
+        // Book read in Oct (150p), completed via session in Nov (150p -> 300p)
+        val bMultiMonth = book("multi", "Duna", 300, currentPage = 300)
 
         val sessions = listOf(
-            ReadingSession("s1", "a", 1000L, 2000L, 3_600_000L, 0, 150, "2026-10-20"),
-            ReadingSession("s2", "a", 3000L, 4000L, 3_600_000L, 150, 300, "2026-11-05"),
+            ReadingSession("s1", "multi", 1000L, 2000L, 3_600_000L, 0, 150, "2026-10-20"),
+            ReadingSession("s2", "multi", 3000L, 4000L, 3_600_000L, 150, 300, "2026-11-05"),
         )
         val dates = listOf(
-            ReadingDate("d1", "b", "2026-11-12"),
+            ReadingDate("d1", "dated_nov", "2026-11-12"),
         )
-        // Plan also has book A manually added in Nov -> MUST NOT duplicate!
         val plan = AnnualReadingPlan(
             year = 2026,
             goalMode = PlanGoalMode.NONE,
             entries = listOf(
-                PlanEntry(month = 11, position = 0, kind = PlanEntryKind.SHELF_BOOK, bookId = "a"),
-                // Legacy Joker entry should be ignored safely!
+                PlanEntry(month = 11, position = 0, kind = PlanEntryKind.SHELF_BOOK, bookId = "multi"),
                 PlanEntry(month = 11, position = 1, kind = PlanEntryKind.JOKER, reservedPages = 200),
             ),
         ).validated()
 
+        val allBooks = listOf(bOldCataloged, bPausedOld, bActiveCurrent, bManualDate, bMultiMonth)
         val summary = AnnualPlanCalculator.summarizeAt(
             plan = plan,
-            books = listOf(bMultiMonth, bManualDate, bReadingNow),
+            books = allBooks,
             sessions = sessions,
             dates = dates,
+            currentBookId = "active_now",
             todayYear = 2026,
             todayMonth = 11,
             todayDay = 20,
         )
 
-        // October: Book A appears automatically as READ_IN_MONTH with 150 pages
+        // Undated cataloged book MUST NOT appear in ANY month!
+        assertTrue(summary.months.all { m -> m.items.none { it.bookId == "old_no_date" } })
+        // Paused old book MUST NOT appear in Nov (nor any month without sessions/dates)!
+        assertTrue(summary.months.all { m -> m.items.none { it.bookId == "paused_old" } })
+
+        // October: ONLY multi as READ_IN_MONTH (150p)
         val oct = summary.months[9]
         assertEquals(1, oct.items.size)
-        assertEquals("a", oct.items[0].bookId)
+        assertEquals("multi", oct.items[0].bookId)
         assertEquals(PlanItemStatus.READ_IN_MONTH, oct.items[0].status)
         assertEquals(150, oct.items[0].pagesReadInMonth)
-        assertEquals(0, oct.actualBooksCompleted)
 
-        // November: Book A (once, manual+real), Book B (auto completed), Book C (auto reading) -> 3 items, no Joker!
+        // November: multi (once, manual+real), dated_nov (auto completed), active_now (auto current book) -> 3 items!
         val nov = summary.months[10]
         assertEquals(3, nov.items.size)
-        assertEquals(1, nov.items.count { it.bookId == "a" })
-        assertEquals(PlanItemStatus.COMPLETED, nov.items.first { it.bookId == "a" }.status)
-        assertEquals(PlanItemStatus.COMPLETED, nov.items.first { it.bookId == "b" }.status)
-        assertEquals(250, nov.items.first { it.bookId == "b" }.pagesReadInMonth)
-        assertEquals(PlanItemStatus.READING, nov.items.first { it.bookId == "c" }.status)
+        assertEquals(1, nov.items.count { it.bookId == "multi" })
+        assertEquals(PlanItemStatus.COMPLETED, nov.items.first { it.bookId == "multi" }.status)
+        assertEquals(PlanItemStatus.COMPLETED, nov.items.first { it.bookId == "dated_nov" }.status)
+        assertEquals(PlanItemStatus.READING, nov.items.first { it.bookId == "active_now" }.status)
         assertEquals(2, nov.actualBooksCompleted)
-        assertEquals(400, nov.actualPagesRead) // 150p session on A + 250p completed B
+        assertEquals(400, nov.actualPagesRead)
 
-        // PeriodCompletions for full year 2026 counts both A and B (2 books)
+        // PeriodCompletions for full year 2026 MUST count multi + dated_nov, and MUST NOT count old_no_date!
         val yearRange = ReadingPeriods.range("2026-01-01", ReadingPeriodUnit.YEAR)
-        val yearCompleted = PeriodCompletions.completedBookIds(listOf(bMultiMonth, bManualDate, bReadingNow), sessions, dates, yearRange)
-        assertEquals(setOf("a", "b"), yearCompleted)
+        val yearCompleted = PeriodCompletions.completedBookIds(allBooks, sessions, dates, yearRange)
+        assertEquals(setOf("multi", "dated_nov"), yearCompleted)
     }
 
     @Test
@@ -189,9 +175,7 @@ class AnnualPlanCalculatorTest {
             year = 2027,
             goalMode = PlanGoalMode.NONE,
             entries = listOf(
-                // Already-read book added as a planned reread in June -> status MUST be PLANNED, not COMPLETED!
                 PlanEntry(month = 6, position = 0, kind = PlanEntryKind.SHELF_BOOK, bookId = "old", reread = true, completed = false, tag = "Releitura"),
-                // Already-read book added as "Já li neste mês" in March -> status MUST be COMPLETED!
                 PlanEntry(month = 3, position = 0, kind = PlanEntryKind.SHELF_BOOK, bookId = "old", reread = false, completed = true),
             ),
         ).validated()
@@ -209,7 +193,7 @@ class AnnualPlanCalculatorTest {
 
         assertTrue(summary.effectiveTargets.derivedFromReadingGoals)
         assertEquals(PlanGoalMode.BOOKS_PER_MONTH, summary.effectiveTargets.mode)
-        assertEquals(2, summary.effectiveTargets.monthlyBooksTarget) // 24 / 12 = 2 books/month
+        assertEquals(2, summary.effectiveTargets.monthlyBooksTarget)
         assertEquals(24, summary.annualBookGoal)
 
         val mar = summary.months[2]

@@ -173,9 +173,7 @@ object PeriodCompletions {
         if (!book.complete) return null
         val lastManualDay = bookDates.maxOfOrNull { it.day }
         val lastSessionDay = bookSessions.maxOfOrNull { it.readingDay ?: ReadingDays.at(it.finishedAt) }
-        val recordedMax = listOfNotNull(lastManualDay, lastSessionDay).maxOrNull()
-        if (recordedMax != null) return recordedMax
-        return if (book.updatedAt > 0L) ReadingDays.at(book.updatedAt) else null
+        return listOfNotNull(lastManualDay, lastSessionDay).maxOrNull()
     }
 
     fun completedBookIds(
@@ -366,6 +364,7 @@ object AnnualPlanCalculator {
         sessions: List<ReadingSession>,
         dates: List<ReadingDate> = emptyList(),
         goals: List<ReadingGoal> = emptyList(),
+        currentBookId: String? = null,
         nowMs: Long = System.currentTimeMillis(),
     ): YearPlanSummary {
         val cal = Calendar.getInstance().apply { timeInMillis = nowMs }
@@ -375,6 +374,7 @@ object AnnualPlanCalculator {
             sessions = sessions,
             dates = dates,
             goals = goals,
+            currentBookId = currentBookId,
             todayYear = cal.get(Calendar.YEAR),
             todayMonth = cal.get(Calendar.MONTH) + 1,
             todayDay = cal.get(Calendar.DAY_OF_MONTH),
@@ -387,6 +387,7 @@ object AnnualPlanCalculator {
         sessions: List<ReadingSession>,
         dates: List<ReadingDate> = emptyList(),
         goals: List<ReadingGoal> = emptyList(),
+        currentBookId: String? = null,
         todayYear: Int,
         todayMonth: Int,
         todayDay: Int,
@@ -412,7 +413,7 @@ object AnnualPlanCalculator {
             totalTimedPages * 3_600_000.0 / totalTimedMs.toDouble()
         } else 0.0
 
-        val currentlyReadingBooks = activeBooks.filter { !it.complete && it.currentPage > 0 }
+        val currentBook = currentBookId?.let { booksById[it] }?.takeUnless { it.complete }
 
         val monthSummaries = (1..12).map { m ->
             val days = daysInMonth(plan.year, m)
@@ -452,12 +453,12 @@ object AnnualPlanCalculator {
             }
             val manualBookIds = manualResolved.mapNotNull { it.bookId.takeIf(String::isNotBlank) }.toSet()
 
-            // Automatic activity in this month: completed here, had sessions/dates here, or currently reading (if current month).
+            // Automatic activity in this month: completed here, had sessions/dates here, or is the active current book (only in current month).
             val autoBookIds = LinkedHashSet<String>()
             autoBookIds.addAll(completedAutoIds)
             autoBookIds.addAll(period.bookIds)
-            if (isCurrent) {
-                currentlyReadingBooks.forEach { autoBookIds.add(it.id) }
+            if (isCurrent && currentBook != null) {
+                autoBookIds.add(currentBook.id)
             }
             autoBookIds.removeAll(manualBookIds)
 
@@ -465,12 +466,12 @@ object AnnualPlanCalculator {
                 val book = booksById[id] ?: return@mapNotNull null
                 val sPages = sessionPagesByBook[id] ?: 0
                 val isCompletedHere = id in completedAutoIds
-                val isCurrentlyReading = !book.complete && book.currentPage > 0
+                val isActiveCurrent = isCurrent && currentBook != null && id == currentBook.id
+                val isReadingThisMonth = isCurrent && !book.complete && (isActiveCurrent || id in period.bookIds)
                 val status = when {
                     isCompletedHere -> PlanItemStatus.COMPLETED
-                    isCurrent && isCurrentlyReading -> PlanItemStatus.READING
+                    isReadingThisMonth -> PlanItemStatus.READING
                     id in period.bookIds -> PlanItemStatus.READ_IN_MONTH
-                    isCurrentlyReading -> PlanItemStatus.READING
                     else -> PlanItemStatus.COMPLETED
                 }
                 val total = if (book.pagesKnown) book.totalPages.coerceAtLeast(0) else 0
@@ -482,7 +483,6 @@ object AnnualPlanCalculator {
                 val readPages = when {
                     sPages > 0 -> sPages
                     status == PlanItemStatus.COMPLETED && book.pagesKnown -> book.totalPages
-                    isCurrent && isCurrentlyReading && book.pagesKnown -> 0
                     else -> 0
                 }
                 ResolvedPlanItem(
