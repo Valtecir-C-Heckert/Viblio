@@ -490,7 +490,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
             letterSpacing = 0.08f
             (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(2)
         }
-        ui.label(textCol, "Toque em um livro (ou volume de coleção) para levar ao plano.", 11, ui.muted).apply {
+        ui.label(textCol, "Toque em um livro (ou volume de coleção) para adicionar à meta.", 11, ui.muted).apply {
             (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
         }
         TextView(activity).apply {
@@ -2213,7 +2213,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
         if(!separateShelfStatistics) ui.icon(header,"back","Voltar à estante",44){onStatisticsBack?.invoke() ?: show("library")}
         heading(header,if(ui.rectilinear)"ESTATÍSTICAS" else "Estatísticas",30).layoutParams=LinearLayout.LayoutParams(0,-2,1f)
         val subtabs=row(parent).apply {setPadding(ui.dp(20),ui.dp(4),ui.dp(20),0)}
-        val tabDefs=if(ui.rectilinear) listOf("summary" to "Resumo","plan" to "Plano & Metas","periods" to "Períodos") else listOf("summary" to "Resumo","periods" to "Períodos")
+        val tabDefs=if(ui.rectilinear) listOf("summary" to "Resumo","plan" to "Metas","periods" to "Períodos") else listOf("summary" to "Resumo","periods" to "Períodos")
         tabDefs.forEach { (key,name) ->
             val active=statisticsTab==key
             val cell=ui.column().apply {

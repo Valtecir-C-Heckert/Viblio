@@ -6,6 +6,18 @@ import java.util.UUID
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 
+enum class BooksGoalType(val label: String) {
+    NONE("Desligada"),
+    PER_MONTH("Por mês"),
+    PER_YEAR("No ano"),
+}
+
+enum class PagesGoalType(val label: String) {
+    NONE("Desligada"),
+    PER_DAY("Por dia"),
+    PER_MONTH("Por mês"),
+}
+
 enum class PlanGoalMode(val label: String) {
     NONE("Só lista"),
     PAGES_PER_DAY("Páginas por dia"),
@@ -14,8 +26,8 @@ enum class PlanGoalMode(val label: String) {
 
 enum class PlanEntryKind {
     SHELF_BOOK,
-    WISHLIST_BOOK, // Legacy decode compatibility only (no longer created)
-    JOKER,         // Legacy decode compatibility only (no longer created)
+    WISHLIST_BOOK, // Legacy decode compatibility only
+    JOKER,         // Legacy decode compatibility only
 }
 
 enum class PlanItemStatus(val label: String) {
@@ -63,27 +75,42 @@ data class PlanEntry(
 
 data class AnnualReadingPlan(
     val year: Int,
-    val goalMode: PlanGoalMode = PlanGoalMode.PAGES_PER_DAY,
+    val booksGoalType: BooksGoalType = BooksGoalType.NONE,
+    val booksGoalValue: Int = 2,
+    val pagesGoalType: PagesGoalType = PagesGoalType.NONE,
+    val pagesGoalValue: Int = 30,
+    val goalConfigured: Boolean = false,
+    val excludedMonthBooks: Set<String> = emptySet(), // "MM:bookId"
+    val excludedYearBooks: Set<String> = emptySet(),  // "bookId"
+    val entries: List<PlanEntry> = emptyList(),
+    // Legacy fields preserved for smooth decode compatibility
+    val goalMode: PlanGoalMode = PlanGoalMode.NONE,
     val dailyPagesTarget: Int = 30,
     val monthlyBooksTarget: Int = 2,
     val showPurchaseGoal: Boolean = true,
-    val entries: List<PlanEntry> = emptyList(),
 ) {
     fun validated(): AnnualReadingPlan {
-        require(year in 2020..2100) { "Ano do plano inválido." }
+        require(year in 2020..2100) { "Ano da meta inválido." }
+        require(booksGoalValue in 1..5000) { "Meta de livros deve ficar entre 1 e 5.000." }
+        require(pagesGoalValue in 1..1_000_000) { "Meta de páginas deve ficar entre 1 e 1.000.000." }
         require(dailyPagesTarget in 1..2000) { "Meta diária deve ficar entre 1 e 2.000 páginas." }
         require(monthlyBooksTarget in 1..100) { "Meta mensal deve ficar entre 1 e 100 livros." }
-        require(entries.size <= MAX_ENTRIES) { "Limite de $MAX_ENTRIES itens por plano anual atingido." }
+        require(excludedMonthBooks.size <= MAX_EXCLUDED && excludedMonthBooks.all { it.length in 3..210 }) { "Limite de exclusões mensais atingido." }
+        require(excludedYearBooks.size <= MAX_EXCLUDED && excludedYearBooks.all { it.length in 1..200 }) { "Limite de exclusões anuais atingido." }
+        require(entries.size <= MAX_ENTRIES) { "Limite de $MAX_ENTRIES itens por ano atingido." }
         val seen = HashSet<String>(entries.size)
         entries.forEach {
             it.validated()
-            require(seen.add(it.id)) { "Item duplicado no plano." }
+            require(seen.add(it.id)) { "Item duplicado no ano." }
         }
         return this
     }
 
     companion object {
         const val MAX_ENTRIES = 240
+        const val MAX_EXCLUDED = 2000
+        fun monthExclusionKey(month: Int, bookId: String): String =
+            String.format(Locale.US, "%02d:%s", month.coerceIn(1, 12), bookId)
     }
 }
 
@@ -104,6 +131,16 @@ data class ResolvedPlanItem(
     val isReread: Boolean = false,
 )
 
+data class YearBookCredit(
+    val bookId: String,
+    val title: String,
+    val author: String,
+    val cover: String,
+    val month: Int,
+    val entryId: String?,
+    val isReread: Boolean,
+)
+
 data class MonthPlanSummary(
     val month: Int,
     val daysInMonth: Int,
@@ -115,6 +152,8 @@ data class MonthPlanSummary(
     val totalPlannedPages: Int,
     val actualPagesRead: Int,
     val actualBooksCompleted: Int,
+    val monthlyBooksTarget: Int,
+    val monthlyPagesTarget: Int,
     val plannedBookCount: Int,
     val completedBookCount: Int,
     val pacePagesPerDay: Double,
@@ -130,31 +169,23 @@ data class SagaPlanSummary(
     val totalCount: Int,
 )
 
-data class EffectivePlanTargets(
-    val mode: PlanGoalMode,
-    val dailyPagesTarget: Int,
-    val monthlyBooksTarget: Int,
-    val annualBookGoal: Int?,
-    val annualPageGoal: Int?,
-    val derivedFromReadingGoals: Boolean,
-)
-
 data class YearPlanSummary(
+    val year: Int,
     val completedCount: Int,
+    val completedBooksInYear: List<YearBookCredit>,
     val totalBooksInYear: Int,
     val totalPagesReadInYear: Int,
     val annualBookGoal: Int,
-    val averageDailyPages: Double,
+    val annualPageGoal: Int,
+    val averageDailyPagesRead: Double,
     val estimatedMinutesPerDay: Int?,
-    val effectiveTargets: EffectivePlanTargets,
     val months: List<MonthPlanSummary>,
     val sagas: List<SagaPlanSummary>,
 )
 
 /**
- * Computes which books were completed within a given [ReadingPeriodRange] without modifying [PeriodReading.from],
- * keeping existing period page invariants intact while accurately accounting for completed books via sessions,
- * manual reading dates, or completion timestamps.
+ * Computes which books were completed within a given [ReadingPeriodRange] without modifying [PeriodReading.from].
+ * Strictly uses recorded sessions and manual [ReadingDate]s — never guesses from [LibraryBook.updatedAt].
  */
 object PeriodCompletions {
     fun completionDay(
@@ -188,7 +219,6 @@ object PeriodCompletions {
         books.forEach { book ->
             if (book.archived) return@forEach
             val bSessions = sessionsByBook[book.id].orEmpty()
-            // Any timed session hitting the final page inside this range counts (including rereads).
             val finishedBySessionInRange = book.pagesKnown && bSessions.any { s ->
                 s.endPage >= book.totalPages && range.contains(s.readingDay ?: ReadingDays.at(s.finishedAt))
             }
@@ -226,66 +256,6 @@ object AnnualPlanCalculator {
         val m = month.coerceIn(1, 12)
         val anchor = String.format(Locale.US, "%04d-%02d-01", year, m)
         return ReadingPeriods.range(anchor, ReadingPeriodUnit.MONTH)
-    }
-
-    fun deriveTargets(plan: AnnualReadingPlan, goals: List<ReadingGoal>, yearDays: Int): EffectivePlanTargets {
-        val pagesGoal = goals.firstOrNull { it.metric == GoalMetric.PAGES }
-        val booksGoal = goals.firstOrNull { it.metric == GoalMetric.BOOKS }
-
-        val derivedDailyPages: Int? = pagesGoal?.let { g ->
-            when (g.period) {
-                GoalPeriod.DAY -> g.target
-                GoalPeriod.WEEK -> ceil(g.target / 7.0).toInt()
-                GoalPeriod.MONTH -> ceil(g.target / 30.0).toInt()
-                GoalPeriod.YEAR -> ceil(g.target / yearDays.toDouble()).toInt()
-                GoalPeriod.CONTINUOUS -> ceil(g.target / 30.0).toInt()
-            }.coerceIn(1, 2000)
-        }
-        val derivedAnnualPages: Int? = pagesGoal?.let { g ->
-            when (g.period) {
-                GoalPeriod.DAY -> g.target * yearDays
-                GoalPeriod.WEEK -> g.target * 52
-                GoalPeriod.MONTH -> g.target * 12
-                GoalPeriod.YEAR -> g.target
-                GoalPeriod.CONTINUOUS -> g.target
-            }
-        }
-        val derivedMonthlyBooks: Int? = booksGoal?.let { g ->
-            when (g.period) {
-                GoalPeriod.DAY -> g.target * 30
-                GoalPeriod.WEEK -> g.target * 4
-                GoalPeriod.MONTH -> g.target
-                GoalPeriod.YEAR -> ceil(g.target / 12.0).toInt()
-                GoalPeriod.CONTINUOUS -> ceil(g.target / 12.0).toInt()
-            }.coerceIn(1, 100)
-        }
-        val derivedAnnualBooks: Int? = booksGoal?.let { g ->
-            when (g.period) {
-                GoalPeriod.DAY -> g.target * yearDays
-                GoalPeriod.WEEK -> g.target * 52
-                GoalPeriod.MONTH -> g.target * 12
-                GoalPeriod.YEAR -> g.target
-                GoalPeriod.CONTINUOUS -> g.target
-            }
-        }
-
-        val hasRealGoal = derivedDailyPages != null || derivedMonthlyBooks != null
-        val mode = when {
-            plan.goalMode == PlanGoalMode.NONE && !hasRealGoal -> PlanGoalMode.NONE
-            plan.goalMode == PlanGoalMode.PAGES_PER_DAY && derivedDailyPages != null -> PlanGoalMode.PAGES_PER_DAY
-            plan.goalMode == PlanGoalMode.BOOKS_PER_MONTH && derivedMonthlyBooks != null -> PlanGoalMode.BOOKS_PER_MONTH
-            derivedDailyPages != null -> PlanGoalMode.PAGES_PER_DAY
-            derivedMonthlyBooks != null -> PlanGoalMode.BOOKS_PER_MONTH
-            else -> plan.goalMode
-        }
-        return EffectivePlanTargets(
-            mode = mode,
-            dailyPagesTarget = derivedDailyPages ?: plan.dailyPagesTarget,
-            monthlyBooksTarget = derivedMonthlyBooks ?: plan.monthlyBooksTarget,
-            annualBookGoal = derivedAnnualBooks,
-            annualPageGoal = derivedAnnualPages,
-            derivedFromReadingGoals = hasRealGoal,
-        )
     }
 
     fun resolveItem(
@@ -363,7 +333,6 @@ object AnnualPlanCalculator {
         books: List<LibraryBook>,
         sessions: List<ReadingSession>,
         dates: List<ReadingDate> = emptyList(),
-        goals: List<ReadingGoal> = emptyList(),
         currentBookId: String? = null,
         nowMs: Long = System.currentTimeMillis(),
     ): YearPlanSummary {
@@ -373,7 +342,6 @@ object AnnualPlanCalculator {
             books = books,
             sessions = sessions,
             dates = dates,
-            goals = goals,
             currentBookId = currentBookId,
             todayYear = cal.get(Calendar.YEAR),
             todayMonth = cal.get(Calendar.MONTH) + 1,
@@ -386,7 +354,6 @@ object AnnualPlanCalculator {
         books: List<LibraryBook>,
         sessions: List<ReadingSession>,
         dates: List<ReadingDate> = emptyList(),
-        goals: List<ReadingGoal> = emptyList(),
         currentBookId: String? = null,
         todayYear: Int,
         todayMonth: Int,
@@ -394,15 +361,28 @@ object AnnualPlanCalculator {
     ): YearPlanSummary {
         val activeBooks = books.filter { !it.archived }
         val booksById = activeBooks.associateBy { it.id }
-        // Ignore legacy JOKER and WISHLIST_BOOK entries safely without failing decode.
         val shelfEntriesByMonth = plan.entries
             .filter { it.kind == PlanEntryKind.SHELF_BOOK }
             .groupBy { it.month }
 
         val yearDays = (1..12).sumOf { daysInMonth(plan.year, it) }
-        val targets = deriveTargets(plan, goals, yearDays)
+        val monthlyBooksGoal = when (plan.booksGoalType) {
+            BooksGoalType.PER_MONTH -> plan.booksGoalValue
+            BooksGoalType.PER_YEAR -> ceil(plan.booksGoalValue / 12.0).toInt().coerceAtLeast(1)
+            BooksGoalType.NONE -> 0
+        }
+        val annualBookGoal = when (plan.booksGoalType) {
+            BooksGoalType.PER_MONTH -> plan.booksGoalValue * 12
+            BooksGoalType.PER_YEAR -> plan.booksGoalValue
+            BooksGoalType.NONE -> 0
+        }
+        val annualPageGoal = when (plan.pagesGoalType) {
+            PagesGoalType.PER_DAY -> plan.pagesGoalValue * yearDays
+            PagesGoalType.PER_MONTH -> plan.pagesGoalValue * 12
+            PagesGoalType.NONE -> 0
+        }
 
-        // User's real pages/hour speed across timed sessions -> converts daily pages into ~min/day.
+        // User's real pages/hour speed across timed sessions -> converts daily target/avg into ~min/day.
         val timedSessions = sessions.filter { s ->
             val b = booksById[s.bookId]
             b != null && b.pagesKnown && s.pages > 0 && s.durationMs >= 1000L
@@ -424,6 +404,22 @@ object AnnualPlanCalculator {
                 isCurrent -> (days - todayDay + 1).coerceIn(1, days)
                 else -> days
             }
+            val monthlyPagesGoal = when (plan.pagesGoalType) {
+                PagesGoalType.PER_DAY -> plan.pagesGoalValue * days
+                PagesGoalType.PER_MONTH -> plan.pagesGoalValue
+                PagesGoalType.NONE -> 0
+            }
+            val dailyPagesGoal = when (plan.pagesGoalType) {
+                PagesGoalType.PER_DAY -> plan.pagesGoalValue.toDouble()
+                PagesGoalType.PER_MONTH -> plan.pagesGoalValue.toDouble() / days.coerceAtLeast(1)
+                PagesGoalType.NONE -> 0.0
+            }
+
+            fun isExcluded(bookId: String): Boolean =
+                bookId.isNotBlank() && (
+                    bookId in plan.excludedYearBooks ||
+                        AnnualReadingPlan.monthExclusionKey(m, bookId) in plan.excludedMonthBooks
+                    )
 
             val range = monthRange(plan.year, m)
             val period = PeriodReading.from(activeBooks, sessions, dates, range)
@@ -453,7 +449,7 @@ object AnnualPlanCalculator {
             }
             val manualBookIds = manualResolved.mapNotNull { it.bookId.takeIf(String::isNotBlank) }.toSet()
 
-            // Automatic activity in this month: completed here, had sessions/dates here, or is the active current book (only in current month).
+            // Automatic activity: completed here, had sessions/dates here, or active current book (current month only).
             val autoBookIds = LinkedHashSet<String>()
             autoBookIds.addAll(completedAutoIds)
             autoBookIds.addAll(period.bookIds)
@@ -461,6 +457,7 @@ object AnnualPlanCalculator {
                 autoBookIds.add(currentBook.id)
             }
             autoBookIds.removeAll(manualBookIds)
+            autoBookIds.removeAll { isExcluded(it) }
 
             val autoResolved = autoBookIds.mapNotNull { id ->
                 val book = booksById[id] ?: return@mapNotNull null
@@ -503,7 +500,6 @@ object AnnualPlanCalculator {
                 )
             }
 
-            // Order cleanly: Lendo -> Planejado -> Lido no mês -> Concluído
             fun statusRank(s: PlanItemStatus) = when (s) {
                 PlanItemStatus.READING -> 0
                 PlanItemStatus.PLANNED -> 1
@@ -516,7 +512,6 @@ object AnnualPlanCalculator {
                     .thenBy { it.title.lowercase(Locale("pt", "BR")) },
             )
 
-            // Actual pages read in month (sessions + completed-without-full-session books).
             val actualPagesRead = combined.sumOf { it.pagesReadInMonth }
             val completedBooks = combined.count { it.status == PlanItemStatus.COMPLETED }
             val pendingCount = combined.count { it.status == PlanItemStatus.PLANNED || it.status == PlanItemStatus.READING }
@@ -529,57 +524,64 @@ object AnnualPlanCalculator {
                 else -> totalMonthPages.toDouble() / days.coerceAtLeast(1)
             }
 
-            // Real read barProgress (0.0..1.0): combines both books completed AND pages read in this month!
-            val booksGoalDenom = when (targets.mode) {
-                PlanGoalMode.BOOKS_PER_MONTH -> maxOf(combined.size, targets.monthlyBooksTarget)
-                else -> combined.size
-            }
-            val pagesGoalDenom = when (targets.mode) {
-                PlanGoalMode.PAGES_PER_DAY -> maxOf(totalMonthPages, targets.dailyPagesTarget * days)
-                else -> totalMonthPages
-            }
-            val bookFrac = if (booksGoalDenom > 0) (completedBooks.toDouble() / booksGoalDenom).coerceIn(0.0, 1.0) else null
-            val pageFrac = if (pagesGoalDenom > 0) (actualPagesRead.toDouble() / pagesGoalDenom).coerceIn(0.0, 1.0) else null
-            val rawBar = when {
-                bookFrac != null && pageFrac != null -> {
-                    if (completedBooks > 0 && pendingCount == 0 && bookFrac >= 1.0 && (targets.mode != PlanGoalMode.PAGES_PER_DAY || pageFrac >= 1.0)) {
-                        1.0
-                    } else {
-                        ((bookFrac + pageFrac) / 2.0).coerceIn(0.0, 1.0)
+            // Real read barProgress (0.0..1.0): immediately reflects changes to monthly books or pages targets!
+            val hasBooksGoal = monthlyBooksGoal > 0
+            val hasPagesGoal = monthlyPagesGoal > 0
+            val booksDenom = if (hasBooksGoal) maxOf(monthlyBooksGoal, combined.size) else combined.size
+            val pagesDenom = if (hasPagesGoal) monthlyPagesGoal else totalMonthPages
+            val bookFrac = if (booksDenom > 0) (completedBooks.toDouble() / booksDenom).coerceIn(0.0, 1.0) else null
+            val pageFrac = if (pagesDenom > 0) (actualPagesRead.toDouble() / pagesDenom).coerceIn(0.0, 1.0) else null
+
+            val barProgress = when {
+                hasBooksGoal && hasPagesGoal -> {
+                    val bF = bookFrac ?: 0.0
+                    val pF = pageFrac ?: 0.0
+                    if (bF >= 1.0 && pF >= 1.0 && pendingCount == 0) 1.0 else ((bF + pF) / 2.0).coerceIn(0.0, 1.0)
+                }
+                hasPagesGoal -> (pageFrac ?: 0.0)
+                hasBooksGoal -> {
+                    val bF = bookFrac ?: 0.0
+                    val pF = pageFrac
+                    when {
+                        bF >= 1.0 && pendingCount == 0 -> 1.0
+                        pF != null -> ((bF * 0.7) + (pF * 0.3)).coerceIn(0.0, 1.0)
+                        else -> bF
                     }
                 }
-                pageFrac != null -> pageFrac
-                bookFrac != null -> bookFrac
-                else -> 0.0
+                else -> when {
+                    bookFrac != null && pageFrac != null -> {
+                        if (completedBooks > 0 && pendingCount == 0) 1.0 else ((bookFrac + pageFrac) / 2.0).coerceIn(0.0, 1.0)
+                    }
+                    pageFrac != null -> pageFrac
+                    bookFrac != null -> bookFrac
+                    else -> 0.0
+                }
             }
 
+            val hasAnyGoal = hasBooksGoal || hasPagesGoal
             val health = when {
                 combined.isEmpty() -> {
-                    if (isPast && targets.mode != PlanGoalMode.NONE) MonthHealth.MISSED else MonthHealth.EMPTY
+                    if (isPast && hasAnyGoal) MonthHealth.MISSED else MonthHealth.EMPTY
                 }
                 isPast -> {
-                    val metGoal = when (targets.mode) {
-                        PlanGoalMode.BOOKS_PER_MONTH -> completedBooks >= targets.monthlyBooksTarget
-                        PlanGoalMode.PAGES_PER_DAY -> actualPagesRead >= (targets.dailyPagesTarget * days * 0.85)
-                        PlanGoalMode.NONE -> pendingCount == 0 && (completedBooks > 0 || actualPagesRead > 0)
-                    }
-                    if (metGoal && !hasManualPending) MonthHealth.COMPLETED else MonthHealth.MISSED
+                    val booksOk = !hasBooksGoal || completedBooks >= monthlyBooksGoal
+                    val pagesOk = !hasPagesGoal || actualPagesRead >= (monthlyPagesGoal * 0.90)
+                    val noGoalOk = hasAnyGoal || (pendingCount == 0 && (completedBooks > 0 || actualPagesRead > 0))
+                    if (booksOk && pagesOk && noGoalOk && !hasManualPending) MonthHealth.COMPLETED else MonthHealth.MISSED
                 }
                 else -> {
-                    val allDone = pendingCount == 0 && completedBooks > 0 && when (targets.mode) {
-                        PlanGoalMode.BOOKS_PER_MONTH -> completedBooks >= targets.monthlyBooksTarget
-                        PlanGoalMode.PAGES_PER_DAY -> actualPagesRead >= (targets.dailyPagesTarget * days * 0.85)
-                        PlanGoalMode.NONE -> true
-                    }
-                    if (allDone) {
-                        MonthHealth.COMPLETED
-                    } else if (targets.mode == PlanGoalMode.PAGES_PER_DAY && pace > targets.dailyPagesTarget * 1.05) {
-                        // Heavy planned month -> Amber/Gold (INTENSE), NEVER red!
-                        MonthHealth.INTENSE
-                    } else if (targets.mode == PlanGoalMode.BOOKS_PER_MONTH && combined.size > targets.monthlyBooksTarget) {
-                        MonthHealth.INTENSE
-                    } else {
-                        MonthHealth.ON_PACE
+                    val booksHit = !hasBooksGoal || completedBooks >= monthlyBooksGoal
+                    val pagesHit = !hasPagesGoal || actualPagesRead >= monthlyPagesGoal
+                    val allDone = pendingCount == 0 && (completedBooks > 0 || actualPagesRead > 0) && booksHit && pagesHit
+                    val intensePages = hasPagesGoal && (
+                        totalMonthPages > monthlyPagesGoal * 1.05 ||
+                            (isCurrent && dailyPagesGoal > 0.0 && pace > dailyPagesGoal * 1.05)
+                        )
+                    val intenseBooks = hasBooksGoal && combined.size > monthlyBooksGoal
+                    when {
+                        allDone -> MonthHealth.COMPLETED
+                        intensePages || intenseBooks -> MonthHealth.INTENSE // Amber/Gold, NEVER Red!
+                        else -> MonthHealth.ON_PACE
                     }
                 }
             }
@@ -595,46 +597,61 @@ object AnnualPlanCalculator {
                 totalPlannedPages = totalMonthPages,
                 actualPagesRead = actualPagesRead,
                 actualBooksCompleted = completedBooks,
+                monthlyBooksTarget = monthlyBooksGoal,
+                monthlyPagesTarget = monthlyPagesGoal,
                 plannedBookCount = combined.size,
                 completedBookCount = completedBooks,
                 pacePagesPerDay = pace,
-                barProgress = rawBar,
+                barProgress = barProgress,
                 health = health,
                 pendingCount = pendingCount,
                 hasManualPending = hasManualPending,
             )
         }
 
-        val allResolved = monthSummaries.flatMap { it.items }
-        // Distinct completed books across the year (including explicit reread entries).
-        val completedUniqueKeys = LinkedHashSet<String>()
-        allResolved.forEach { item ->
-            if (item.status == PlanItemStatus.COMPLETED) {
-                val key = if (item.isReread && item.entry != null) "reread:${item.entry.id}" else item.bookId.ifBlank { item.entry?.id ?: item.title }
-                completedUniqueKeys.add(key)
+        // Single source of truth for year totals (100% identical to the months!)
+        val completedCreditsMap = LinkedHashMap<String, YearBookCredit>()
+        monthSummaries.forEach { ms ->
+            ms.items.forEach { item ->
+                if (item.status == PlanItemStatus.COMPLETED) {
+                    val key = if (item.isReread && item.entry != null) "reread:${item.entry.id}" else item.bookId.ifBlank { item.entry?.id ?: item.title }
+                    if (key !in completedCreditsMap) {
+                        completedCreditsMap[key] = YearBookCredit(
+                            bookId = item.bookId,
+                            title = item.title,
+                            author = item.author,
+                            cover = item.localCover,
+                            month = ms.month,
+                            entryId = item.entry?.id,
+                            isReread = item.isReread,
+                        )
+                    }
+                }
             }
         }
+        val completedBooksInYear = completedCreditsMap.values.toList()
+        val allResolved = monthSummaries.flatMap { it.items }
         val allUniqueBookKeys = allResolved.map { item ->
             if (item.isReread && item.entry != null) "reread:${item.entry.id}" else item.bookId.ifBlank { item.entry?.id ?: item.title }
         }.toSet()
 
-        val completedTotal = completedUniqueKeys.size
-        val totalBooksInYear = allUniqueBookKeys.size
         val totalPagesReadInYear = monthSummaries.sumOf { it.actualPagesRead }
-
-        val annualBookGoal = targets.annualBookGoal ?: when {
-            targets.mode == PlanGoalMode.BOOKS_PER_MONTH -> maxOf(totalBooksInYear, targets.monthlyBooksTarget * 12)
-            totalBooksInYear > 0 -> totalBooksInYear
-            else -> targets.monthlyBooksTarget * 12
+        val elapsedDaysInYear = when {
+            plan.year < todayYear -> yearDays
+            plan.year > todayYear -> 0
+            else -> ((1 until todayMonth).sumOf { daysInMonth(plan.year, it) } + todayDay).coerceIn(1, yearDays)
         }
+        val avgDailyRead = if (elapsedDaysInYear > 0) totalPagesReadInYear.toDouble() / elapsedDaysInYear else 0.0
 
-        val totalYearPages = monthSummaries.sumOf { it.totalPlannedPages }
-        val avgDaily = if (totalYearPages > 0) totalYearPages.toDouble() / yearDays else targets.dailyPagesTarget.toDouble()
-        val estMin = if (pagesPerHour > 1.0 && avgDaily > 0.0) {
-            ((avgDaily / pagesPerHour) * 60.0).roundToInt().coerceIn(1, 600)
+        val refDailyForMinutes = when (plan.pagesGoalType) {
+            PagesGoalType.PER_DAY -> plan.pagesGoalValue.toDouble()
+            PagesGoalType.PER_MONTH -> plan.pagesGoalValue.toDouble() / 30.0
+            PagesGoalType.NONE -> avgDailyRead
+        }
+        val estMin = if (pagesPerHour > 1.0 && refDailyForMinutes > 0.5) {
+            ((refDailyForMinutes / pagesPerHour) * 60.0).roundToInt().coerceIn(1, 600)
         } else null
 
-        // Sagas progress across books referenced in the year (crossed with shelf volumes of those sagas).
         val plannedSagas = LinkedHashMap<String, String>()
         allResolved.forEach { item ->
             val s = item.saga.trim()
@@ -653,13 +670,15 @@ object AnnualPlanCalculator {
         }.sortedWith(compareByDescending<SagaPlanSummary> { it.totalCount }.thenBy { it.name.lowercase(Locale("pt", "BR")) })
 
         return YearPlanSummary(
-            completedCount = completedTotal,
-            totalBooksInYear = totalBooksInYear,
+            year = plan.year,
+            completedCount = completedBooksInYear.size,
+            completedBooksInYear = completedBooksInYear,
+            totalBooksInYear = allUniqueBookKeys.size,
             totalPagesReadInYear = totalPagesReadInYear,
             annualBookGoal = annualBookGoal,
-            averageDailyPages = avgDaily,
+            annualPageGoal = annualPageGoal,
+            averageDailyPagesRead = avgDailyRead,
             estimatedMinutesPerDay = estMin,
-            effectiveTargets = targets,
             months = monthSummaries,
             sagas = sagas,
         )

@@ -5,8 +5,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Private profile-scoped storage for Annual Reading Plans.
- * Uses the `SHELF_` prefix so existing cloud backup/sync (`personal_library.py`) preserves plans losslessly.
+ * Private profile-scoped storage for unified yearly Goals & Reading Plans.
+ * Uses the `SHELF_` prefix so cloud backup/sync (`personal_library.py`) preserves plans losslessly.
  */
 class AnnualPlanStore(context: Context) {
     private val profile = LibraryProfiles.settings(context)
@@ -40,9 +40,18 @@ class AnnualPlanStore(context: Context) {
                         .put("reread", e.reread),
                 )
             }
+            val exMonth = JSONArray().apply { valid.excludedMonthBooks.sorted().forEach(::put) }
+            val exYear = JSONArray().apply { valid.excludedYearBooks.sorted().forEach(::put) }
             return JSONObject()
-                .put("v", 1)
+                .put("v", 2)
                 .put("year", valid.year)
+                .put("booksGoalType", valid.booksGoalType.name)
+                .put("booksGoalValue", valid.booksGoalValue)
+                .put("pagesGoalType", valid.pagesGoalType.name)
+                .put("pagesGoalValue", valid.pagesGoalValue)
+                .put("goalConfigured", valid.goalConfigured)
+                .put("excludedMonthBooks", exMonth)
+                .put("excludedYearBooks", exYear)
                 .put("goalMode", valid.goalMode.name)
                 .put("dailyPagesTarget", valid.dailyPagesTarget)
                 .put("monthlyBooksTarget", valid.monthlyBooksTarget)
@@ -52,7 +61,7 @@ class AnnualPlanStore(context: Context) {
         }
 
         internal fun decode(raw: String): AnnualReadingPlan {
-            require(raw.length <= MAX_JSON && raw.toByteArray().size <= MAX_JSON) { "Plano anual grande demais." }
+            require(raw.length <= MAX_JSON && raw.toByteArray().size <= MAX_JSON) { "Meta anual grande demais." }
             var depth = 0
             var quoted = false
             var escape = false
@@ -71,9 +80,10 @@ class AnnualPlanStore(context: Context) {
                 }
             }
             val o = JSONObject(raw)
-            require(o.getInt("v") == 1) { "Versão de plano não suportada." }
+            val version = o.getInt("v")
+            require(version in 1..2) { "Versão de meta não suportada." }
             val arr = o.optJSONArray("entries") ?: JSONArray()
-            require(arr.length() <= AnnualReadingPlan.MAX_ENTRIES) { "Muitos itens no plano." }
+            require(arr.length() <= AnnualReadingPlan.MAX_ENTRIES) { "Muitos itens no ano." }
             val entries = (0 until arr.length()).map { i ->
                 val e = arr.getJSONObject(i)
                 PlanEntry(
@@ -93,13 +103,54 @@ class AnnualPlanStore(context: Context) {
                     reread = e.optBoolean("reread", false),
                 )
             }
+            val legacyMode = runCatching { PlanGoalMode.valueOf(o.optString("goalMode", PlanGoalMode.NONE.name)) }.getOrDefault(PlanGoalMode.NONE)
+            val legacyDaily = o.optInt("dailyPagesTarget", 30).coerceIn(1, 2000)
+            val legacyMonthly = o.optInt("monthlyBooksTarget", 2).coerceIn(1, 100)
+
+            val booksGoalType = if (o.has("booksGoalType")) {
+                BooksGoalType.valueOf(o.getString("booksGoalType"))
+            } else if (legacyMode == PlanGoalMode.BOOKS_PER_MONTH) {
+                BooksGoalType.PER_MONTH
+            } else {
+                BooksGoalType.NONE
+            }
+            val booksGoalValue = if (o.has("booksGoalValue")) o.getInt("booksGoalValue") else legacyMonthly
+
+            val pagesGoalType = if (o.has("pagesGoalType")) {
+                PagesGoalType.valueOf(o.getString("pagesGoalType"))
+            } else if (legacyMode == PlanGoalMode.PAGES_PER_DAY) {
+                PagesGoalType.PER_DAY
+            } else {
+                PagesGoalType.NONE
+            }
+            val pagesGoalValue = if (o.has("pagesGoalValue")) o.getInt("pagesGoalValue") else legacyDaily
+
+            val goalConfigured = o.optBoolean("goalConfigured", version >= 2)
+
+            fun readStringSet(key: String): Set<String> {
+                val a = o.optJSONArray(key) ?: return emptySet()
+                val out = LinkedHashSet<String>(a.length())
+                for (i in 0 until a.length()) {
+                    val s = a.optString(i)
+                    if (s.isNotBlank()) out.add(s)
+                }
+                return out
+            }
+
             return AnnualReadingPlan(
                 year = o.getInt("year"),
-                goalMode = PlanGoalMode.valueOf(o.optString("goalMode", PlanGoalMode.PAGES_PER_DAY.name)),
-                dailyPagesTarget = o.optInt("dailyPagesTarget", 30),
-                monthlyBooksTarget = o.optInt("monthlyBooksTarget", 2),
-                showPurchaseGoal = o.optBoolean("showPurchaseGoal", true),
+                booksGoalType = booksGoalType,
+                booksGoalValue = booksGoalValue,
+                pagesGoalType = pagesGoalType,
+                pagesGoalValue = pagesGoalValue,
+                goalConfigured = goalConfigured,
+                excludedMonthBooks = readStringSet("excludedMonthBooks"),
+                excludedYearBooks = readStringSet("excludedYearBooks"),
                 entries = entries,
+                goalMode = legacyMode,
+                dailyPagesTarget = legacyDaily,
+                monthlyBooksTarget = legacyMonthly,
+                showPurchaseGoal = o.optBoolean("showPurchaseGoal", true),
             ).validated()
         }
     }
@@ -119,11 +170,11 @@ class AnnualPlanStore(context: Context) {
             val valid = plan.validated()
             val key = PREFIX + valid.year
             if (!prefs.contains(key)) {
-                check(years().size < MAX_YEARS) { "Limite de $MAX_YEARS planos anuais atingido." }
+                check(years().size < MAX_YEARS) { "Limite de $MAX_YEARS anos atingido." }
             }
             val raw = encode(valid)
-            check(raw.length <= MAX_JSON && raw.toByteArray().size <= MAX_JSON) { "Plano anual grande demais." }
-            check(prefs.edit().putString(key, raw).commit()) { "Não foi possível salvar o plano anual." }
+            check(raw.length <= MAX_JSON && raw.toByteArray().size <= MAX_JSON) { "Meta anual grande demais." }
+            check(prefs.edit().putString(key, raw).commit()) { "Não foi possível salvar a meta anual." }
         }
     }
 

@@ -155,7 +155,7 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
                 val credits=if(goal.metric==GoalMetric.PURCHASE)progress.credits.take(goal.target)else progress.credits
                 if(credits.isEmpty())ui.label(card,"Nenhuma leitura contabilizada",12,ui.muted)
                 val shown=shownCredits[goal.id] ?: 10
-                credits.take(shown).forEach {credit->creditRow(card,credit,goal.metric==GoalMetric.PAGES,sessions,goal)}
+                credits.take(shown).forEach {credit->creditRow(card,credit,goal.metric==GoalMetric.PAGES,sessions,goal,entry)}
                 if(credits.size>shown)ui.action(card,"Ver mais livros"){shownCredits[goal.id]=shown+10;changed()}
                 if(goal.metric==GoalMetric.PURCHASE){
                     title(card,"Histórico de ciclos",17)
@@ -169,6 +169,15 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
                     }
                 }
             }
+        }
+    }
+    private fun excludeFromPurchaseGoal(entry:ReadingGoalStore.Entry,goal:ReadingGoal,bookId:String){
+        if(goal.metric!=GoalMetric.PURCHASE)return
+        mutate {
+            val updated=goal.copy(excluded=goal.excluded+bookId).validated()
+            store.save(updated,entry.raw)
+            dialogs.toList().forEach {it.dismiss()}
+            dialogs.clear()
         }
     }
     private fun purchase(parent:LinearLayout,entry:ReadingGoalStore.Entry,goal:ReadingGoal,progress:GoalProgress):LinearLayout {
@@ -190,7 +199,13 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
             else cover.addView(TextView(activity).apply {text=credit?.title?.take(1)?.uppercase() ?: "${index+1}";setTextColor(if(credit!=null)ui.accent else ui.muted);typeface=Typeface.create("serif",Typeface.NORMAL);textSize=24f;gravity=Gravity.CENTER},FrameLayout.LayoutParams(-1,-1))
             if(credit!=null){
                 cover.addView(ImageView(activity).apply {background=ui.shape(ui.accent,0);setImageDrawable(ui.symbol("check",ui.background,12));setPadding(ui.dp(2),ui.dp(2),ui.dp(2),ui.dp(2))},FrameLayout.LayoutParams(ui.dp(16),ui.dp(16),Gravity.BOTTOM or Gravity.END))
-                cover.setOnClickListener {tracked(AlertDialog.Builder(activity).setTitle(credit.title).setMessage(listOf(credit.author,"Concluído · ${ReadingDays.label(ReadingDays.at(credit.at))}").filter {it.isNotBlank()}.joinToString("\n")).setNegativeButton("Fechar",null).create())}
+                cover.setOnClickListener {
+                    tracked(AlertDialog.Builder(activity)
+                        .setTitle(credit.title)
+                        .setMessage(listOf(credit.author,"Concluído · ${ReadingDays.label(ReadingDays.at(credit.at))}").filter {it.isNotBlank()}.joinToString("\n"))
+                        .setNeutralButton("Retirar desta meta"){_,_->excludeFromPurchaseGoal(entry,goal,credit.bookId)}
+                        .setNegativeButton("Fechar",null).create())
+                }
             }
             ui.label(item,credit?.title ?: "A ler",9,if(credit!=null)ui.text else ui.muted).apply {maxLines=2;ellipsize=android.text.TextUtils.TruncateAt.END;(layoutParams as LinearLayout.LayoutParams).topMargin=ui.dp(4)}
         }
@@ -210,7 +225,7 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
         if(unlocked)ui.action(actions,"Registrar compra",primary=true){confirmPurchase(entry)}.apply {tag="goal-purchase:${goal.id}";minHeight=ui.dp(36);textSize=11f;layoutParams=LinearLayout.LayoutParams(-2,ui.dp(36))}
         return details
     }
-    private fun creditRow(parent:LinearLayout,credit:GoalCredit,pages:Boolean,sessions:List<ReadingSession>,goal:ReadingGoal?=null){
+    private fun creditRow(parent:LinearLayout,credit:GoalCredit,pages:Boolean,sessions:List<ReadingSession>,goal:ReadingGoal?=null,entry:ReadingGoalStore.Entry?=null){
         val row=ui.row().apply {tag="goal-credit:${credit.bookId}";setPadding(0,ui.dp(6),0,ui.dp(6));isFocusable=true};parent.addView(row)
         val image=ImageView(activity).apply {scaleType=ImageView.ScaleType.FIT_CENTER;setImageDrawable(ui.symbol("books",ui.muted,32));images.thumbnail(credit.cover)?.let(::setImageBitmap)}
         row.addView(image,LinearLayout.LayoutParams(ui.dp(34),ui.dp(50)).apply {marginEnd=ui.dp(10)})
@@ -220,7 +235,11 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
         row.setOnClickListener {
             val records=sessions.filter {it.id in credit.sessionIds}
             val message=if(records.isEmpty())credit.author else records.sortedBy {it.finishedAt}.joinToString("\n\n"){"${ReadingDays.label(it.readingDay ?: ReadingDays.at(it.startedAt))}\nPáginas ${if(pages && goal!=null && it.startedAt<goal.fromAt)maxOf(it.startPage,goal.baseline[it.bookId] ?: 0)else it.startPage} → ${it.endPage} · ${readingTime(it.durationMs)}"}
-            tracked(AlertDialog.Builder(activity).setTitle(credit.title).setMessage(message).setNegativeButton("Fechar",null).create())
+            val builder=AlertDialog.Builder(activity).setTitle(credit.title).setMessage(message).setNegativeButton("Fechar",null)
+            if(goal!=null && entry!=null && goal.metric==GoalMetric.PURCHASE){
+                builder.setNeutralButton("Retirar desta meta"){_,_->excludeFromPurchaseGoal(entry,goal,credit.bookId)}
+            }
+            tracked(builder.create())
         }
     }
     private fun confirmPurchase(entry:ReadingGoalStore.Entry){
