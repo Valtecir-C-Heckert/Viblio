@@ -14,7 +14,18 @@ data class CatalogBook(val id:String,val source:String,val title:String,val auth
 
 data class CatalogCover(val id:String,val url:String,val primary:Boolean=false,val bookId:String="",val title:String="",val publisher:String="",val isbn:String="",val pages:Int?=null,val sequence:Int?=null)
 data class CatalogCoverPage(val source:String,val items:List<CatalogCover>,val nextCursor:Int?=null,val truncated:Boolean=false)
-data class RecommendationSection(val key:String,val title:String,val tag:String,val items:List<CatalogBook>)
+data class RecommendationSection(
+    val key:String,
+    val title:String,
+    val tag:String,
+    val items:List<CatalogBook>,
+    val term:String="",
+    val effectiveKind:String="all",
+    val hasMore:Boolean=false,
+    val nextCursor:Int=1,
+)
+data class RecommendationPage(val items:List<CatalogBook>,val hasMore:Boolean,val nextCursor:Int)
+data class CatalogSearchPage(val items:List<CatalogBook>,val nextCursor:Int?=null)
 data class CatalogRecommendations(val anchorTitle:String,val anchorKind:String,val sections:List<RecommendationSection>)
 
 /** Optional catalogue capability. The Central leaves this null; the Viblio hosts its adapter. */
@@ -24,6 +35,9 @@ interface BookCatalog {
     val configured:Boolean
     fun configure()
     fun search(title:String,author:String="",isbn:String="",done:(Result<List<CatalogBook>>)->Unit)
+    fun searchUnified(query:String,kind:String="all",cursor:Int?=null,done:(Result<CatalogSearchPage>)->Unit) {
+        search(query) { res -> done(res.map { CatalogSearchPage(it, null) }) }
+    }
     fun searchIsbn(isbn:String,done:(Result<List<CatalogBook>>)->Unit){
         val versions=br.com.centralcasa.books.Isbn.variants(isbn)
         search("",isbn=versions.first()){result->
@@ -33,6 +47,9 @@ interface BookCatalog {
     fun loadCover(book:CatalogBook,done:(Result<String>)->Unit)
     fun chooseCover(id:String,source:String,done:(Result<CatalogCover>)->Unit) { done(Result.failure(IllegalStateException("Capas alternativas indisponíveis neste catálogo."))) }
     fun recommendations(kind:String="all",seed:Int=0,done:(Result<CatalogRecommendations>)->Unit) { done(Result.success(CatalogRecommendations("","none",emptyList()))) }
+    fun recommendationsMore(section:String,term:String,kind:String="all",cursor:Int=1,seed:Int=0,excludeIds:List<String> = emptyList(),done:(Result<RecommendationPage>)->Unit) {
+        done(Result.success(RecommendationPage(emptyList(),false,cursor)))
+    }
     fun libraryFingerprint():String = ""
     fun wishlist(done:(Result<List<CatalogBook>>)->Unit) { done(Result.success(emptyList())) }
     fun addWishlist(book:CatalogBook,done:(Result<CatalogBook>)->Unit) { done(Result.failure(IllegalStateException("Lista de desejos indisponível neste catálogo."))) }

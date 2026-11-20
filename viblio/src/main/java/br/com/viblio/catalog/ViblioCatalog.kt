@@ -63,6 +63,23 @@ class ViblioCatalog(private val activity:Activity,private val changed:(Boolean)-
     override fun search(title:String,author:String,isbn:String,done:(Result<List<CatalogBook>>)->Unit) {
         browse.execute { val response=runCatching { api().search(title,author,isbn).also { rows->rows.firstOrNull()?.let { prefs.edit().putString("source",it.source).apply() } } };post { done(response) } }
     }
+    override fun searchUnified(query:String,kind:String,cursor:Int?,done:(Result<CatalogSearchPage>)->Unit) {
+        browse.execute {
+            val response=runCatching {
+                api().searchUnified(query,kind,cursor).also { page ->
+                    page.items.firstOrNull()?.let { prefs.edit().putString("source",it.source).apply() }
+                }
+            }.recoverCatching { err ->
+                if(cursor==null && err is CatalogHttpException && err.status in listOf(404,405,422)) {
+                    val client=api()
+                    val byTitle=runCatching { client.search(query) }.getOrDefault(emptyList())
+                    val byAuthor=runCatching { client.search("",author=query) }.getOrDefault(emptyList())
+                    CatalogSearchPage(CatalogSearch.filter(CatalogSearch.merge(byTitle,byAuthor),kind),null)
+                } else throw err
+            }
+            post { done(response) }
+        }
+    }
     override fun libraryFingerprint():String {
         val cur=library.currentId().orEmpty()
         val books=library.books()
@@ -82,10 +99,13 @@ class ViblioCatalog(private val activity:Activity,private val changed:(Boolean)-
                 val raw=api().recommendations(
                     kind=kind,
                     seed=seed,
+                    anchorCatalogId=currentBook?.catalogId.orEmpty(),
+                    anchorKind=currentBook?.kind.orEmpty(),
                     anchorTitle=currentBook?.title.orEmpty(),
                     anchorAuthor=currentBook?.author.orEmpty(),
                     anchorGenre=currentBook?.genre.orEmpty(),
                     anchorSubgenre=sub,
+                    anchorSaga=currentBook?.saga.orEmpty(),
                 )
                 val filteredSections=raw.sections.mapNotNull { sec ->
                     val unowned=OwnedBookMatcher.filterUnowned(sec.items,owned)
@@ -94,6 +114,19 @@ class ViblioCatalog(private val activity:Activity,private val changed:(Boolean)-
                 raw.copy(sections=filteredSections)
             }.recoverCatching { err ->
                 if(err is CatalogHttpException && err.status in listOf(404,405)) CatalogRecommendations("","none",emptyList()) else throw err
+            }
+            post { done(response) }
+        }
+    }
+    override fun recommendationsMore(section:String,term:String,kind:String,cursor:Int,seed:Int,excludeIds:List<String>,done:(Result<RecommendationPage>)->Unit) {
+        if(!configured || !personalMode()) { done(Result.success(RecommendationPage(emptyList(),false,cursor)));return }
+        browse.execute {
+            val response=runCatching {
+                val owned=library.books()
+                val page=api().recommendationsMore(section,term,kind,cursor,seed,excludeIds)
+                page.copy(items=OwnedBookMatcher.filterUnowned(page.items,owned))
+            }.recoverCatching { err ->
+                if(err is CatalogHttpException && err.status in listOf(404,405)) RecommendationPage(emptyList(),false,cursor) else throw err
             }
             post { done(response) }
         }

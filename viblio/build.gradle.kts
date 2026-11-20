@@ -13,7 +13,7 @@ android {
     namespace = "br.com.centralcasa"
     compileSdk = 35
     buildToolsVersion = "35.0.0"
-    defaultConfig { applicationId = "br.com.viblio"; minSdk = 21; targetSdk = 35; versionCode = 46; versionName = "0.4.10"; testInstrumentationRunner = "br.com.viblio.CatalogInstrumentation" }
+    defaultConfig { applicationId = "br.com.viblio"; minSdk = 21; targetSdk = 35; versionCode = 47; versionName = "0.5.0"; testInstrumentationRunner = "br.com.viblio.CatalogInstrumentation" }
     buildTypes {
         getByName("release") {
             isDebuggable = false

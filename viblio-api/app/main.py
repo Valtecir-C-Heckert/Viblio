@@ -243,12 +243,32 @@ def create_app(database_url=None, api_token=None, storage=None, public_url=None)
             connection.execute('SELECT reply_to_id FROM public.viblio_club_messages LIMIT 1')
             connection.execute('SELECT 1 FROM public.viblio_club_stage_reads LIMIT 1')
             connection.execute('SELECT 1 FROM public.viblio_wishlist LIMIT 1')
-        return {'ok': True, 'catalog_source': catalog_source, 'api_version': 11, 'friends_api': 1, 'feed_api': 1, 'clubs_api': 3, 'club_events_api': 1, 'account_api': 1, 'recommendations_api': 1, 'wishlist_api': 1, 'username_login': True}
+        return {'ok': True, 'catalog_source': catalog_source, 'api_version': 12, 'friends_api': 1, 'feed_api': 1, 'clubs_api': 3, 'club_events_api': 1, 'account_api': 1, 'recommendations_api': 2, 'wishlist_api': 1, 'search_api': 2, 'username_login': True}
     @app.get('/v1/books', dependencies=[Depends(authenticate)])
     def search(q: str = Query('', max_length=300), author: str = Query('', max_length=300),
-               isbn: str = Query('', max_length=32), limit: int = Query(20, ge=1, le=50),
+               isbn: str = Query('', max_length=32), query: str = Query('', max_length=300),
+               kind: Literal['all', 'book', 'manga', 'comic'] = 'all',
+               limit: int = Query(20, ge=1, le=50),
                cursor: int | None = None):
+        if query.strip() and not isbn.strip():
+            cleaned = query.strip()
+            if len(cleaned) < 3:
+                raise HTTPException(422, 'Digite pelo menos três caracteres.')
+            offset = max(0, min(cursor or 0, 250))
+            from .search import unified_search
+            from .cover_gallery import canonical_rows
+            with connect() as connection:
+                page, next_offset = unified_search(connection, COLUMNS, cleaned, kind, limit, offset)
+                page = canonical_rows(page, connection, public_url)
+            return {
+                'items': [present(row) for row in page],
+                'next_cursor': str(next_offset) if next_offset is not None else None,
+                'catalog_source': catalog_source,
+            }
         clauses = []; params = []
+        if kind != 'all':
+            from .search import kind_clause
+            clauses.append(kind_clause(kind))
         def part(column, value):
             value = value.strip()
             if value:
@@ -260,7 +280,8 @@ def create_app(database_url=None, api_token=None, storage=None, public_url=None)
             key = isbn_key(isbn)
             if len(key) not in (10, 13): raise HTTPException(422, 'Informe ISBN com 10 ou 13 caracteres.')
             clauses.append("regexp_replace(upper(coalesce(isbn,'')), '[^0-9X]', '', 'g')=%s"); params.append(key)
-        if not clauses: return {'items': [], 'next_cursor': None, 'catalog_source': catalog_source}
+        if not clauses or (kind != 'all' and len(clauses) == 1):
+            return {'items': [], 'next_cursor': None, 'catalog_source': catalog_source}
         if cursor is not None: clauses.append('id>%s'); params.append(cursor)
         params.append(limit + 1)
         with connect() as connection:

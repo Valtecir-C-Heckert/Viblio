@@ -42,6 +42,8 @@ def prepare_database():
                 if statement.strip():db.execute(statement)
             for statement in Path('migrations/014_recommendation_indexes.sql').read_text().split(';'):
                 if statement.strip():db.execute(statement)
+            for statement in Path('migrations/016_search_saga_index.sql').read_text().split(';'):
+                if statement.strip():db.execute(statement)
         db.execute(Path('migrations/005_usernames.sql').read_text())
         db.execute(Path('migrations/007_friends.sql').read_text())
         db.execute(Path('migrations/008_activity_feed.sql').read_text())

@@ -56,7 +56,7 @@ class AccountPanel(private val activity:Activity,private val ui:DisplayUi,privat
                 if(!form.containsKey(key))form[key]=default
                 input.addTextChangedListener(object:TextWatcher {override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){};override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){form[key]=s.toString()};override fun afterTextChanged(s:Editable?){} })
                 if(password && key=="password") {
-                    val row=ui.row().apply {background=ui.outlined(0xff1e2225.toInt(),0xff3a4145.toInt(),12)}
+                    val row=ui.row().apply {background=if(ui.rectilinear)ui.outlined(ui.surface) else ui.outlined(0xff1e2225.toInt(),0xff3a4145.toInt(),12)}
                     input.background=null;row.addView(input,LinearLayout.LayoutParams(0,ui.dp(54),1f))
                     ui.action(row,"Mostrar") {
                         val showing=input.transformationMethod !is android.text.method.PasswordTransformationMethod

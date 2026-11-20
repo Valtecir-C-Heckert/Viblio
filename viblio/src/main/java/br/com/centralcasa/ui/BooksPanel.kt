@@ -45,6 +45,9 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     var pinchStep=1.2
     var separateShelfStatistics=false
     var onStatisticsBack:(()->Unit)?=null
+    var planCatalogProvider:()->br.com.centralcasa.books.catalog.BookCatalog?={null}
+    var onOpenPlannedBook:((String)->Unit)?=null
+    var onAddCatalogToShelf:((br.com.centralcasa.books.catalog.CatalogBook)->Unit)?=null
     var onAccount:(()->Unit)?=null
     var jsonAllowed:()->Boolean={true}
     var useGroupedReadingHistory=false
@@ -61,6 +64,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     private var refreshSpines:(()->Unit)?=null
     private val statisticsExpanded=mutableSetOf<String>()
     private var goalsPanel:ReadingGoalsPanel?=null
+    private var annualPlanPanel:AnnualPlanPanel?=null
     private var progressDialog:AlertDialog?=null
     private var manualScrollDirection=0
     private val manualAutoScroll=object:Runnable {
@@ -119,7 +123,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     fun currentReadingThumbnail(): android.graphics.Bitmap? = repository.current()?.let { images.thumbnail(it.cover) }
     val isCurrentReading get()=isDetail && selected!=null && selected==repository.current()?.id
     val isEditor get() = screen in listOf("editor", "collection_editor")
-    val canReplaceLibrary get() = !isEditor && manualDraft==null && !busy && (progressDialog?.isShowing!=true) && (goalsPanel?.isEditing!=true) && !datesEditor.isEditing
+    val canReplaceLibrary get() = !isEditor && manualDraft==null && !busy && (progressDialog?.isShowing!=true) && (goalsPanel?.isEditing!=true) && (annualPlanPanel?.isEditing!=true) && !datesEditor.isEditing
     private var editingGenre = ""
     private val editingSubgenres = mutableListOf<String>()
     private var subgenreInput: AutoCompleteTextView? = null
@@ -151,7 +155,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     init { repository.recover(); settings.migrateGenreColors() }
     fun onStart() { visible = true; handler.removeCallbacks(tick); handler.post(tick) }
     fun onStop() { stopManualScroll();captureEditor(); captureCollectionEditor(); visible = false; handler.removeCallbacks(tick); repository.checkpoint() }
-    fun onDestroy() { datesEditor.close();goalsPanel?.close();goalsPanel=null;progressDialog?.dismiss();progressDialog=null;destroyed = true;refreshSpines=null; if(useAsyncShelfImages || useSpineLayout) shelfThumbnails.close(); handler.removeCallbacksAndMessages(null); worker.execute { repository.close() }; worker.shutdown() }
+    fun onDestroy() { datesEditor.close();goalsPanel?.close();goalsPanel=null;annualPlanPanel?.close();annualPlanPanel=null;progressDialog?.dismiss();progressDialog=null;destroyed = true;refreshSpines=null; if(useAsyncShelfImages || useSpineLayout) shelfThumbnails.close(); handler.removeCallbacksAndMessages(null); worker.execute { repository.close() }; worker.shutdown() }
     fun saveState(out: Bundle) {
         out.putBoolean("books.manualView",manualView)
         manualDraft?.let { out.putStringArrayList("books.manualDraft",ArrayList(it)) }
@@ -376,6 +380,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     }
     fun openShelf() { fields.clear();editor=null;collectionFields.clear();collectionEditor=null;selected=null;selectedCollection=null;show("library") }
     fun openCurrent() { selectedCollection = repository.current()?.collectionId?.takeIf { it.isNotBlank() }; selected = repository.currentId(); show(if (selected == null) "library" else "detail") }
+    fun openBook(id: String) { selectedCollection = repository.book(id)?.collectionId?.takeIf { it.isNotBlank() }; open(id) }
     private fun show(destination: String) {
         if (screen == "library") shelfScroll = activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll).scrollY
         catalogGeneration++
@@ -2026,7 +2031,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
             repository.save(b.copy(updatedAt = System.currentTimeMillis())); catalog?.saved(b); selected = b.id; editor = null; fields.clear(); show("detail")
         } catch (e: Exception) { toast(e.message ?: "Confira os campos.") }
     }
-    private var statisticsPeriodView=false
+    private var statisticsTab="summary" // "summary" | "plan" | "periods"
     private var readingPeriodUnit=ReadingPeriodUnit.MONTH
     private var readingPeriodAnchor=ReadingDays.at(System.currentTimeMillis())
     private var periodVisibleBooks=10
@@ -2106,11 +2111,34 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
             },LinearLayout.LayoutParams(ui.dp(18),ui.dp(18)))
         }
         fun divider(target:LinearLayout)=target.addView(View(activity).apply {setBackgroundColor(if(ui.rectilinear)ui.lineColor else 0xff25372d.toInt())},LinearLayout.LayoutParams(-1,ui.dp(1)).apply {topMargin=ui.dp(10);bottomMargin=ui.dp(10)})
-        val header=row(parent).apply {setPadding(ui.dp(8),0,ui.dp(12),0)}
-        ui.icon(header,"back","Voltar à estante",44){onStatisticsBack?.invoke() ?: show("library")}
+        val header=row(parent).apply {setPadding(ui.dp(if(separateShelfStatistics) 20 else 8),0,ui.dp(16),0)}
+        if(!separateShelfStatistics) ui.icon(header,"back","Voltar à estante",44){onStatisticsBack?.invoke() ?: show("library")}
         heading(header,if(ui.rectilinear)"ESTATÍSTICAS" else "Estatísticas",30).layoutParams=LinearLayout.LayoutParams(0,-2,1f)
-        ui.icon(header,if(statisticsPeriodView)"stats" else "calendar",if(statisticsPeriodView)"Resumo" else "Leitura por período",44){statisticsPeriodView=!statisticsPeriodView;changed()}.apply {tag=if(statisticsPeriodView)"statistics-summary" else "statistics-periods"}
-        val filters=row(parent).apply {setPadding(ui.dp(20),ui.dp(2),ui.dp(20),0)}
+        val subtabs=row(parent).apply {setPadding(ui.dp(20),ui.dp(4),ui.dp(20),0)}
+        val tabDefs=if(ui.rectilinear) listOf("summary" to "Resumo","plan" to "Plano & Metas","periods" to "Períodos") else listOf("summary" to "Resumo","periods" to "Períodos")
+        tabDefs.forEach { (key,name) ->
+            val active=statisticsTab==key
+            val cell=ui.column().apply {
+                tag="statistics-subtab:$key";isSelected=active;isFocusable=true;contentDescription="Estatísticas: $name"
+                setOnClickListener {if(statisticsTab!=key){statisticsTab=key;changed()}}
+            }
+            subtabs.addView(cell,LinearLayout.LayoutParams(0,-2,1f))
+            label(cell,name,12,if(active)mint else ui.muted).apply {gravity=Gravity.CENTER;minHeight=ui.dp(40);maxLines=1}
+            cell.addView(View(activity).apply {setBackgroundColor(if(active)mint else if(ui.rectilinear)ui.lineColor else 0xff25372d.toInt())},LinearLayout.LayoutParams(-1,ui.dp(if(active)2 else 1)))
+        }
+        if(statisticsTab=="plan" && ui.rectilinear){
+            val panel=annualPlanPanel ?: AnnualPlanPanel(
+                activity = activity,
+                ui = ui,
+                repo = repository,
+                catalogProvider = { planCatalogProvider() },
+                onOpenBook = onOpenPlannedBook,
+                onAddCatalogBook = onAddCatalogToShelf,
+            ) { if(!destroyed) changed() }.also { annualPlanPanel = it }
+            panel.render(parent)
+            return
+        }
+        val filters=row(parent).apply {setPadding(ui.dp(20),ui.dp(6),ui.dp(20),0)}
         linkedMapOf("all" to "Todos","book" to "Livros","manga" to "Mangás","comic" to "Quadrinhos").forEach { (key,name)->
             val active=statisticsType==key
             val tab=ui.column().apply {
@@ -2118,13 +2146,13 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
                 setOnClickListener {statisticsType=key;settings.set("STATISTICS_TYPE",key);changed()}
             }
             filters.addView(tab,LinearLayout.LayoutParams(0,-2,1f))
-            label(tab,name,11,if(active)mint else ui.muted).apply {gravity=Gravity.CENTER;minHeight=ui.dp(40);maxLines=1}
+            label(tab,name,11,if(active)mint else ui.muted).apply {gravity=Gravity.CENTER;minHeight=ui.dp(36);maxLines=1}
             tab.addView(View(activity).apply {setBackgroundColor(if(active)mint else if(ui.rectilinear)ui.lineColor else 0xff25372d.toInt())},LinearLayout.LayoutParams(-1,ui.dp(if(active)2 else 1)))
         }
         val books=repository.books().filter {statisticsType=="all" || it.kind==statisticsType}
         val byId=books.associateBy {it.id}
         val sessions=repository.sessions().filter {it.bookId in byId}
-        if(statisticsPeriodView){periodStatistics(parent,books,sessions,mint);return}
+        if(statisticsTab=="periods"){periodStatistics(parent,books,sessions,mint);return}
 
         val knownSessions=sessions.filter {byId[it.bookId]?.pagesKnown==true}
         val totalDuration=sessions.sumOf {it.durationMs}
@@ -2142,7 +2170,6 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
         val rate=ui.column();rhythm.addView(rate,LinearLayout.LayoutParams(0,-2,1f))
         heading(rate,if(timedDuration>0 && timedPages>0) "${format.format(kotlin.math.round(timedPages*3600000.0/timedDuration).toLong())} pág/h" else "—",23)
         label(rate,"ritmo médio",11,ui.muted)
-        if(ui.rectilinear)(goalsPanel ?: ReadingGoalsPanel(activity,ui,repository){if(!destroyed)changed()}.also {goalsPanel=it}).render(parent)
         val shelf=card("Sua estante","book-spines")
         val totals=row(shelf).apply {setPadding(0,ui.dp(12),0,0)}
         listOf(books.size to when(statisticsType){"book"->"livros";"all"->"exemplares";else->"volumes"},done to "concluídos",books.map {ShelfFilters.key(it.author)}.filter {it.isNotBlank()}.distinct().size to "autores").forEachIndexed { index,(value,name)->

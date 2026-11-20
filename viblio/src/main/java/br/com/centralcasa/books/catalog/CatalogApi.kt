@@ -42,16 +42,43 @@ class CatalogApi(val address:String,private val token:String) {
         val body=call(Request.Builder().url(url));val source=body.get("catalog_source").asString
         return body.getAsJsonArray("items").map { decode(it.asJsonObject,source) }
     }
-    fun recommendations(kind:String="all",seed:Int=0,anchorTitle:String="",anchorAuthor:String="",anchorGenre:String="",anchorSubgenre:String=""):CatalogRecommendations {
+    fun searchUnified(query:String,kind:String="all",cursor:Int?=null,limit:Int=20):CatalogSearchPage {
+        val safeKind=if(kind in listOf("all","book","manga","comic")) kind else "all"
+        val urlBuilder=okhttp3.HttpUrl.Builder().scheme(URI(address).scheme).host(URI(address).host).port(URI(address).port.takeIf { it>0 } ?: if(URI(address).scheme=="https") 443 else 80)
+            .addPathSegments(URI(address).path.trim('/')+if(URI(address).path.trim('/').isBlank()) "v1/books" else "/v1/books")
+            .addQueryParameter("query",query.trim().take(300))
+            .addQueryParameter("kind",safeKind)
+            .addQueryParameter("limit",limit.coerceIn(1,50).toString())
+        if(cursor!=null && cursor>0) urlBuilder.addQueryParameter("cursor",cursor.toString())
+        val body=call(Request.Builder().url(urlBuilder.build()))
+        val source=body.get("catalog_source")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+        val items=body.getAsJsonArray("items")?.mapNotNull { runCatching { decode(it.asJsonObject,source) }.getOrNull() } ?: emptyList()
+        val next=body.get("next_cursor")?.takeUnless { it.isJsonNull }?.asString?.toIntOrNull()
+        return CatalogSearchPage(items,next)
+    }
+    fun recommendations(
+        kind:String="all",
+        seed:Int=0,
+        anchorCatalogId:String="",
+        anchorKind:String="",
+        anchorTitle:String="",
+        anchorAuthor:String="",
+        anchorGenre:String="",
+        anchorSubgenre:String="",
+        anchorSaga:String="",
+    ):CatalogRecommendations {
         val safeKind=if(kind in listOf("all","book","manga","comic")) kind else "all"
         val safeSeed=seed.coerceIn(0,10000)
         val urlBuilder=okhttp3.HttpUrl.Builder().scheme(URI(address).scheme).host(URI(address).host).port(URI(address).port.takeIf { it>0 } ?: if(URI(address).scheme=="https") 443 else 80)
             .addPathSegments(URI(address).path.trim('/')+if(URI(address).path.trim('/').isBlank()) "v1/books/recommendations" else "/v1/books/recommendations")
             .addQueryParameter("kind",safeKind).addQueryParameter("seed",safeSeed.toString()).addQueryParameter("per_section","10")
+        if(anchorCatalogId.isNotBlank()) urlBuilder.addQueryParameter("anchor_catalog_id",anchorCatalogId.trim().take(24))
+        if(anchorKind.isNotBlank()) urlBuilder.addQueryParameter("anchor_kind",anchorKind.trim().take(16))
         if(anchorTitle.isNotBlank()) urlBuilder.addQueryParameter("anchor_title",anchorTitle.trim().take(200))
         if(anchorAuthor.isNotBlank()) urlBuilder.addQueryParameter("anchor_author",anchorAuthor.trim().take(200))
         if(anchorGenre.isNotBlank()) urlBuilder.addQueryParameter("anchor_genre",anchorGenre.trim().take(200))
         if(anchorSubgenre.isNotBlank()) urlBuilder.addQueryParameter("anchor_subgenre",anchorSubgenre.trim().take(200))
+        if(anchorSaga.isNotBlank()) urlBuilder.addQueryParameter("anchor_saga",anchorSaga.trim().take(200))
         val body=call(Request.Builder().url(urlBuilder.build()))
         val source=body.get("catalog_source")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
         val resAnchorTitle=body.get("anchor_title")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
@@ -61,10 +88,41 @@ class CatalogApi(val address:String,private val token:String) {
             val key=obj.get("key")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
             val title=obj.get("title")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
             val tag=obj.get("tag")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+            val term=obj.get("term")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+            val effKind=obj.get("kind")?.takeUnless { it.isJsonNull }?.asString ?: safeKind
+            val hasMore=obj.get("has_more")?.takeUnless { it.isJsonNull }?.runCatching { asBoolean }?.getOrNull() ?: false
+            val nextCursor=obj.get("next_cursor")?.takeUnless { it.isJsonNull }?.runCatching { asInt }?.getOrNull() ?: 1
             val items=obj.getAsJsonArray("items")?.mapNotNull { item -> runCatching { decode(item.asJsonObject,source) }.getOrNull() } ?: emptyList()
-            if(items.isEmpty()) null else RecommendationSection(key,title,tag,items)
+            if(items.isEmpty()) null else RecommendationSection(key,title,tag,items,term,effKind,hasMore,nextCursor)
         } ?: emptyList()
         return CatalogRecommendations(resAnchorTitle,resAnchorKind,sections)
+    }
+    fun recommendationsMore(
+        section:String,
+        term:String,
+        kind:String="all",
+        cursor:Int=1,
+        seed:Int=0,
+        excludeIds:List<String> = emptyList(),
+        limit:Int=10,
+    ):RecommendationPage {
+        val safeKind=if(kind in listOf("all","book","manga","comic")) kind else "all"
+        val urlBuilder=okhttp3.HttpUrl.Builder().scheme(URI(address).scheme).host(URI(address).host).port(URI(address).port.takeIf { it>0 } ?: if(URI(address).scheme=="https") 443 else 80)
+            .addPathSegments(URI(address).path.trim('/')+if(URI(address).path.trim('/').isBlank()) "v1/books/recommendations/more" else "/v1/books/recommendations/more")
+            .addQueryParameter("section",section)
+            .addQueryParameter("term",term.trim().take(200))
+            .addQueryParameter("kind",safeKind)
+            .addQueryParameter("cursor",cursor.coerceIn(0,20).toString())
+            .addQueryParameter("seed",seed.coerceIn(0,10000).toString())
+            .addQueryParameter("limit",limit.coerceIn(3,12).toString())
+        val ex=excludeIds.map { it.trim() }.filter { it.toLongOrNull()!=null }.distinct().take(200).joinToString(",")
+        if(ex.isNotBlank()) urlBuilder.addQueryParameter("exclude_ids",ex)
+        val body=call(Request.Builder().url(urlBuilder.build()))
+        val source=body.get("catalog_source")?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+        val items=body.getAsJsonArray("items")?.mapNotNull { item -> runCatching { decode(item.asJsonObject,source) }.getOrNull() } ?: emptyList()
+        val hasMore=body.get("has_more")?.takeUnless { it.isJsonNull }?.runCatching { asBoolean }?.getOrNull() ?: false
+        val nextCursor=body.get("next_cursor")?.takeUnless { it.isJsonNull }?.runCatching { asInt }?.getOrNull() ?: (cursor+1)
+        return RecommendationPage(items,hasMore,nextCursor)
     }
     fun wishlist():List<CatalogBook> {
         val body=call(Request.Builder().url(address.trimEnd('/')+"/v1/me/wishlist"))

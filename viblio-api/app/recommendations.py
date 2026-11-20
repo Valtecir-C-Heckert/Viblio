@@ -1,4 +1,4 @@
-"""Personalized catalog recommendations anchored on the current reading book + separate wishlist ('Quero comprar')."""
+"""Personalized kind-aware catalog recommendations with infinite rail pagination + separate wishlist ('Quero comprar')."""
 import re
 import unicodedata
 from typing import Literal
@@ -8,6 +8,8 @@ from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 MAX_WISHLIST_ITEMS = 500
+MAX_EXCLUDE_IDS = 220
+MAX_RAIL_CURSOR = 20
 CATALOG_ID_RE = re.compile(r'^-?[0-9]{1,19}$')
 ROLE_PARENS_RE = re.compile(r'\s*[\(\[][^\)\]]*[\)\]]')
 VOLUME_MARKER_RE = re.compile(
@@ -18,12 +20,29 @@ TRAILING_NUM_RE = re.compile(r'^(.*\S)\s+0*(\d{1,3})$')
 SUBTITLE_SPLIT_RE = re.compile(r'\s*(?::|\s[-–—|]\s)\s*')
 AUTHOR_SPLIT_RE = re.compile(r'\s*(?:;|/|\||&|\be\b)\s*', re.IGNORECASE)
 TAG_SPLIT_RE = re.compile(r'\s*[;,/|]\s*')
+STEM_SUFFIX_RE = re.compile(r'(?:icas?|icos?|ias?|ios?|as?|os?|es?)$')
+STOP_TAG_WORDS = {'de', 'da', 'do', 'das', 'dos', 'e', 'em', 'na', 'no', 'com', 'para', 'por', 'the', 'of', 'and'}
 
 
 def _norm(value: str | None) -> str:
     text = unicodedata.normalize('NFKD', (value or '').strip().lower())
     text = ''.join(ch for ch in text if not unicodedata.combining(ch))
     return re.sub(r'[^a-z0-9]+', ' ', text).strip()
+
+
+def _stem_token(tok: str) -> str:
+    # Keep short words and Portuguese -ao nouns (ficcao, acao) intact; stem inflectional endings safely.
+    if len(tok) < 5 or tok.endswith('ao') or tok.endswith('oes'):
+        return tok
+    stemmed = STEM_SUFFIX_RE.sub('', tok)
+    return stemmed if len(stemmed) >= 4 else tok
+
+
+def _tag_tokens(term: str) -> list[str]:
+    raw = [t for t in _norm(term).split() if t and t not in STOP_TAG_WORDS]
+    if not raw:
+        raw = [t for t in _norm(term).split() if t]
+    return raw
 
 
 def _clean_isbn(value: str | None) -> str:
@@ -54,6 +73,15 @@ def _kind_clause(kind: str) -> str:
     return "TRUE"
 
 
+def _row_kind(row: dict) -> str:
+    tags = {_norm(row.get('categoria')), _norm(row.get('tipo'))}
+    if tags & {'manga', 'mangas'}:
+        return 'manga'
+    if tags & {'quadrinho', 'quadrinhos', 'hq', 'comic', 'comics'}:
+        return 'comic'
+    return 'book'
+
+
 def _split_authors(raw: str | None) -> list[str]:
     if not raw or not isinstance(raw, str):
         return []
@@ -64,7 +92,6 @@ def _split_authors(raw: str | None) -> list[str]:
     out: list[str] = []
     seen: set[frozenset[str]] = set()
     for part in parts:
-        # Handle catalog "Last, First" format cleanly -> "First Last"
         if part.count(',') == 1:
             left, right = (s.strip() for s in part.split(',', 1))
             if left and right and len(left.split()) <= 3 and len(right.split()) <= 3:
@@ -106,18 +133,37 @@ def _author_matches(row_author: str | None, target_author: str) -> bool:
     return False
 
 
-def _tag_matches(row_value: str | None, term: str) -> bool:
-    target = _norm(term)
-    if len(target) < 2 or not row_value:
-        return False
-    padded_target = f' {target} '
-    for seg in TAG_SPLIT_RE.split(row_value):
-        ns = _norm(seg)
-        if not ns:
-            continue
-        if ns == target or padded_target in f' {ns} ':
+def _token_matches_words(target_tok: str, words: list[str]) -> bool:
+    stem = _stem_token(target_tok)
+    for w in words:
+        if w == target_tok:
+            return True
+        if len(stem) >= 4 and (w.startswith(stem) or _stem_token(w) == stem):
             return True
     return False
+
+
+def _tag_matches(row_value: str | None, term: str) -> bool:
+    target_toks = _tag_tokens(term)
+    if not target_toks or not row_value:
+        return False
+    for seg in TAG_SPLIT_RE.split(row_value):
+        words = [w for w in _norm(seg).split() if w]
+        if not words:
+            continue
+        if all(_token_matches_words(tok, words) for tok in target_toks):
+            return True
+    # Also check full field words in case a compound tag had separators (e.g. "Fantasia / Sombria").
+    all_words = [w for w in _norm(row_value).split() if w]
+    return bool(all_words) and all(_token_matches_words(tok, all_words) for tok in target_toks)
+
+
+def _saga_matches(row_saga: str | None, term: str) -> bool:
+    target_toks = _tag_tokens(term)
+    if not target_toks or not row_saga:
+        return False
+    words = [w for w in _norm(row_saga).split() if w]
+    return bool(words) and all(_token_matches_words(tok, words) for tok in target_toks)
 
 
 def _extract_volume(title: str | None, sequence=None) -> int | None:
@@ -153,7 +199,6 @@ def _base_title(title: str | None) -> str:
     head = parts[0].strip() if parts else stripped
     chosen = head if len(_norm(head)) >= 4 else stripped
     norm = _norm(chosen)
-    # Strip volume suffix so "Vagabond Vol. 1" -> base "vagabond" (volume compared separately).
     no_vol = VOLUME_MARKER_RE.sub('', norm).strip()
     if len(no_vol) >= 3:
         norm = re.sub(r'\s+', ' ', no_vol).strip()
@@ -179,7 +224,6 @@ def _same_work(
 ) -> bool:
     if not t1_full or not t2_full:
         return False
-    # Never conflate different volumes of the same series (e.g. Vol. 1 vs Vol. 2).
     if v1 is not None and v2 is not None and v1 != v2:
         return False
     both_authors = bool(a1 and a2)
@@ -277,7 +321,7 @@ def _subgenres_of(book: dict) -> list[str]:
     return unique
 
 
-def _extract_profile(library: dict | None, live_anchor: dict | None = None):
+def _build_owned(db, library: dict | None, live_anchor: dict | None = None) -> tuple[_WorkIndex, list[dict]]:
     owned = _WorkIndex()
     active_books: list[dict] = []
     if isinstance(library, dict):
@@ -295,38 +339,116 @@ def _extract_profile(library: dict | None, live_anchor: dict | None = None):
                 author=b.get('author'),
                 sequence=b.get('sequenceNumber'),
             )
-
-    anchor = None
-    anchor_kind = 'none'
-    if live_anchor and any(live_anchor.get(k) for k in ('title', 'author', 'genre', 'subgenre')):
-        anchor = live_anchor
-        anchor_kind = 'current'
+    if live_anchor:
         owned.add(
+            catalog_id=live_anchor.get('catalogId'),
             title=live_anchor.get('title'),
             author=live_anchor.get('author'),
         )
-    elif isinstance(library, dict):
-        current_id = library.get('currentBookId') or library.get('currentId')
-        if current_id:
-            for b in active_books:
-                if b.get('id') == current_id:
-                    anchor = b
+    numeric_ids = [int(cid) for cid in owned.ids if CATALOG_ID_RE.fullmatch(cid)]
+    if numeric_ids:
+        owned_cat_rows = db.execute(
+            'SELECT id, work_key, titulo, autor, isbn, ordem FROM public.valteca WHERE id = ANY(%s)',
+            (numeric_ids[:2000],),
+        ).fetchall()
+        for orow in owned_cat_rows:
+            owned.add_row(orow)
+    return owned, active_books
+
+
+def _enrich_anchor_from_catalog(db, anchor: dict | None) -> dict | None:
+    if not anchor:
+        return None
+    enriched = dict(anchor)
+    need_meta = not (enriched.get('subgenre') or enriched.get('subgenres')) or not enriched.get('genre') or not enriched.get('saga') or not enriched.get('author')
+    cid = str(enriched.get('catalogId') or '').strip()
+    cat_row = None
+    if cid and CATALOG_ID_RE.fullmatch(cid):
+        cat_row = db.execute(
+            'SELECT titulo, autor, genero, subgenero, saga, categoria, tipo FROM public.valteca WHERE id=%s',
+            (int(cid),),
+        ).fetchone()
+    elif need_meta and enriched.get('title'):
+        t_toks = [t for t in _norm(enriched.get('title')).split() if len(t) >= 3][:2]
+        a_toks = [t for t in _author_tokens(enriched.get('author')) if len(t) >= 3][:2]
+        if t_toks:
+            clauses = ["public.viblio_normalize(titulo) LIKE public.viblio_normalize(%s) ESCAPE E'\\\\'" for _ in t_toks]
+            params = ['%' + _like_escape(t) + '%' for t in t_toks]
+            for at in a_toks:
+                clauses.append("public.viblio_normalize(autor) LIKE public.viblio_normalize(%s) ESCAPE E'\\\\'")
+                params.append('%' + _like_escape(at) + '%')
+            cat_row = db.execute(
+                f"SELECT titulo, autor, genero, subgenero, saga, categoria, tipo FROM public.valteca WHERE {' AND '.join(clauses)} LIMIT 1",
+                params,
+            ).fetchone()
+    if cat_row:
+        if not enriched.get('author') and cat_row.get('autor'):
+            enriched['author'] = cat_row['autor']
+        if not enriched.get('genre') and cat_row.get('genero'):
+            enriched['genre'] = cat_row['genero']
+        if not (enriched.get('subgenre') or enriched.get('subgenres')) and cat_row.get('subgenero'):
+            enriched['subgenre'] = cat_row['subgenero']
+        if not enriched.get('saga') and cat_row.get('saga'):
+            enriched['saga'] = cat_row['saga']
+        if not enriched.get('kind'):
+            enriched['kind'] = _row_kind(cat_row)
+    return enriched
+
+
+def _select_anchor(library: dict | None, active_books: list[dict], requested_kind: str, live_anchor: dict | None):
+    anchor = None
+    anchor_kind = 'none'
+
+    # 1) Live anchor from device (current reading book) when compatible with requested_kind.
+    if live_anchor and any(live_anchor.get(k) for k in ('catalogId', 'title', 'author', 'genre', 'subgenre', 'saga')):
+        live_k = live_anchor.get('kind') or ''
+        if requested_kind == 'all' or not live_k or live_k == requested_kind:
+            anchor = dict(live_anchor)
+            anchor_kind = 'current'
+
+    # 2) Snapshot current book / scoped fallback by requested_kind.
+    if anchor is None and active_books:
+        scoped = active_books if requested_kind == 'all' else [b for b in active_books if (b.get('kind') or 'book') == requested_kind]
+        if scoped:
+            current_id = (library or {}).get('currentBookId') or (library or {}).get('currentId')
+            if current_id:
+                for b in scoped:
+                    if b.get('id') == current_id:
+                        anchor = dict(b)
+                        anchor_kind = 'current'
+                        break
+            if anchor is None:
+                in_progress = [b for b in scoped if (b.get('currentPage') or 0) > 0 and not _book_complete(b)]
+                if in_progress:
+                    anchor = dict(max(in_progress, key=lambda b: b.get('updatedAt') or 0))
                     anchor_kind = 'current'
-                    break
-        if anchor is None:
-            finished = [b for b in active_books if _book_complete(b)]
-            if finished:
-                anchor = max(finished, key=lambda b: (b.get('updatedAt') or 0, b.get('rating') or 0))
-                anchor_kind = 'last_finished'
-        if anchor is None and active_books:
-            anchor = max(active_books, key=lambda b: (b.get('rating') or 0, b.get('updatedAt') or 0))
-            anchor_kind = 'favorite'
+            if anchor is None:
+                finished = [b for b in scoped if _book_complete(b)]
+                if finished:
+                    anchor = dict(max(finished, key=lambda b: (b.get('updatedAt') or 0, b.get('rating') or 0)))
+                    anchor_kind = 'last_finished'
+            if anchor is None:
+                anchor = dict(max(scoped, key=lambda b: (b.get('rating') or 0, b.get('updatedAt') or 0)))
+                anchor_kind = 'favorite'
 
-    author_scores: dict[str, tuple[float, str]] = {}
-    subgenre_scores: dict[str, tuple[float, str]] = {}
+    # Effective kind: when user is on 'all', lock to the current book's kind so reading a book never leaks manga!
+    if requested_kind != 'all':
+        effective_kind = requested_kind
+    elif anchor and anchor.get('kind') in ('book', 'manga', 'comic'):
+        effective_kind = anchor['kind']
+    else:
+        effective_kind = 'all'
+
+    return anchor, anchor_kind, effective_kind
+
+
+def _series_dedup_tags(active_books: list[dict], effective_kind: str):
+    """Rank fallback subgenres/genres within the SAME kind, counting each series/collection only once."""
+    sub_scores: dict[str, tuple[float, str]] = {}
     genre_scores: dict[str, tuple[float, str]] = {}
+    seen_series: set[str] = set()
 
-    def bump(bucket: dict[str, tuple[float, str]], raw: str | None, weight: float):
+    def bump(bucket, raw: str | None, weight: float):
         if not raw or not isinstance(raw, str):
             return
         cleaned = raw.strip()
@@ -337,42 +459,22 @@ def _extract_profile(library: dict | None, live_anchor: dict | None = None):
         bucket[key] = ((prev[0] if prev else 0.0) + weight, prev[1] if prev else cleaned)
 
     for b in active_books:
+        if effective_kind != 'all' and (b.get('kind') or 'book') != effective_kind:
+            continue
+        series_key = b.get('collectionId') or _norm(b.get('saga')) or b.get('id')
+        if series_key in seen_series:
+            continue
+        seen_series.add(series_key)
         rating = b.get('rating')
-        is_anchor = anchor is not None and anchor.get('id') and b.get('id') == anchor.get('id')
-        weight = 6.0 if is_anchor else (3.0 if (isinstance(rating, (int, float)) and rating >= 4.0) else (2.0 if _book_complete(b) else 1.0))
-        for a in _split_authors(b.get('author')):
-            bump(author_scores, a, weight)
+        weight = 3.0 if (isinstance(rating, (int, float)) and rating >= 4.0) else (2.0 if _book_complete(b) else 1.0)
         for g in TAG_SPLIT_RE.split(b.get('genre') or ''):
             bump(genre_scores, g, weight)
         for sub in _subgenres_of(b):
-            bump(subgenre_scores, sub, weight)
+            bump(sub_scores, sub, weight)
 
-    def ranked(bucket: dict[str, tuple[float, str]], anchor_values: list[str]) -> list[str]:
-        ordered: list[str] = []
-        seen: set[str] = set()
-        for raw in anchor_values:
-            key = _norm(raw)
-            if len(key) >= 2 and key not in seen:
-                seen.add(key)
-                ordered.append(raw.strip())
-        for key, (_, label) in sorted(bucket.items(), key=lambda kv: kv[1][0], reverse=True):
-            if key not in seen:
-                seen.add(key)
-                ordered.append(label)
-        return ordered[:3]
-
-    anchor_authors = _split_authors(anchor.get('author')) if anchor else []
-    anchor_subgenres = _subgenres_of(anchor) if anchor else []
-    anchor_genres = [g.strip() for g in TAG_SPLIT_RE.split(anchor.get('genre') or '') if g.strip()] if anchor else []
-
-    return (
-        anchor,
-        anchor_kind,
-        ranked(author_scores, anchor_authors),
-        ranked(subgenre_scores, anchor_subgenres),
-        ranked(genre_scores, anchor_genres),
-        owned,
-    )
+    top_subs = [label for _, (_, label) in sorted(sub_scores.items(), key=lambda kv: kv[1][0], reverse=True)][:3]
+    top_genres = [label for _, (_, label) in sorted(genre_scores.items(), key=lambda kv: kv[1][0], reverse=True)][:3]
+    return top_subs, top_genres
 
 
 def _valid_cover_url(url: str) -> str:
@@ -427,30 +529,204 @@ def _seed_rank(row_id: int, seed: int) -> int:
     return ((abs(int(row_id)) * 2654435761) + (int(seed) * 1000003)) & 0xFFFFFFFF
 
 
+def _token_like_clauses(column: str, tokens: list[str]) -> tuple[str, list[str]]:
+    sql_parts = []
+    params = []
+    for tok in tokens:
+        stem = _stem_token(tok)
+        pat = '%' + _like_escape(stem) + '%'
+        sql_parts.append(f"public.viblio_normalize({column}) LIKE public.viblio_normalize(%s) ESCAPE E'\\\\'")
+        params.append(pat)
+    return ' AND '.join(sql_parts), params
+
+
 def mount_recommendations(app, connect, current, catalog_source, public_url, columns, present):
     rec_columns = f'{columns}, work_key'
+
+    def _fetch_section_page(
+        db,
+        section: str,
+        term: str,
+        effective_kind: str,
+        limit: int,
+        cursor: int,
+        seed: int,
+        owned: _WorkIndex,
+        shown: _WorkIndex,
+        wishlist_ids: set[str],
+        extra_genre: str = '',
+    ) -> tuple[list[dict], bool, int]:
+        from .cover_gallery import canonical_rows
+
+        kind_sql = _kind_clause(effective_kind)
+        chunk_size = 160
+        base_offset = 0 if section in ('saga', 'author') else (int(seed) % 6) * 24
+
+        def run_sql(offset: int) -> tuple[list[dict], bool]:
+            if section == 'saga':
+                toks = sorted([t for t in _tag_tokens(term) if len(t) >= 3], key=len, reverse=True)[:3]
+                if not toks:
+                    norm_t = _norm(term)
+                    if len(norm_t) < 2:
+                        return [], False
+                    toks = [norm_t]
+                where, params = _token_like_clauses('saga', toks)
+                rows = db.execute(
+                    f"SELECT {rec_columns} FROM public.valteca WHERE {kind_sql} AND {where} LIMIT %s OFFSET %s",
+                    [*params, chunk_size, offset],
+                ).fetchall()
+                return rows, len(rows) >= chunk_size
+
+            if section == 'author':
+                toks = sorted([t for t in _author_tokens(term) if len(t) >= 3], key=len, reverse=True)[:3]
+                if not toks:
+                    norm_t = _norm(term)
+                    if len(norm_t) < 2:
+                        return [], False
+                    toks = [norm_t]
+                where_parts = ["public.viblio_normalize(autor) LIKE public.viblio_normalize(%s) ESCAPE E'\\\\'" for _ in toks]
+                params = ['%' + _like_escape(t) + '%' for t in toks]
+                rows = db.execute(
+                    f"SELECT {rec_columns} FROM public.valteca WHERE {kind_sql} AND {' AND '.join(where_parts)} LIMIT %s OFFSET %s",
+                    [*params, chunk_size, offset],
+                ).fetchall()
+                return rows, len(rows) >= chunk_size
+
+            if section == 'subgenre':
+                toks = sorted([t for t in _tag_tokens(term) if len(t) >= 3], key=len, reverse=True)[:3]
+                if not toks:
+                    norm_t = _norm(term)
+                    if len(norm_t) < 2:
+                        return [], False
+                    toks = [norm_t]
+                # Hyphen-agnostic, stem-aware GIN scan across BOTH subgenero and genero (handles "Fantasia Sombria" in genero!).
+                sub_where, sub_params = _token_like_clauses('subgenero', toks)
+                gen_where, gen_params = _token_like_clauses('genero', toks)
+                rows = db.execute(
+                    f"""SELECT {rec_columns} FROM public.valteca
+                        WHERE {kind_sql} AND (({sub_where}) OR ({gen_where}))
+                        LIMIT %s OFFSET %s""",
+                    [*sub_params, *gen_params, chunk_size, offset],
+                ).fetchall()
+                return rows, len(rows) >= chunk_size
+
+            if section == 'genre':
+                toks = sorted([t for t in _tag_tokens(term) if len(t) >= 3], key=len, reverse=True)[:3]
+                if not toks:
+                    norm_t = _norm(term)
+                    if len(norm_t) < 2:
+                        return [], False
+                    toks = [norm_t]
+                where, params = _token_like_clauses('genero', toks)
+                rows = db.execute(
+                    f"SELECT {rec_columns} FROM public.valteca WHERE {kind_sql} AND {where} LIMIT %s OFFSET %s",
+                    [*params, chunk_size, offset],
+                ).fetchall()
+                return rows, len(rows) >= chunk_size
+
+            # Featured fallback
+            rows = db.execute(
+                f"SELECT {rec_columns} FROM public.valteca WHERE {kind_sql} LIMIT %s OFFSET %s",
+                (chunk_size, offset),
+            ).fetchall()
+            return rows, len(rows) >= chunk_size
+
+        def verifier(row: dict) -> bool:
+            if section == 'saga':
+                return _saga_matches(row.get('saga'), term)
+            if section == 'author':
+                return _author_matches(row.get('autor'), term)
+            if section == 'subgenre':
+                if _tag_matches(row.get('subgenero'), term) or _tag_matches(row.get('genero'), term):
+                    return True
+                if extra_genre and _tag_matches(row.get('genero'), f'{extra_genre} {term}'):
+                    return True
+                return False
+            if section == 'genre':
+                return _tag_matches(row.get('genero'), term)
+            return True
+
+        picked_rows: list[dict] = []
+        raw_has_more = False
+        remaining_in_chunk = False
+        sql_cursor = cursor
+
+        # Scan up to 3 chunks if an earlier chunk was mostly owned/excluded so scrolling never stalls early.
+        for _ in range(3):
+            offset = base_offset + sql_cursor * chunk_size
+            rows, chunk_full = run_sql(offset)
+            if not rows and sql_cursor == 0 and base_offset > 0:
+                rows, chunk_full = run_sql(0)
+            raw_has_more = chunk_full
+            matched = [r for r in rows if verifier(r) and not owned.matches_row(r) and not shown.matches_row(r)]
+            if matched:
+                resolved = canonical_rows(matched, db, public_url)
+                if section == 'saga':
+                    ordered = sorted(
+                        resolved,
+                        key=lambda r: (
+                            0 if r.get('ordem') is not None else 1,
+                            float(r['ordem']) if r.get('ordem') is not None else 999999.0,
+                            0 if (r.get('capa_url') or '').strip() else 1,
+                            int(r['id']),
+                        ),
+                    )
+                else:
+                    ordered = sorted(
+                        resolved,
+                        key=lambda r: (
+                            0 if (r.get('capa_url') or '').strip() else 1,
+                            1 if str(r['id']) in wishlist_ids else 0,
+                            _seed_rank(r['id'], seed),
+                            len(r.get('titulo') or ''),
+                        ),
+                    )
+                for row in ordered:
+                    if owned.matches_row(row) or shown.matches_row(row):
+                        continue
+                    if len(picked_rows) < limit:
+                        shown.add_row(row)
+                        picked_rows.append(row)
+                    else:
+                        remaining_in_chunk = True
+                        break
+            if len(picked_rows) >= limit or not chunk_full or sql_cursor >= MAX_RAIL_CURSOR:
+                break
+            sql_cursor += 1
+
+        # If more unique items remained in the SAME SQL chunk, keep sql_cursor so next call (with exclude_ids) serves them;
+        # otherwise advance sql_cursor by 1 to the next SQL chunk.
+        has_more = (remaining_in_chunk or raw_has_more) and sql_cursor < MAX_RAIL_CURSOR
+        next_cursor = sql_cursor if remaining_in_chunk else (sql_cursor + 1)
+        return [present(r) for r in picked_rows], has_more, next_cursor
 
     @app.get('/v1/books/recommendations')
     def recommendations(
         kind: Literal['all', 'book', 'manga', 'comic'] = 'all',
         seed: int = Query(0, ge=0, le=10000),
         per_section: int = Query(10, ge=3, le=12),
+        anchor_catalog_id: str = Query('', max_length=24),
+        anchor_kind: str = Query('', max_length=16),
         anchor_title: str = Query('', max_length=200),
         anchor_author: str = Query('', max_length=200),
         anchor_genre: str = Query('', max_length=200),
         anchor_subgenre: str = Query('', max_length=200),
+        anchor_saga: str = Query('', max_length=200),
         user=Depends(current),
     ):
-        from .cover_gallery import canonical_rows
-
-        kind_sql = _kind_clause(kind)
         live_anchor = None
-        if any(s.strip() for s in (anchor_title, anchor_author, anchor_genre, anchor_subgenre)):
+        clean_ak = anchor_kind.strip().lower()
+        if clean_ak not in ('book', 'manga', 'comic'):
+            clean_ak = ''
+        if any(s.strip() for s in (anchor_catalog_id, anchor_title, anchor_author, anchor_genre, anchor_subgenre, anchor_saga)):
             live_anchor = {
+                'catalogId': anchor_catalog_id.strip() if CATALOG_ID_RE.fullmatch(anchor_catalog_id.strip()) else '',
+                'kind': clean_ak,
                 'title': anchor_title.strip(),
                 'author': anchor_author.strip(),
                 'genre': anchor_genre.strip(),
                 'subgenre': anchor_subgenre.strip(),
+                'saga': anchor_saga.strip(),
             }
 
         with connect() as db:
@@ -467,162 +743,194 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
             ).fetchall()
             wishlist_ids = {r['catalog_id'] for r in wish_rows}
 
-            anchor, anchor_kind, authors, subgenres, genres, owned = _extract_profile(
-                base['library'] if base else None,
-                live_anchor=live_anchor,
-            )
+            library = base['library'] if base else None
+            owned, active_books = _build_owned(db, library, live_anchor)
+            anchor, anchor_kind_label, effective_kind = _select_anchor(library, active_books, kind, live_anchor)
+            anchor = _enrich_anchor_from_catalog(db, anchor)
+            if kind == 'all' and effective_kind == 'all' and anchor and anchor.get('kind') in ('book', 'manga', 'comic'):
+                effective_kind = anchor['kind']
 
-            # Enrich owned index with work_key, ISBN and canonical titles from public.valteca in 1 fast PK query.
-            numeric_ids = [int(cid) for cid in owned.ids if CATALOG_ID_RE.fullmatch(cid)]
-            if numeric_ids:
-                owned_cat_rows = db.execute(
-                    'SELECT id, work_key, titulo, autor, isbn, ordem FROM public.valteca WHERE id = ANY(%s)',
-                    (numeric_ids[:2000],),
-                ).fetchall()
-                for orow in owned_cat_rows:
-                    owned.add_row(orow)
+            fallback_subs, fallback_genres = _series_dedup_tags(active_books, effective_kind)
+
+            anchor_saga = (anchor.get('saga') or '').strip() if anchor else ''
+            anchor_authors = _split_authors(anchor.get('author')) if anchor else []
+            anchor_subs = _subgenres_of(anchor) if anchor else []
+            anchor_genres = [g.strip() for g in TAG_SPLIT_RE.split((anchor.get('genre') or '') if anchor else '') if g.strip()]
+            primary_genre = anchor_genres[0] if anchor_genres else ''
+
+            # Dedup subgenre & genre candidate lists (anchor FIRST, same-kind fallback only when anchor has none).
+            sub_candidates: list[str] = []
+            seen_sub: set[str] = set()
+            for raw in (anchor_subs if anchor_subs else fallback_subs):
+                k = _norm(raw)
+                if len(k) >= 2 and k not in seen_sub:
+                    seen_sub.add(k)
+                    sub_candidates.append(raw)
+
+            genre_candidates: list[str] = []
+            seen_gen: set[str] = set()
+            for raw in (anchor_genres + fallback_genres):
+                k = _norm(raw)
+                if len(k) >= 2 and k not in seen_gen:
+                    seen_gen.add(k)
+                    genre_candidates.append(raw)
 
             shown = _WorkIndex()
-
-            def filter_and_take(rows: list[dict], limit: int, verifier) -> list[dict]:
-                if not rows:
-                    return []
-                matched = [r for r in rows if verifier(r) and not owned.matches_row(r) and not shown.matches_row(r)]
-                if not matched:
-                    return []
-                resolved = canonical_rows(matched, db, public_url)
-                ordered = sorted(
-                    resolved,
-                    key=lambda r: (
-                        0 if (r.get('capa_url') or '').strip() else 1,
-                        1 if str(r['id']) in wishlist_ids else 0,
-                        _seed_rank(r['id'], seed),
-                        len(r.get('titulo') or ''),
-                    ),
-                )
-                picked: list[dict] = []
-                for row in ordered:
-                    if owned.matches_row(row) or shown.matches_row(row):
-                        continue
-                    shown.add_row(row)
-                    picked.append(present(row))
-                    if len(picked) >= limit:
-                        break
-                return picked
-
-            def query_author_section(terms: list[str], limit: int) -> tuple[str, list[dict]]:
-                for term in terms:
-                    tokens = sorted([t for t in _author_tokens(term) if len(t) >= 3], key=len, reverse=True)[:3]
-                    if not tokens:
-                        norm_term = _norm(term)
-                        if len(norm_term) < 2:
-                            continue
-                        tokens = [norm_term]
-                    # Uses viblio_author_search GIN index directly (no coalesce wrapper, no full-table ORDER BY).
-                    clauses = [
-                        "public.viblio_normalize(autor) LIKE public.viblio_normalize(%s) ESCAPE E'\\\\'"
-                        for _ in tokens
-                    ]
-                    params = ['%' + _like_escape(tok) + '%' for tok in tokens]
-                    rows = db.execute(
-                        f"""SELECT {rec_columns} FROM public.valteca
-                            WHERE {kind_sql}
-                              AND {' AND '.join(clauses)}
-                            LIMIT 160""",
-                        params,
-                    ).fetchall()
-                    batch = filter_and_take(rows, limit, lambda r, t=term: _author_matches(r.get('autor'), t))
-                    if batch:
-                        # Strict 1-author-per-section: never mix other authors under this author's heading.
-                        return term, batch
-                return '', []
-
-            def query_tag_section(column: str, terms: list[str], limit: int) -> tuple[str, list[dict]]:
-                offset = (int(seed) % 8) * 20
-                for term in terms:
-                    norm_term = _norm(term)
-                    if len(norm_term) < 2:
-                        continue
-                    pattern = '%' + _like_escape(term) + '%'
-                    # Uses viblio_genre_search / viblio_subgenre_search GIN index without sorting tens of thousands of rows.
-                    rows = db.execute(
-                        f"""SELECT {rec_columns} FROM public.valteca
-                            WHERE {kind_sql}
-                              AND public.viblio_normalize({column}) LIKE public.viblio_normalize(%s) ESCAPE E'\\\\'
-                            LIMIT 160 OFFSET %s""",
-                        (pattern, offset),
-                    ).fetchall()
-                    if offset > 0 and len(rows) < limit * 2:
-                        rows = db.execute(
-                            f"""SELECT {rec_columns} FROM public.valteca
-                                WHERE {kind_sql}
-                                  AND public.viblio_normalize({column}) LIKE public.viblio_normalize(%s) ESCAPE E'\\\\'
-                                LIMIT 160""",
-                            (pattern,),
-                        ).fetchall()
-                    batch = filter_and_take(rows, limit, lambda r, t=term, c=column: _tag_matches(r.get(c), t))
-                    if batch:
-                        # Strict 1-tag-per-section: never mix unrelated genres/subgenres under this heading.
-                        return term, batch
-                return '', []
-
             sections: list[dict] = []
 
-            author_label, author_items = query_author_section(authors, per_section)
-            if author_items:
-                sections.append({
-                    'key': 'author',
-                    'title': f'Mais de {author_label}',
-                    'tag': 'Autor',
-                    'items': author_items,
-                })
+            # 1) Mais da saga <Saga> (ordered by sequence/ordem ascending!)
+            if len(_norm(anchor_saga)) >= 3:
+                saga_items, saga_more, saga_next = _fetch_section_page(
+                    db, 'saga', anchor_saga, effective_kind, per_section, 0, seed, owned, shown, wishlist_ids,
+                )
+                if saga_items:
+                    sections.append({
+                        'key': 'saga',
+                        'title': f'Mais da saga {anchor_saga}',
+                        'tag': 'Saga',
+                        'term': anchor_saga,
+                        'kind': effective_kind,
+                        'has_more': saga_more,
+                        'next_cursor': saga_next,
+                        'items': saga_items,
+                    })
 
-            sub_label, sub_items = query_tag_section('subgenero', subgenres, per_section)
-            if sub_items:
-                sections.append({
-                    'key': 'subgenre',
-                    'title': f'Em {sub_label}',
-                    'tag': 'Subgênero',
-                    'items': sub_items,
-                })
+            # 2) Mais de <Autor> — STRICTLY anchor's author ONLY (omitted if 0 unowned books; never hijacked by another author!).
+            for author_term in anchor_authors[:2]:
+                author_items, author_more, author_next = _fetch_section_page(
+                    db, 'author', author_term, effective_kind, per_section, 0, seed, owned, shown, wishlist_ids,
+                )
+                if author_items:
+                    sections.append({
+                        'key': 'author',
+                        'title': f'Mais de {author_term}',
+                        'tag': 'Autor',
+                        'term': author_term,
+                        'kind': effective_kind,
+                        'has_more': author_more,
+                        'next_cursor': author_next,
+                        'items': author_items,
+                    })
+                    break
 
-            genre_label, genre_items = query_tag_section('genero', genres, per_section)
-            if genre_items:
-                sections.append({
-                    'key': 'genre',
-                    'title': f'Em {genre_label}',
-                    'tag': 'Gênero',
-                    'items': genre_items,
-                })
+            # 3) Em <Subgênero> — hyphen-agnostic, stem-aware across subgenero + genero!
+            for sub_term in sub_candidates:
+                sub_items, sub_more, sub_next = _fetch_section_page(
+                    db, 'subgenre', sub_term, effective_kind, per_section, 0, seed, owned, shown, wishlist_ids,
+                    extra_genre=primary_genre,
+                )
+                if sub_items:
+                    sections.append({
+                        'key': 'subgenre',
+                        'title': f'Em {sub_term}',
+                        'tag': 'Subgênero',
+                        'term': sub_term,
+                        'kind': effective_kind,
+                        'has_more': sub_more,
+                        'next_cursor': sub_next,
+                        'items': sub_items,
+                    })
+                    break
 
-            # Fallback only when library is empty or catalog has zero matches for user metadata.
+            # 4) Em <Gênero>
+            for gen_term in genre_candidates:
+                gen_items, gen_more, gen_next = _fetch_section_page(
+                    db, 'genre', gen_term, effective_kind, per_section, 0, seed, owned, shown, wishlist_ids,
+                )
+                if gen_items:
+                    sections.append({
+                        'key': 'genre',
+                        'title': f'Em {gen_term}',
+                        'tag': 'Gênero',
+                        'term': gen_term,
+                        'kind': effective_kind,
+                        'has_more': gen_more,
+                        'next_cursor': gen_next,
+                        'items': gen_items,
+                    })
+                    break
+
+            # 5) Catalog highlights fallback only when library is empty or zero matches exist.
             if not sections:
-                offset = (int(seed) % 10) * 15
-                rows = db.execute(
-                    f"""SELECT {rec_columns} FROM public.valteca
-                        WHERE {kind_sql}
-                        LIMIT 120 OFFSET %s""",
-                    (offset,),
-                ).fetchall()
-                if offset > 0 and not rows:
-                    rows = db.execute(
-                        f"""SELECT {rec_columns} FROM public.valteca
-                            WHERE {kind_sql}
-                            LIMIT 120""",
-                    ).fetchall()
-                fallback_items = filter_and_take(rows, per_section, lambda _r: True)
-                if fallback_items:
+                feat_items, feat_more, feat_next = _fetch_section_page(
+                    db, 'featured', '', effective_kind, per_section, 0, seed, owned, shown, wishlist_ids,
+                )
+                if feat_items:
                     sections.append({
                         'key': 'featured',
                         'title': 'Destaques do catálogo',
                         'tag': 'Catálogo',
-                        'items': fallback_items,
+                        'term': '',
+                        'kind': effective_kind,
+                        'has_more': feat_more,
+                        'next_cursor': feat_next,
+                        'items': feat_items,
                     })
 
         return {
             'anchor_title': (anchor.get('title') or '').strip()[:200] if anchor else '',
-            'anchor_kind': anchor_kind,
+            'anchor_kind': anchor_kind_label,
+            'effective_kind': effective_kind,
             'sections': sections,
+            'catalog_source': catalog_source,
+        }
+
+    @app.get('/v1/books/recommendations/more')
+    def recommendations_more(
+        section: Literal['saga', 'author', 'subgenre', 'genre', 'featured'],
+        term: str = Query('', max_length=200),
+        kind: Literal['all', 'book', 'manga', 'comic'] = 'all',
+        cursor: int = Query(0, ge=0, le=MAX_RAIL_CURSOR),
+        seed: int = Query(0, ge=0, le=10000),
+        limit: int = Query(10, ge=3, le=12),
+        exclude_ids: str = Query('', max_length=4500),
+        user=Depends(current),
+    ):
+        clean_term = term.strip()
+        if section != 'featured' and len(_norm(clean_term)) < 2:
+            raise HTTPException(422, 'Termo da seção inválido.')
+
+        excluded: list[int] = []
+        if exclude_ids.strip():
+            for raw in exclude_ids.split(',')[:MAX_EXCLUDE_IDS]:
+                s = raw.strip()
+                if s and CATALOG_ID_RE.fullmatch(s):
+                    excluded.append(int(s))
+
+        with connect() as db:
+            base = db.execute(
+                """SELECT snapshot->'library' AS library
+                   FROM public.viblio_library_bases
+                   WHERE user_id=%s
+                   ORDER BY revision DESC LIMIT 1""",
+                (user['id'],),
+            ).fetchone()
+            wish_rows = db.execute(
+                'SELECT catalog_id FROM public.viblio_wishlist WHERE user_id=%s',
+                (user['id'],),
+            ).fetchall()
+            wishlist_ids = {r['catalog_id'] for r in wish_rows}
+
+            owned, _ = _build_owned(db, base['library'] if base else None)
+            shown = _WorkIndex()
+            if excluded:
+                ex_rows = db.execute(
+                    'SELECT id, work_key, titulo, autor, isbn, ordem FROM public.valteca WHERE id = ANY(%s)',
+                    (excluded,),
+                ).fetchall()
+                for er in ex_rows:
+                    shown.add_row(er)
+                for eid in excluded:
+                    shown.ids.add(str(eid))
+
+            items, has_more, next_cursor = _fetch_section_page(
+                db, section, clean_term, kind, limit, cursor, seed, owned, shown, wishlist_ids,
+            )
+
+        return {
+            'items': items,
+            'has_more': has_more,
+            'next_cursor': next_cursor,
             'catalog_source': catalog_source,
         }
 

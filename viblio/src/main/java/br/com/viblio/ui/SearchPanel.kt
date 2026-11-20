@@ -32,6 +32,9 @@ class SearchPanel(
     private var recSeed = 0
     private var results = emptyList<CatalogBook>()
     private var resultsQuery = ""
+    private var resultsKind = "all"
+    private var resultsNextCursor: Int? = null
+    private var resultsLoadingMore = false
     private var recsCache = mutableMapOf<String, CatalogRecommendations>()
     private var recsFingerprint = ""
     private var recsLoadingKey: String? = null
@@ -54,6 +57,7 @@ class SearchPanel(
         kind = "all"
         results = emptyList()
         resultsQuery = ""
+        resultsNextCursor = null
     }
 
     fun save(state: Bundle) {
@@ -75,6 +79,7 @@ class SearchPanel(
         generation++
         recGeneration++
         recsLoadingKey = null
+        resultsLoadingMore = false
         pending?.let(handler::removeCallbacks)
         pending = null
         covers.detach()
@@ -119,7 +124,7 @@ class SearchPanel(
         ui.label(parent, "Encontre sua próxima leitura", 13, ui.muted)
 
         val field = EditText(activity).apply {
-            hint = "Título, autor ou ISBN"
+            hint = "Título, autor, saga ou ISBN"
             setText(query)
             textSize = 15f
             setTextColor(ui.text)
@@ -129,7 +134,7 @@ class SearchPanel(
             setCompoundDrawables(ui.symbol("search", ui.muted, 20), null, null, null)
             compoundDrawablePadding = ui.dp(10)
             setPadding(ui.dp(14), ui.dp(14), ui.dp(14), ui.dp(14))
-            background = ui.outlined(0x66151515)
+            background = ui.outlined(ui.surface)
         }
         val queryRow = ui.row()
         parent.addView(queryRow, LinearLayout.LayoutParams(-1, ui.dp(56)).apply {
@@ -153,7 +158,7 @@ class SearchPanel(
                     if (kind != key) {
                         kind = key
                         repaintChips()
-                        if (query.trim().length >= 3) drawResults() else drawBrowse()
+                        if (query.trim().length >= 3) schedule(0) else drawBrowse()
                     }
                 }
                 if (ui.rectilinear) {
@@ -312,15 +317,19 @@ class SearchPanel(
         }
     }
 
-    private fun schedule(delay: Long = 400) {
+    private fun schedule(delay: Long = 350) {
         val epoch = ++generation
         pending?.let(handler::removeCallbacks)
         cancelImages()
         rows?.removeAllViews()
         repaintSubtabs()
         val text = query.trim()
+        val reqKind = kind
         results = emptyList()
         resultsQuery = text
+        resultsKind = reqKind
+        resultsNextCursor = null
+        resultsLoadingMore = false
         if (!catalog.configured) {
             statusText = "Entre na sua conta para pesquisar no catálogo."
             status?.visibility = View.VISIBLE
@@ -338,44 +347,72 @@ class SearchPanel(
         status?.visibility = View.VISIBLE
         status?.text = statusText
         fun valid() = active && !closed && generation == epoch
-        var titles = emptyList<CatalogBook>()
-        var authors = emptyList<CatalogBook>()
-        var received = 0
-        var failures = 0
-        fun finish(response: Result<List<CatalogBook>>, byAuthor: Boolean = false) {
-            if (!valid()) return
-            received++
-            response.fold({ if (byAuthor) authors = it else titles = it }, { failures++ })
-            val merged = CatalogSearch.merge(titles, authors)
-            if (merged.isNotEmpty() || received == 2) {
-                val changed = merged != results
-                results = merged
-                resultsQuery = text
-                if (merged.isEmpty() && failures > 0) {
-                    statusText = "Não foi possível completar a pesquisa. Tente novamente."
-                    status?.visibility = View.VISIBLE
-                    status?.text = statusText
-                    rows?.let { target ->
-                        target.removeAllViews()
-                        ui.action(target, "Tentar novamente") { schedule(0) }
-                    }
-                } else {
-                    statusText = ""
-                    if (changed || merged.isEmpty()) drawResults()
-                }
-            }
-        }
         pending = Runnable {
             if (!valid()) return@Runnable
             val isbn = CatalogSearch.isbn(text)
             if (isbn != null) {
-                received = 1
-                catalog.searchIsbn(isbn) { finish(it) }
+                catalog.searchIsbn(isbn) { response ->
+                    if (!valid()) return@searchIsbn
+                    response.fold({ found ->
+                        results = found
+                        resultsQuery = text
+                        resultsKind = reqKind
+                        resultsNextCursor = null
+                        statusText = ""
+                        drawResults()
+                    }, {
+                        statusText = "Não foi possível completar a pesquisa. Tente novamente."
+                        status?.visibility = View.VISIBLE
+                        status?.text = statusText
+                        rows?.let { target ->
+                            target.removeAllViews()
+                            ui.action(target, "Tentar novamente") { schedule(0) }
+                        }
+                    })
+                }
             } else {
-                catalog.search(text) { finish(it) }
-                if (valid()) catalog.search("", author = text) { finish(it, true) }
+                catalog.searchUnified(text, reqKind, null) { response ->
+                    if (!valid()) return@searchUnified
+                    response.fold({ page ->
+                        results = page.items
+                        resultsQuery = text
+                        resultsKind = reqKind
+                        resultsNextCursor = page.nextCursor
+                        statusText = ""
+                        drawResults()
+                    }, {
+                        statusText = "Não foi possível completar a pesquisa. Tente novamente."
+                        status?.visibility = View.VISIBLE
+                        status?.text = statusText
+                        rows?.let { target ->
+                            target.removeAllViews()
+                            ui.action(target, "Tentar novamente") { schedule(0) }
+                        }
+                    })
+                }
             }
         }.also { handler.postDelayed(it, delay) }
+    }
+
+    private fun loadMoreResults() {
+        val next = resultsNextCursor ?: return
+        if (resultsLoadingMore || resultsQuery.length < 3) return
+        val epoch = generation
+        val text = resultsQuery
+        val reqKind = resultsKind
+        resultsLoadingMore = true
+        drawResults()
+        catalog.searchUnified(text, reqKind, next) { response ->
+            resultsLoadingMore = false
+            if (!active || closed || generation != epoch) return@searchUnified
+            response.onSuccess { page ->
+                val seen = results.mapTo(HashSet()) { it.id }
+                val fresh = page.items.filter { it.id !in seen }
+                results = results + fresh
+                resultsNextCursor = if (fresh.isEmpty()) null else page.nextCursor
+            }
+            drawResults()
+        }
     }
 
     private fun drawBrowse() {
@@ -476,9 +513,62 @@ class SearchPanel(
         val cardW = ((availW - gapPx * 2) / 3.15f).toInt().coerceAtLeast(ui.dp(86))
         val covW = cardW - ui.dp(12)
         val covH = (covW * 1.44f).toInt()
-        val savedIds = wishlistIds()
+        val cacheKey = "$kind:$recSeed"
+        val epoch = recGeneration
 
-        data.sections.forEach { sec ->
+        fun addRecCard(rail: LinearLayout, book: CatalogBook) {
+            val isSaved = book.id in wishlistIds()
+            val card = ui.column().apply {
+                tag = "rec-book:${book.id}"
+                setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6))
+                background = ui.outlined(ui.surface, ui.lineColor, 0)
+                isFocusable = true
+                contentDescription = "Recomendação: ${book.title}"
+                setOnClickListener { openBookDialog(book) }
+            }
+            rail.addView(card, LinearLayout.LayoutParams(cardW, -2).apply { marginEnd = gapPx })
+
+            val cover = ImageView(activity).apply {
+                setImageDrawable(ui.symbol("book_nav", ui.muted, 30))
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                background = ui.shape(ui.activeSurface, 0)
+                contentDescription = "Capa de ${book.title}"
+            }
+            card.addView(cover, LinearLayout.LayoutParams(covW, covH).apply { bottomMargin = ui.dp(6) })
+            covers.bind(cover, book.coverUrl)
+
+            ui.label(card, book.title, 11, ui.text).apply {
+                typeface = Typeface.create("serif", Typeface.NORMAL)
+                maxLines = 2
+                minLines = 2
+                ellipsize = TextUtils.TruncateAt.END
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(2)
+            }
+            ui.label(card, book.author.ifBlank { " " }, 9, ui.muted).apply {
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(6)
+            }
+
+            val wishBtn = TextView(activity).apply {
+                text = if (isSaved) "✓ Salvo" else "+ Comprar"
+                gravity = Gravity.CENTER
+                textSize = 10f
+                maxLines = 1
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(if (isSaved) Color.rgb(126, 224, 164) else ui.accent)
+                background = ui.outlined(
+                    if (isSaved) Color.argb(38, 79, 166, 116) else Color.argb(26, Color.red(ui.accent), Color.green(ui.accent), Color.blue(ui.accent)),
+                    if (isSaved) Color.argb(120, 79, 166, 116) else ui.lineColor,
+                    0,
+                )
+                setPadding(ui.dp(4), ui.dp(5), ui.dp(4), ui.dp(5))
+                setOnClickListener { toggleWishlist(book) }
+            }
+            card.addView(wishBtn, LinearLayout.LayoutParams(-1, -2))
+        }
+
+        data.sections.forEachIndexed { secIdx, sec ->
             val secHeader = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
             target.addView(secHeader, LinearLayout.LayoutParams(-1, -2).apply {
                 topMargin = ui.dp(4)
@@ -502,58 +592,71 @@ class SearchPanel(
             railScroll.addView(rail)
             target.addView(railScroll, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(14) })
 
-            sec.items.forEachIndexed { idx, book ->
-                val isSaved = book.id in savedIds
-                val card = ui.column().apply {
-                    tag = "rec-book:${book.id}"
-                    setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6))
-                    background = ui.outlined(ui.surface, ui.lineColor, 0)
-                    isFocusable = true
-                    contentDescription = "Recomendação: ${book.title}"
-                    setOnClickListener { openBookDialog(book) }
-                }
-                rail.addView(card, LinearLayout.LayoutParams(cardW, -2).apply {
-                    if (idx < sec.items.lastIndex) marginEnd = gapPx
-                })
+            val loadedItems = sec.items.toMutableList()
+            val seenIds = loadedItems.mapTo(HashSet()) { it.id }
+            var hasMore = sec.hasMore
+            var nextCursor = sec.nextCursor
+            var loadingMore = false
+            var loaderTile: View? = null
 
-                val cover = ImageView(activity).apply {
-                    setImageDrawable(ui.symbol("book_nav", ui.muted, 30))
-                    scaleType = ImageView.ScaleType.CENTER_CROP
-                    background = ui.shape(ui.activeSurface, 0)
-                    contentDescription = "Capa de ${book.title}"
-                }
-                card.addView(cover, LinearLayout.LayoutParams(covW, covH).apply { bottomMargin = ui.dp(6) })
-                covers.bind(cover, book.coverUrl)
+            loadedItems.forEach { book -> addRecCard(rail, book) }
 
-                ui.label(card, book.title, 11, ui.text).apply {
-                    typeface = Typeface.create("serif", Typeface.NORMAL)
-                    maxLines = 2
-                    minLines = 2
-                    ellipsize = TextUtils.TruncateAt.END
-                    (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(2)
-                }
-                ui.label(card, book.author.ifBlank { " " }, 9, ui.muted).apply {
-                    maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
-                    (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(6)
-                }
-
-                val wishBtn = TextView(activity).apply {
-                    text = if (isSaved) "✓ Salvo" else "+ Comprar"
+            fun fetchMore() {
+                if (!hasMore || loadingMore || loadedItems.size >= 200 || !active || closed) return
+                loadingMore = true
+                val tile = TextView(activity).apply {
+                    text = "…"
                     gravity = Gravity.CENTER
-                    textSize = 10f
-                    maxLines = 1
-                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                    setTextColor(if (isSaved) Color.rgb(126, 224, 164) else ui.accent)
-                    background = ui.outlined(
-                        if (isSaved) Color.argb(38, 79, 166, 116) else Color.argb(26, Color.red(ui.accent), Color.green(ui.accent), Color.blue(ui.accent)),
-                        if (isSaved) Color.argb(120, 79, 166, 116) else ui.lineColor,
-                        0,
-                    )
-                    setPadding(ui.dp(4), ui.dp(5), ui.dp(4), ui.dp(5))
-                    setOnClickListener { toggleWishlist(book) }
+                    textSize = 16f
+                    setTextColor(ui.muted)
+                    background = ui.outlined(ui.surface, ui.lineColor, 0)
                 }
-                card.addView(wishBtn, LinearLayout.LayoutParams(-1, -2))
+                loaderTile = tile
+                rail.addView(tile, LinearLayout.LayoutParams(ui.dp(48), covH + ui.dp(74)).apply { marginEnd = gapPx })
+
+                catalog.recommendationsMore(
+                    section = sec.key,
+                    term = sec.term,
+                    kind = sec.effectiveKind,
+                    cursor = nextCursor,
+                    seed = recSeed,
+                    excludeIds = loadedItems.map { it.id },
+                ) { res ->
+                    loadingMore = false
+                    loaderTile?.let { rail.removeView(it) }
+                    loaderTile = null
+                    if (!active || closed || recGeneration != epoch || rail.parent !== railScroll) return@recommendationsMore
+                    res.fold({ page ->
+                        val fresh = page.items.filter { seenIds.add(it.id) }
+                        fresh.forEach { book ->
+                            loadedItems.add(book)
+                            addRecCard(rail, book)
+                        }
+                        hasMore = page.hasMore && fresh.isNotEmpty() && loadedItems.size < 200
+                        nextCursor = page.nextCursor
+                        recsCache[cacheKey]?.let { prev ->
+                            val updatedSections = prev.sections.toMutableList()
+                            if (secIdx in updatedSections.indices && updatedSections[secIdx].key == sec.key) {
+                                updatedSections[secIdx] = updatedSections[secIdx].copy(
+                                    items = loadedItems.toList(),
+                                    hasMore = hasMore,
+                                    nextCursor = nextCursor,
+                                )
+                                recsCache[cacheKey] = prev.copy(sections = updatedSections)
+                            }
+                        }
+                    }, {
+                        hasMore = false
+                    })
+                }
+            }
+
+            if (hasMore) {
+                railScroll.viewTreeObserver.addOnScrollChangedListener {
+                    if (!hasMore || loadingMore || !active || closed || railScroll.width <= 0) return@addOnScrollChangedListener
+                    val remaining = rail.width - (railScroll.scrollX + railScroll.width)
+                    if (remaining <= cardW * 3) fetchMore()
+                }
             }
         }
     }
@@ -683,7 +786,7 @@ class SearchPanel(
             val card = ui.row().apply {
                 gravity = Gravity.TOP
                 setPadding(ui.dp(12), ui.dp(12), ui.dp(12), ui.dp(12))
-                background = ui.outlined(0x99151515.toInt())
+                background = ui.outlined(ui.surface)
             }
             target.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(12) })
             val cover = ImageView(activity).apply {
@@ -742,6 +845,15 @@ class SearchPanel(
             card.contentDescription = "Informações de ${book.title}"
             card.setOnClickListener { openBookDialog(selected) }
             covers.bind(cover, book.coverUrl)
+        }
+        if (resultsNextCursor != null) {
+            ui.action(target, if (resultsLoadingMore) "Carregando…" else "Carregar mais") {
+                loadMoreResults()
+            }.apply {
+                isEnabled = !resultsLoadingMore
+                background = ui.outlined(ui.surface)
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(12)
+            }
         }
     }
 }

@@ -223,7 +223,15 @@ class ViblioActivity : Activity() {
             "search"->search.render(content)
             "friends"->friends.render(content)
             "stats"->{
-                val panel=statistics ?: BooksPanel(this,ui) { accounts.localChanged();if(tab=="stats") render() }.apply { useRedesignedStatistics=true;prepareStatistics();onStatisticsBack={switchTab("shelf")} }.also { statistics=it }
+                val panel=statistics ?: BooksPanel(this,ui) { accounts.localChanged();if(tab=="stats") render() }.apply {
+                    useRedesignedStatistics=true
+                    separateShelfStatistics=true
+                    planCatalogProvider={ catalog }
+                    onOpenPlannedBook={ id -> switchTab("shelf");library.openBook(id) }
+                    onAddCatalogToShelf={ rec -> switchTab("shelf");library.addFromCatalog(rec) }
+                    prepareStatistics()
+                    onStatisticsBack={switchTab("shelf")}
+                }.also { statistics=it }
                 panel.render(content)
             }
             else->account.render(content)
