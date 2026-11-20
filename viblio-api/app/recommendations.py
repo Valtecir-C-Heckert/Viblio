@@ -261,7 +261,7 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
                     return '', []
                 collected: list[dict] = []
                 primary_label = ''
-                order_expr = f"(CASE WHEN coalesce(capa_url,'')<>'' THEN 0 ELSE 1 END), ((abs(id) + {int(seed) * 997}) % 1000003), id"
+                order_expr = f"(CASE WHEN coalesce(capa_url,'')<>'' THEN 0 ELSE 1 END), mod(abs(id) + {int(seed) * 997}, 1000003), id"
                 for term in terms:
                     if len(collected) >= limit:
                         break
@@ -311,7 +311,7 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
 
             # Fallback when library is empty or catalog has no matches for the user's current metadata.
             if not sections:
-                order_expr = f"(CASE WHEN coalesce(capa_url,'')<>'' THEN 0 ELSE 1 END), ((abs(id) + {int(seed) * 997}) % 1000003), id"
+                order_expr = f"(CASE WHEN coalesce(capa_url,'')<>'' THEN 0 ELSE 1 END), mod(abs(id) + {int(seed) * 997}, 1000003), id"
                 rows = db.execute(
                     f"""SELECT {columns} FROM public.valteca
                         WHERE {kind_sql}
