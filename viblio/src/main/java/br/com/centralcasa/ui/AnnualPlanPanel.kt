@@ -17,8 +17,12 @@ import java.util.Calendar
 import java.util.Locale
 
 /**
- * Editorial Annual Reading Plan panel (Esboço 1 — Agenda Editorial por Mês).
- * Modular: supports pages/day, books/month, or pure reading list (no goals), plus optional 3:1 Purchase Goal integration.
+ * Unified Annual Reading Plan + Real Reading Goals panel.
+ * - Integrates existing ReadingGoals (Books, Pages, and 3:1 Purchase Goal with real covers) once at the top (zero duplication).
+ * - Wishlist is only accessible when a Purchase Goal has an unlocked reward.
+ * - No Joker slots: `+ Livro` navigates to the real Shelf in selection mode (supporting already-read books & rereads).
+ * - Each month automatically displays everything completed, read in that month, or currently being read, unified with planned items.
+ * - Each month's bottom bar fills 0..100% by real reading progress (books completed + pages read in that month).
  */
 class AnnualPlanPanel(
     private val activity: Activity,
@@ -27,6 +31,7 @@ class AnnualPlanPanel(
     private val catalogProvider: () -> BookCatalog?,
     private val onOpenBook: ((String) -> Unit)? = null,
     private val onAddCatalogBook: ((CatalogBook) -> Unit)? = null,
+    private val onPickBookFromShelf: ((Int, Int) -> Unit)? = null,
     private val changed: () -> Unit,
 ) {
     private val store = AnnualPlanStore(activity)
@@ -46,6 +51,11 @@ class AnnualPlanPanel(
     private val colorAmber = Color.rgb(226, 176, 112)
     private val colorRed = Color.rgb(220, 131, 115)
     private val colorBlue = Color.rgb(110, 155, 194)
+
+    fun selectPeriod(year: Int, month: Int) {
+        selectedYear = year.coerceIn(2020, 2100)
+        selectedMonth = month.coerceIn(1, 12)
+    }
 
     fun close() {
         closed = true
@@ -90,8 +100,13 @@ class AnnualPlanPanel(
     }
 
     private fun dashedBg(): Drawable = GradientDrawable().apply {
-        setColor(alphaColor(ui.accent, 14))
-        setStroke(ui.dp(1).coerceAtLeast(1), alphaColor(ui.accent, 130), ui.dp(5).toFloat(), ui.dp(4).toFloat())
+        setColor(alphaColor(ui.accent, 10))
+        setStroke(ui.dp(1).coerceAtLeast(1), alphaColor(ui.accent, 110), ui.dp(5).toFloat(), ui.dp(4).toFloat())
+    }
+
+    private fun dotDrawable(color: Int): Drawable = GradientDrawable().apply {
+        shape = GradientDrawable.OVAL
+        setColor(color)
     }
 
     private fun healthColor(health: MonthHealth): Int = when (health) {
@@ -100,6 +115,9 @@ class AnnualPlanPanel(
         MonthHealth.MISSED -> colorRed
         MonthHealth.EMPTY -> ui.lineColor
     }
+
+    private fun loadOrCreatePlan(year: Int): AnnualReadingPlan =
+        store.load(year) ?: AnnualReadingPlan(year = year, goalMode = PlanGoalMode.NONE)
 
     private fun mutatePlan(plan: AnnualReadingPlan) {
         if (closed) return
@@ -111,31 +129,107 @@ class AnnualPlanPanel(
         }
     }
 
-    private fun findPurchaseGoal(): Pair<ReadingGoalStore.Entry, ReadingGoal>? {
-        val entry = goalStore.entries().firstOrNull { it.goal?.metric == GoalMetric.PURCHASE } ?: return null
-        return entry to requireNotNull(entry.goal)
+    /** Called by ViblioActivity/BooksPanel after the user taps a book on the real Shelf in selection mode. */
+    fun onShelfBookPicked(year: Int, month: Int, book: LibraryBook) {
+        if (closed) return
+        selectPeriod(year, month)
+        val plan = loadOrCreatePlan(year)
+        val existingInMonth = plan.entries.any { it.month == month && it.kind == PlanEntryKind.SHELF_BOOK && it.bookId == book.id }
+        if (existingInMonth) {
+            Toast.makeText(activity, "\"${book.title}\" já está em ${AnnualPlanCalculator.fullName(month)}.", Toast.LENGTH_SHORT).show()
+            changed()
+            return
+        }
+        val nextPos = (plan.entries.filter { it.month == month }.maxOfOrNull { it.position } ?: -1) + 1
+        fun addEntry(completed: Boolean, reread: Boolean, tag: String) {
+            val entry = PlanEntry(
+                month = month,
+                position = nextPos,
+                kind = PlanEntryKind.SHELF_BOOK,
+                bookId = book.id,
+                title = book.title,
+                author = book.author,
+                saga = book.saga,
+                reservedPages = if (book.pagesKnown) book.totalPages else 200,
+                tag = tag,
+                completed = completed,
+                reread = reread,
+            )
+            mutatePlan(plan.copy(entries = plan.entries + entry))
+        }
+
+        if (!book.complete) {
+            addEntry(completed = false, reread = false, tag = if (book.saga.isNotBlank()) "Saga" else "")
+            return
+        }
+
+        // Book is already completed on the Shelf: check if it was already completed in this month.
+        val monthRange = AnnualPlanCalculator.monthRange(year, month)
+        val autoCompletedHere = book.id in PeriodCompletions.completedBookIds(
+            listOf(book),
+            repo.sessions(),
+            repo.dates(),
+            monthRange,
+        )
+        if (autoCompletedHere) {
+            tracked(
+                AlertDialog.Builder(activity)
+                    .setTitle(book.title)
+                    .setMessage("Este livro já aparece como concluído em ${AnnualPlanCalculator.fullName(month)}. Deseja planejar uma releitura?")
+                    .setPositiveButton("Planejar releitura") { _, _ ->
+                        addEntry(completed = false, reread = true, tag = "Releitura")
+                    }
+                    .setNegativeButton("Cancelar", null)
+                    .create(),
+            )
+            return
+        }
+
+        tracked(
+            AlertDialog.Builder(activity)
+                .setTitle(book.title)
+                .setMessage("Este livro já está concluído na sua Estante. Como deseja incluir em ${AnnualPlanCalculator.fullName(month)}?")
+                .setPositiveButton("Já li neste mês") { _, _ ->
+                    addEntry(completed = true, reread = false, tag = if (book.saga.isNotBlank()) "Saga" else "")
+                }
+                .setNeutralButton("Planejar releitura") { _, _ ->
+                    addEntry(completed = false, reread = true, tag = "Releitura")
+                }
+                .setNegativeButton("Cancelar", null)
+                .create(),
+        )
     }
 
     fun render(parent: LinearLayout) {
         if (closed) return
-        val existingYears = store.years()
-        if (store.load(selectedYear) == null && existingYears.isNotEmpty() && selectedYear !in existingYears) {
-            // Keep selectedYear if user explicitly chose a year; otherwise default to current year or latest existing.
-            val currentYear = Calendar.getInstance().get(Calendar.YEAR)
-            if (selectedYear == currentYear && existingYears.contains(currentYear)) selectedYear = currentYear
-        }
-
-        val plan = store.load(selectedYear)
+        val plan = loadOrCreatePlan(selectedYear)
         val books = repo.books(true)
         val sessions = repo.sessions()
+        val dates = repo.dates()
+        val activeGoals = goalStore.entries().mapNotNull { it.goal }
         val now = System.currentTimeMillis()
-        val purchasePair = findPurchaseGoal()
-        val purchaseProgress = purchasePair?.second?.let { ReadingGoals.progress(it, books, sessions, now) }
+
+        val summary = AnnualPlanCalculator.summarize(
+            plan = plan,
+            books = books,
+            sessions = sessions,
+            dates = dates,
+            goals = activeGoals,
+            nowMs = now,
+        )
 
         val wrap = ui.column().apply { setPadding(ui.dp(20), ui.dp(10), ui.dp(20), ui.dp(16)) }
         parent.addView(wrap)
 
-        // Top controls row: Year selector + Quick Goal Mode toggle / Configure
+        // 1) Existing real ReadingGoals integrated once at the top (includes Purchase Goal with real covers + Wishlist ONLY when unlocked!)
+        val gp = goalsPanel ?: ReadingGoalsPanel(activity, ui, repo) { if (!closed) changed() }.apply {
+            onRedeemPurchaseWithWishlist = { entry, goal, progress ->
+                redeemPurchaseFromWishlist(entry, goal, progress)
+            }
+        }.also { goalsPanel = it }
+        gp.renderEmbedded(wrap)
+
+        // 2) Annual Plan Header Row: Year Picker + Effective Rhythm Chip / Config
         val topRow = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
         wrap.addView(topRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
 
@@ -154,158 +248,46 @@ class AnnualPlanPanel(
 
         topRow.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f))
 
-        if (plan != null) {
-            val modeChipText = when (plan.goalMode) {
-                PlanGoalMode.PAGES_PER_DAY -> "${plan.dailyPagesTarget} p/dia ⇄"
-                PlanGoalMode.BOOKS_PER_MONTH -> "${plan.monthlyBooksTarget} liv/mês ⇄"
-                PlanGoalMode.NONE -> "Sem meta"
-            }
-            val modeBtn = TextView(activity).apply {
-                tag = "plan-mode-toggle"
-                text = modeChipText
-                textSize = 11f
-                setTextColor(ui.text)
-                background = ui.outlined(ui.activeSurface, ui.lineColor, 0)
-                setPadding(ui.dp(9), ui.dp(7), ui.dp(9), ui.dp(7))
-                setOnClickListener {
-                    val next = when (plan.goalMode) {
-                        PlanGoalMode.PAGES_PER_DAY -> PlanGoalMode.BOOKS_PER_MONTH
-                        PlanGoalMode.BOOKS_PER_MONTH -> PlanGoalMode.PAGES_PER_DAY
-                        PlanGoalMode.NONE -> PlanGoalMode.PAGES_PER_DAY
-                    }
-                    mutatePlan(plan.copy(goalMode = next))
-                }
-            }
-            topRow.addView(modeBtn, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) })
+        val targets = summary.effectiveTargets
+        val rhythmChipText = when (targets.mode) {
+            PlanGoalMode.PAGES_PER_DAY -> "${targets.dailyPagesTarget} p/dia"
+            PlanGoalMode.BOOKS_PER_MONTH -> "${targets.monthlyBooksTarget} liv/mês"
+            PlanGoalMode.NONE -> "Sem ritmo"
+        }
+        val modeBtn = TextView(activity).apply {
+            tag = "plan-mode-toggle"
+            text = rhythmChipText
+            textSize = 11f
+            setTextColor(ui.text)
+            background = ui.outlined(ui.activeSurface, ui.lineColor, 0)
+            setPadding(ui.dp(9), ui.dp(7), ui.dp(9), ui.dp(7))
+            setOnClickListener { openRhythmDialog(plan, targets) }
+        }
+        topRow.addView(modeBtn, LinearLayout.LayoutParams(-2, -2))
 
-            ui.icon(topRow, "edit", "Configurar plano anual", 36) { openConfigDialog(plan) }.apply {
-                tag = "plan-config"
-                setPadding(ui.dp(8), ui.dp(8), ui.dp(8), ui.dp(8))
+        // 3) Compact Year Real Progress Line
+        val yearLine = ui.row().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(8))
+            background = ui.outlined(ui.surface, ui.lineColor, 0)
+        }
+        wrap.addView(yearLine, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
+        val yearSummaryLeft = ui.column()
+        yearLine.addView(yearSummaryLeft, LinearLayout.LayoutParams(0, -2, 1f))
+        val compLabel = if (summary.completedCount == 1) "1 concluído" else "${summary.completedCount} concluídos"
+        val pagesLabel = "${summary.totalPagesReadInYear} págs. lidas em ${plan.year}"
+        ui.label(yearSummaryLeft, "$compLabel · $pagesLabel", 11, ui.text).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
+        }
+        summary.estimatedMinutesPerDay?.let { mins ->
+            ui.label(yearLine, "~$mins min/dia", 10, ui.accent).apply {
+                layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(8) }
             }
         }
 
-        if (plan == null) {
-            renderEmptyPlan(wrap)
-            renderLegacyGoals(parent)
-            return
-        }
-
-        val summary = AnnualPlanCalculator.summarize(
-            plan = plan,
-            books = books,
-            sessions = sessions,
-            purchaseGoal = if (plan.showPurchaseGoal) purchasePair?.second else null,
-            purchaseProgress = if (plan.showPurchaseGoal) purchaseProgress else null,
-            nowMs = now,
-        )
-
-        // 1) Top KPI Strip (Modular: hidden when goalMode == NONE; 1 full-width card if !showPurchaseGoal; 2 cards if showPurchaseGoal)
-        if (plan.goalMode != PlanGoalMode.NONE || plan.showPurchaseGoal) {
-            val kpiRow = ui.row().apply { gravity = Gravity.TOP }
-            wrap.addView(kpiRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
-
-            if (plan.goalMode != PlanGoalMode.NONE) {
-                val yearCard = ui.column().apply {
-                    setPadding(ui.dp(10), ui.dp(10), ui.dp(10), ui.dp(10))
-                    background = ui.outlined(ui.surface, ui.lineColor, 0)
-                    setOnClickListener { openConfigDialog(plan) }
-                }
-                val hasRight = plan.showPurchaseGoal
-                kpiRow.addView(yearCard, LinearLayout.LayoutParams(0, -2, 1f).apply {
-                    if (hasRight) marginEnd = ui.dp(8)
-                })
-                ui.label(yearCard, "ANO · ${plan.year}", 9, ui.muted).apply {
-                    letterSpacing = 0.09f
-                    (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(4)
-                }
-                val pct = if (summary.annualBookGoal > 0) (summary.completedCount * 100 / summary.annualBookGoal).coerceIn(0, 100) else 0
-                val countRow = ui.row().apply { gravity = Gravity.BOTTOM }
-                yearCard.addView(countRow)
-                ui.label(countRow, "${summary.completedCount}", 22, ui.accent).apply {
-                    typeface = Typeface.create("serif", Typeface.NORMAL)
-                    layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(5) }
-                }
-                ui.label(countRow, "/ ${summary.annualBookGoal} livros · $pct%", 10, ui.muted).apply {
-                    maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
-                    layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-                }
-                // Thin 3dp progress bar
-                val barWrap = FrameLayout(activity).apply { setBackgroundColor(alphaColor(ui.lineColor, 140)) }
-                val barRow = ui.row()
-                val fillPct = pct.coerceIn(0, 100)
-                if (fillPct > 0) barRow.addView(View(activity).apply { setBackgroundColor(ui.accent) }, LinearLayout.LayoutParams(0, -1, fillPct.toFloat()))
-                if (fillPct < 100) barRow.addView(View(activity), LinearLayout.LayoutParams(0, -1, (100 - fillPct).toFloat()))
-                barWrap.addView(barRow, FrameLayout.LayoutParams(-1, -1))
-                yearCard.addView(barWrap, LinearLayout.LayoutParams(-1, ui.dp(3).coerceAtLeast(3)).apply {
-                    topMargin = ui.dp(6)
-                    bottomMargin = ui.dp(6)
-                })
-                val avgStr = "${AnnualPlanCalculator.formatDecimal(summary.averageDailyPages)} p/dia" +
-                    (summary.estimatedMinutesPerDay?.let { " · ~$it min" } ?: "")
-                ui.label(yearCard, avgStr, 10, ui.muted).apply {
-                    maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
-                    (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
-                }
-            }
-
-            if (plan.showPurchaseGoal) {
-                val buyCard = ui.column().apply {
-                    setPadding(ui.dp(10), ui.dp(10), ui.dp(10), ui.dp(10))
-                    background = ui.outlined(ui.surface, ui.lineColor, 0)
-                    setOnClickListener {
-                        if (purchasePair == null) offerCreatePurchaseGoal()
-                        else pickFromWishlist(plan, null, consumeToken = summary.purchaseTokensFree > 0)
-                    }
-                }
-                kpiRow.addView(buyCard, LinearLayout.LayoutParams(0, -2, 1f))
-                val buyTop = ui.row()
-                buyCard.addView(buyTop, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(7) })
-                ui.label(buyTop, "COMPRA ${summary.purchaseCycleTarget}:1", 9, ui.muted).apply {
-                    letterSpacing = 0.09f
-                    layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-                }
-                val tokenLabel = when {
-                    purchasePair == null -> "Ativar"
-                    summary.purchaseTokensFree == 1 -> "1 ficha"
-                    else -> "${summary.purchaseTokensFree} fichas"
-                }
-                ui.label(buyTop, tokenLabel, 10, ui.accent, bold = true).apply {
-                    layoutParams = LinearLayout.LayoutParams(-2, -2)
-                }
-
-                // Segmented [■■□] cycle bar
-                val segRow = ui.row()
-                buyCard.addView(segRow, LinearLayout.LayoutParams(-1, ui.dp(8)).apply { bottomMargin = ui.dp(6) })
-                val segs = summary.purchaseCycleTarget.coerceIn(1, 6)
-                repeat(segs) { i ->
-                    val filled = purchasePair != null && i < summary.purchaseCycleDone
-                    segRow.addView(
-                        View(activity).apply {
-                            background = if (filled) ui.shape(ui.accent, 0) else ui.outlined(Color.TRANSPARENT, ui.lineColor, 0)
-                        },
-                        LinearLayout.LayoutParams(0, -1, 1f).apply { if (i < segs - 1) marginEnd = ui.dp(3) },
-                    )
-                }
-                ui.label(
-                    buyCard,
-                    if (purchasePair == null) "Toque para criar ciclo 3:1" else "${summary.purchaseCycleDone}/${summary.purchaseCycleTarget} p/ próxima ficha",
-                    10,
-                    ui.muted,
-                ).apply {
-                    maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
-                    (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(2)
-                }
-                ui.label(buyCard, if (purchasePair == null) "Definir regra ›" else "Usar na Wishlist ›", 10, ui.accent).apply {
-                    maxLines = 1
-                    (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
-                }
-            }
-        }
-
-        // 2) Horizontal Month Ribbon (JAN..DEZ) with color-coded mini load bars
+        // 4) Horizontal Month Ribbon (JAN..DEZ) — Bottom bar filled by REAL reading progress (books + pages)!
         val ribbonScroll = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
         val ribbonRow = ui.row()
         ribbonScroll.addView(ribbonRow)
@@ -313,11 +295,11 @@ class AnnualPlanPanel(
 
         summary.months.forEach { ms ->
             val sel = ms.month == selectedMonth
-            val barCol = healthColor(ms.health)
+            val hc = healthColor(ms.health)
             val mBtn = ui.column().apply {
                 tag = "plan-month:${ms.month}"
                 gravity = Gravity.CENTER_HORIZONTAL
-                setPadding(ui.dp(4), ui.dp(7), ui.dp(4), ui.dp(6))
+                setPadding(ui.dp(4), ui.dp(6), ui.dp(4), ui.dp(6))
                 background = ui.outlined(if (sel) ui.activeSurface else ui.surface, if (sel) ui.accent else ui.lineColor, 0)
                 isFocusable = true
                 setOnClickListener {
@@ -327,33 +309,47 @@ class AnnualPlanPanel(
                     }
                 }
             }
-            ribbonRow.addView(mBtn, LinearLayout.LayoutParams(ui.dp(44), -2).apply { marginEnd = ui.dp(6) })
-            ui.label(mBtn, AnnualPlanCalculator.shortName(ms.month), 10, if (sel) ui.accent else ui.muted, bold = sel).apply {
+            ribbonRow.addView(mBtn, LinearLayout.LayoutParams(ui.dp(48), -2).apply { marginEnd = ui.dp(6) })
+
+            val labelRow = ui.row().apply { gravity = Gravity.CENTER }
+            mBtn.addView(labelRow, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = ui.dp(5) })
+            ui.label(labelRow, AnnualPlanCalculator.shortName(ms.month), 10, if (sel) ui.accent else ui.muted, bold = sel).apply {
                 gravity = Gravity.CENTER
-                letterSpacing = 0.06f
-                (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(4)
+                letterSpacing = 0.05f
+                layoutParams = LinearLayout.LayoutParams(-2, -2)
             }
-            val miniTrack = FrameLayout(activity).apply { setBackgroundColor(alphaColor(ui.lineColor, 120)) }
-            val fillFrac = (ms.loadRatio.coerceIn(0.0, 1.0)).toFloat()
+            if (ms.health != MonthHealth.EMPTY) {
+                labelRow.addView(
+                    View(activity).apply { background = dotDrawable(hc) },
+                    LinearLayout.LayoutParams(ui.dp(4), ui.dp(4)).apply { marginStart = ui.dp(3) },
+                )
+            }
+
+            // Bottom progress bar: strictly reflects real read progress (books completed + pages read in this month).
+            val miniTrack = FrameLayout(activity).apply { setBackgroundColor(alphaColor(ui.lineColor, 130)) }
+            val fillFrac = ms.barProgress.coerceIn(0.0, 1.0).toFloat()
             val miniRow = ui.row()
-            if (fillFrac > 0.02f) miniRow.addView(View(activity).apply { setBackgroundColor(barCol) }, LinearLayout.LayoutParams(0, -1, fillFrac))
-            if (fillFrac < 0.98f) miniRow.addView(View(activity), LinearLayout.LayoutParams(0, -1, (1f - fillFrac).coerceAtLeast(0.02f)))
+            if (fillFrac > 0.01f) {
+                miniRow.addView(View(activity).apply { setBackgroundColor(hc) }, LinearLayout.LayoutParams(0, -1, fillFrac))
+            }
+            if (fillFrac < 0.99f) {
+                miniRow.addView(View(activity), LinearLayout.LayoutParams(0, -1, (1f - fillFrac).coerceAtLeast(0.01f)))
+            }
             miniTrack.addView(miniRow, FrameLayout.LayoutParams(-1, -1))
-            mBtn.addView(miniTrack, LinearLayout.LayoutParams(ui.dp(30), ui.dp(3).coerceAtLeast(3)))
+            mBtn.addView(miniTrack, LinearLayout.LayoutParams(ui.dp(34), ui.dp(4).coerceAtLeast(3)))
         }
 
-        // Scroll selected month into view cleanly
         ribbonScroll.post {
-            val targetX = ((selectedMonth - 3).coerceAtLeast(0)) * ui.dp(50)
+            val targetX = ((selectedMonth - 3).coerceAtLeast(0)) * ui.dp(54)
             ribbonScroll.scrollTo(targetX, 0)
         }
 
         val currentMs = summary.months[(selectedMonth - 1).coerceIn(0, 11)]
 
-        // 3) Rollover suggestion banner if previous month has pending unfinished books
+        // 5) Rollover banner if previous past month has manually planned pending books
         if (selectedMonth > 1) {
             val prevMs = summary.months[selectedMonth - 2]
-            if (prevMs.isPast && prevMs.pendingCount > 0) {
+            if (prevMs.isPast && prevMs.hasManualPending) {
                 val rollover = ui.row().apply {
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(ui.dp(10), ui.dp(8), ui.dp(8), ui.dp(8))
@@ -361,7 +357,7 @@ class AnnualPlanPanel(
                 }
                 wrap.addView(rollover, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
                 val prevName = AnnualPlanCalculator.fullName(prevMs.month)
-                ui.label(rollover, "${prevMs.pendingCount} pendente(s) em $prevName", 11, ui.text).apply {
+                ui.label(rollover, "Planejados pendentes em $prevName", 11, ui.text).apply {
                     layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) }
                 }
                 TextView(activity).apply {
@@ -376,7 +372,7 @@ class AnnualPlanPanel(
             }
         }
 
-        // 4) Selected Month Header + Health Badge + "+ Livro" button
+        // 6) Selected Month Header + Health Badge + "+ Livro" (Real Shelf Selection Mode!)
         val mHead = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
         wrap.addView(mHead, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(8) })
         val mTitleCol = ui.column()
@@ -388,7 +384,7 @@ class AnnualPlanPanel(
             typeface = Typeface.create("serif", Typeface.NORMAL)
             layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(8) }
         }
-        if (plan.goalMode != PlanGoalMode.NONE && currentMs.health != MonthHealth.EMPTY) {
+        if (currentMs.health != MonthHealth.EMPTY) {
             val hc = healthColor(currentMs.health)
             val badgeText = when (currentMs.health) {
                 MonthHealth.COMPLETED -> "Concluído"
@@ -406,24 +402,22 @@ class AnnualPlanPanel(
             }.also { mLine1.addView(it, LinearLayout.LayoutParams(-2, -2)) }
         }
 
-        val paceSubtitle = when (plan.goalMode) {
-            PlanGoalMode.PAGES_PER_DAY -> {
-                val pagesLabel = if (currentMs.isCurrent) "${currentMs.totalRemainingPages} págs restantes" else "${currentMs.totalPlannedPages} págs"
-                val dayHint = if (currentMs.isCurrent) " (${currentMs.remainingDays}d)" else ""
-                "$pagesLabel · ${AnnualPlanCalculator.formatDecimal(currentMs.pacePagesPerDay)} págs/dia$dayHint"
-            }
-            PlanGoalMode.BOOKS_PER_MONTH -> {
-                val totalBooks = currentMs.plannedBookCount + currentMs.jokerCount
-                "$totalBooks / ${plan.monthlyBooksTarget} livros · ${currentMs.totalPlannedPages} págs"
-            }
-            PlanGoalMode.NONE -> {
-                "${currentMs.plannedBookCount} livros" +
-                    (if (currentMs.jokerCount > 0) " · ${currentMs.jokerCount} coringa" else "") +
-                    " · ${currentMs.totalPlannedPages} págs"
-            }
+        val subtitleParts = mutableListOf<String>()
+        if (currentMs.actualBooksCompleted > 0) {
+            subtitleParts.add(if (currentMs.actualBooksCompleted == 1) "1 concluído" else "${currentMs.actualBooksCompleted} concluídos")
         }
-        ui.label(mTitleCol, paceSubtitle, 11, ui.muted).apply {
-            maxLines = 1
+        if (currentMs.actualPagesRead > 0) {
+            subtitleParts.add("${currentMs.actualPagesRead} págs. lidas")
+        }
+        if (currentMs.totalRemainingPages > 0) {
+            val dayHint = if (currentMs.isCurrent) " (${AnnualPlanCalculator.formatDecimal(currentMs.pacePagesPerDay)} p/dia)" else ""
+            subtitleParts.add("restam ${currentMs.totalRemainingPages} págs.$dayHint")
+        }
+        if (subtitleParts.isEmpty()) {
+            subtitleParts.add(if (currentMs.items.isEmpty()) "Sem leituras neste mês" else "${currentMs.items.size} livro(s)")
+        }
+        ui.label(mTitleCol, subtitleParts.joinToString(" · "), 11, ui.muted).apply {
+            maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
         }
@@ -436,40 +430,28 @@ class AnnualPlanPanel(
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             background = ui.outlined(ui.activeSurface, ui.lineColor, 0)
             setPadding(ui.dp(10), ui.dp(7), ui.dp(10), ui.dp(7))
-            setOnClickListener { openAddMenu(plan) }
+            setOnClickListener { triggerShelfPicker(plan.year, selectedMonth) }
         }.also { mHead.addView(it, LinearLayout.LayoutParams(-2, -2)) }
 
-        // 5) Month Items (Books + Dashed Joker Slots)
+        // 7) Month Books List (Automatic real activity + manual planned books, unified without duplicates!)
         if (currentMs.items.isEmpty()) {
             val emptyBox = ui.column().apply {
                 setPadding(ui.dp(14), ui.dp(14), ui.dp(14), ui.dp(14))
                 background = dashedBg()
             }
             wrap.addView(emptyBox, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
-            ui.label(emptyBox, "Nenhum livro planejado para ${AnnualPlanCalculator.fullName(selectedMonth)}.", 12, ui.muted)
-            val emptyBtns = ui.row()
-            emptyBox.addView(emptyBtns, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(6) })
-            ui.action(emptyBtns, "+ Da Estante") { pickBookFromShelf(plan, null) }.apply {
+            ui.label(emptyBox, "Nenhuma leitura registrada ou planejada em ${AnnualPlanCalculator.fullName(selectedMonth)}.", 12, ui.muted)
+            ui.action(emptyBox, "+ Escolher da Estante") { triggerShelfPicker(plan.year, selectedMonth) }.apply {
                 minHeight = ui.dp(36); textSize = 11f
-                layoutParams = LinearLayout.LayoutParams(0, ui.dp(36), 1f).apply { marginEnd = ui.dp(6) }
-            }
-            ui.action(emptyBtns, "+ Slot Coringa") { addJokerSlot(plan) }.apply {
-                minHeight = ui.dp(36); textSize = 11f
-                layoutParams = LinearLayout.LayoutParams(0, ui.dp(36), 1f)
+                layoutParams = LinearLayout.LayoutParams(-1, ui.dp(36)).apply { topMargin = ui.dp(6) }
             }
         } else {
-            var jokerIdx = 0
             currentMs.items.forEachIndexed { idx, item ->
-                if (item.entry.kind == PlanEntryKind.JOKER) {
-                    jokerIdx++
-                    renderJokerCard(wrap, plan, item, jokerIdx, summary.purchaseTokensFree)
-                } else {
-                    renderBookCard(wrap, plan, item, idx + 1)
-                }
+                renderBookCard(wrap, plan, item, idx + 1)
             }
         }
 
-        // 6) Collapsible Sagas Summary (only when planned books have sagas)
+        // 8) Collapsible Sagas Summary (only when books in the year belong to sagas)
         if (summary.sagas.isNotEmpty()) {
             val sagaDivider = View(activity).apply { setBackgroundColor(ui.lineColor) }
             wrap.addView(sagaDivider, LinearLayout.LayoutParams(-1, ui.dp(1).coerceAtLeast(1)).apply {
@@ -481,7 +463,7 @@ class AnnualPlanPanel(
                 setOnClickListener { sagasExpanded = !sagasExpanded; changed() }
             }
             wrap.addView(sagaToggle, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(6) })
-            ui.label(sagaToggle, "SAGAS DO PLANO (${summary.sagas.size})", 10, ui.muted).apply {
+            ui.label(sagaToggle, "SAGAS EM ${plan.year} (${summary.sagas.size})", 10, ui.muted).apply {
                 letterSpacing = 0.09f
                 layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             }
@@ -518,41 +500,51 @@ class AnnualPlanPanel(
                 }
             }
         }
-
-        // 7) Preserved Custom Goals section below (ReadingGoalsPanel)
-        renderLegacyGoals(parent)
     }
 
-    private fun renderEmptyPlan(parent: LinearLayout) {
-        val box = ui.column().apply {
-            setPadding(ui.dp(16), ui.dp(16), ui.dp(16), ui.dp(16))
-            background = ui.outlined(ui.surface, ui.lineColor, 0)
+    private fun triggerShelfPicker(year: Int, month: Int) {
+        val nav = onPickBookFromShelf
+        if (nav != null) {
+            nav(year, month)
+            return
         }
-        parent.addView(box, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(12) })
-        ui.label(box, "Plano de leitura $selectedYear", 20, ui.text).apply {
-            typeface = Typeface.create("serif", Typeface.NORMAL)
+        // Fallback dialog only if host did not wire real Shelf navigation.
+        val candidates = repo.books().filter { !it.archived }
+            .sortedWith(compareBy<LibraryBook> { if (!it.complete && it.currentPage > 0) 0 else if (!it.complete) 1 else 2 }.thenBy { it.title.lowercase(Locale("pt", "BR")) })
+        if (candidates.isEmpty()) {
+            Toast.makeText(activity, "Nenhum livro na Estante.", Toast.LENGTH_LONG).show()
+            return
         }
-        ui.label(box, "Organize seus livros por mês com meta opcional de páginas/dia, livros/mês ou apenas sua lista do ano.", 12, ui.muted).apply {
-            (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(10)
-        }
-        ui.action(box, "Criar plano de $selectedYear", true) {
-            openConfigDialog(AnnualReadingPlan(year = selectedYear), creating = true)
-        }
+        val labels = candidates.map { b ->
+            val st = if (b.complete) "Concluído" else if (b.currentPage > 0) "Lendo" else "Não iniciado"
+            "${b.title}\n${listOf(b.saga.ifBlank { b.author }, st).filter { it.isNotBlank() }.joinToString(" · ")}"
+        }.toTypedArray()
+        tracked(
+            AlertDialog.Builder(activity)
+                .setTitle("Escolher da Estante")
+                .setItems(labels) { _, idx -> onShelfBookPicked(year, month, candidates[idx]) }
+                .setNegativeButton("Cancelar", null)
+                .create(),
+        )
     }
 
     private fun renderBookCard(parent: LinearLayout, plan: AnnualReadingPlan, item: ResolvedPlanItem, orderInMonth: Int) {
         val stripeCol = when (item.status) {
             PlanItemStatus.COMPLETED -> colorGreen
             PlanItemStatus.READING -> ui.accent
-            PlanItemStatus.PLANNED -> if (item.entry.tag.contains("saga", ignoreCase = true)) colorBlue else ui.accent
+            PlanItemStatus.READ_IN_MONTH -> colorBlue
+            PlanItemStatus.PLANNED -> if (item.entry?.tag?.contains("saga", ignoreCase = true) == true) colorBlue else ui.lineColor
         }
         val card = ui.row().apply {
-            tag = "plan-entry:${item.entry.id}"
+            tag = if (item.entry != null) "plan-entry:${item.entry.id}" else "plan-auto:${item.bookId}"
             gravity = Gravity.CENTER_VERTICAL
             setPadding(ui.dp(10), ui.dp(9), ui.dp(10), ui.dp(9))
             background = stripeBg(stripeCol)
             isFocusable = true
-            setOnClickListener { openEntryMenu(plan, item) }
+            setOnClickListener {
+                if (item.entry != null) openEntryMenu(plan, item)
+                else if (item.linkedBook != null) onOpenBook?.invoke(item.linkedBook.id)
+            }
         }
         parent.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(8) })
 
@@ -570,9 +562,14 @@ class AnnualPlanPanel(
         val r1 = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
         col.addView(r1, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(2) })
         val ordStr = item.sequenceNumber?.let { "${it.toString().padStart(2, '0')}º" } ?: "${orderInMonth.toString().padStart(2, '0')}º"
-        val kicker = listOf(ordStr, item.entry.tag.ifBlank { if (item.entry.kind == PlanEntryKind.WISHLIST_BOOK) "Wishlist" else "" })
-            .filter { it.isNotBlank() }.joinToString(" · ").uppercase(Locale("pt", "BR"))
-        ui.label(r1, kicker, 9, ui.accent).apply {
+        val tagLabel = when {
+            item.isReread -> "Releitura"
+            !item.entry?.tag.isNullOrBlank() -> item.entry!!.tag
+            item.isAutoActivity -> "Leitura do mês"
+            else -> ""
+        }
+        val kicker = listOf(ordStr, tagLabel).filter { it.isNotBlank() }.joinToString(" · ").uppercase(Locale("pt", "BR"))
+        ui.label(r1, kicker, 9, if (item.isAutoActivity) ui.muted else ui.accent).apply {
             letterSpacing = 0.06f
             maxLines = 1
             layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(6) }
@@ -580,9 +577,10 @@ class AnnualPlanPanel(
         val statusCol = when (item.status) {
             PlanItemStatus.COMPLETED -> colorGreen
             PlanItemStatus.READING -> ui.accent
+            PlanItemStatus.READ_IN_MONTH -> colorBlue
             PlanItemStatus.PLANNED -> ui.muted
         }
-        ui.label(r1, item.status.label, 10, statusCol).apply {
+        ui.label(r1, item.status.label, 10, statusCol, bold = item.status == PlanItemStatus.COMPLETED || item.status == PlanItemStatus.READING).apply {
             layoutParams = LinearLayout.LayoutParams(-2, -2)
         }
 
@@ -593,89 +591,97 @@ class AnnualPlanPanel(
             (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(2)
         }
 
-        val pagesStr = when {
-            item.status == PlanItemStatus.COMPLETED -> "Concluído"
-            item.remainingPages > 0 -> "${item.remainingPages} págs restantes"
-            else -> "Páginas não informadas"
+        val detailParts = mutableListOf<String>()
+        val identity = item.saga.ifBlank { item.author }
+        if (identity.isNotBlank()) detailParts.add(identity)
+        when (item.status) {
+            PlanItemStatus.COMPLETED -> {
+                if (item.pagesReadInMonth > 0) detailParts.add("${item.pagesReadInMonth} págs. no mês")
+                else detailParts.add("Concluído")
+            }
+            PlanItemStatus.READING -> {
+                if (item.pagesReadInMonth > 0) detailParts.add("${item.pagesReadInMonth} págs. no mês")
+                if (item.remainingPages > 0) detailParts.add("restam ${item.remainingPages} págs.")
+            }
+            PlanItemStatus.READ_IN_MONTH -> {
+                if (item.pagesReadInMonth > 0) detailParts.add("${item.pagesReadInMonth} págs. lidas no mês")
+                else detailParts.add("Leitura registrada")
+            }
+            PlanItemStatus.PLANNED -> {
+                if (item.remainingPages > 0) detailParts.add("${item.remainingPages} págs. restantes")
+                else detailParts.add("Páginas não informadas")
+            }
         }
-        val meta = listOf(item.saga.ifBlank { item.author }, pagesStr).filter { it.isNotBlank() }.joinToString(" · ")
-        ui.label(col, meta, 10, ui.muted).apply {
+        ui.label(col, detailParts.joinToString(" · "), 10, ui.muted).apply {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
         }
     }
 
-    private fun renderJokerCard(
-        parent: LinearLayout,
-        plan: AnnualReadingPlan,
-        item: ResolvedPlanItem,
-        index: Int,
-        freeTokens: Int,
+    private fun redeemPurchaseFromWishlist(
+        entry: ReadingGoalStore.Entry,
+        goal: ReadingGoal,
+        progress: GoalProgress,
     ) {
-        val card = ui.column().apply {
-            tag = "plan-joker:${item.entry.id}"
-            setPadding(ui.dp(10), ui.dp(9), ui.dp(10), ui.dp(9))
-            background = dashedBg()
+        val cat = catalogProvider()
+        if (cat == null || !cat.configured) {
+            Toast.makeText(activity, "Conecte sua conta para acessar Quero comprar.", Toast.LENGTH_LONG).show()
+            return
         }
-        parent.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(8) })
-
-        val top = ui.row().apply {
-            gravity = Gravity.CENTER_VERTICAL
-            setOnClickListener { openJokerMenu(plan, item) }
+        Toast.makeText(activity, "Carregando Quero comprar…", Toast.LENGTH_SHORT).show()
+        cat.wishlist { res ->
+            if (closed) return@wishlist
+            res.fold({ list ->
+                if (list.isEmpty()) {
+                    Toast.makeText(activity, "Sua lista Quero comprar está vazia. Salve livros na aba Pesquisa.", Toast.LENGTH_LONG).show()
+                    return@fold
+                }
+                val labels = list.map { b ->
+                    val extra = listOf(b.author, b.pages?.let { "${it}p" }.orEmpty()).filter { it.isNotBlank() }.joinToString(" · ")
+                    if (extra.isBlank()) b.title else "${b.title}\n$extra"
+                }.toTypedArray()
+                tracked(
+                    AlertDialog.Builder(activity)
+                        .setTitle("Usar recompensa · Quero comprar")
+                        .setItems(labels) { _, idx ->
+                            val chosen = list[idx]
+                            tracked(
+                                AlertDialog.Builder(activity)
+                                    .setTitle(chosen.title)
+                                    .setMessage("Registrar o resgate da meta \"${goal.name}\", remover da Wishlist e cadastrar na Estante?")
+                                    .setPositiveButton("Resgatar e cadastrar") { _, _ ->
+                                        runCatching {
+                                            val fresh = ReadingGoals.progress(goal, repo.books(true), repo.sessions(), System.currentTimeMillis())
+                                            goalStore.save(ReadingGoals.purchase(goal, fresh, System.currentTimeMillis()), entry.raw)
+                                        }.onFailure {
+                                            Toast.makeText(activity, it.message ?: "Não foi possível registrar a compra.", Toast.LENGTH_LONG).show()
+                                            return@setPositiveButton
+                                        }
+                                        cat.removeWishlist(chosen.id) {}
+                                        changed()
+                                        onAddCatalogBook?.invoke(chosen)
+                                    }
+                                    .setNegativeButton("Cancelar", null)
+                                    .create(),
+                            )
+                        }
+                        .setNegativeButton("Cancelar", null)
+                        .create(),
+                )
+            }, {
+                Toast.makeText(activity, "Não foi possível carregar Quero comprar.", Toast.LENGTH_LONG).show()
+            })
         }
-        card.addView(top, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(7) })
-        ui.label(top, "✦ Slot livre #$index (Coringa)", 11, ui.accent, bold = true).apply {
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-        }
-        ui.label(top, "~${item.remainingPages} págs ⋮", 10, ui.muted).apply {
-            layoutParams = LinearLayout.LayoutParams(-2, -2)
-        }
-
-        val btns = ui.row()
-        card.addView(btns)
-        TextView(activity).apply {
-            text = "+ Puxar da Estante"
-            gravity = Gravity.CENTER
-            textSize = 10.5f
-            setTextColor(ui.text)
-            background = ui.outlined(ui.surface, ui.lineColor, 0)
-            setPadding(ui.dp(6), ui.dp(7), ui.dp(6), ui.dp(7))
-            setOnClickListener { pickBookFromShelf(plan, item.entry.id) }
-        }.also { btns.addView(it, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(6) }) }
-
-        val wishLabel = if (plan.showPurchaseGoal && freeTokens > 0) {
-            "Usar ficha (Wishlist)"
-        } else {
-            "+ Da Wishlist"
-        }
-        TextView(activity).apply {
-            text = wishLabel
-            gravity = Gravity.CENTER
-            textSize = 10.5f
-            setTextColor(ui.accent)
-            background = ui.outlined(ui.surface, ui.accent, 0)
-            setPadding(ui.dp(6), ui.dp(7), ui.dp(6), ui.dp(7))
-            setOnClickListener { pickFromWishlist(plan, item.entry.id, consumeToken = plan.showPurchaseGoal && freeTokens > 0) }
-        }.also { btns.addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
-    }
-
-    private fun renderLegacyGoals(parent: LinearLayout) {
-        val divider = View(activity).apply { setBackgroundColor(ui.lineColor) }
-        parent.addView(divider, LinearLayout.LayoutParams(-1, ui.dp(1).coerceAtLeast(1)).apply { topMargin = ui.dp(4) })
-        val gp = goalsPanel ?: ReadingGoalsPanel(activity, ui, repo) { if (!closed) changed() }.also { goalsPanel = it }
-        gp.render(parent)
     }
 
     private fun pickYear() {
         val current = Calendar.getInstance().get(Calendar.YEAR)
-        val options = (store.years() + listOf(current, current + 1, current - 1)).distinct().sorted()
-        val labels = options.map { y ->
-            if (store.load(y) != null) "$y · ativo" else "$y · criar"
-        }.toTypedArray()
+        val options = (store.years() + listOf(current - 1, current, current + 1)).distinct().sorted()
+        val labels = options.map { y -> "$y" }.toTypedArray()
         tracked(
             AlertDialog.Builder(activity)
-                .setTitle("Escolher ano do plano")
+                .setTitle("Escolher ano")
                 .setItems(labels) { _, idx ->
                     selectedYear = options[idx]
                     changed()
@@ -685,11 +691,15 @@ class AnnualPlanPanel(
         )
     }
 
-    private fun openConfigDialog(plan: AnnualReadingPlan, creating: Boolean = false) {
+    private fun openRhythmDialog(plan: AnnualReadingPlan, targets: EffectivePlanTargets) {
         val body = ui.column().apply { setPadding(ui.dp(20), ui.dp(12), ui.dp(20), ui.dp(8)) }
+        if (targets.derivedFromReadingGoals) {
+            ui.label(body, "Ritmo calculado automaticamente pelas suas metas ativas acima.", 12, ui.muted).apply {
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(8)
+            }
+        }
         var chosenMode = plan.goalMode
-
-        ui.label(body, "Tipo de meta", 12, ui.muted)
+        ui.label(body, "Referência de ritmo do plano", 12, ui.muted)
         val modeRow = ui.row()
         body.addView(modeRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(12) })
 
@@ -702,7 +712,7 @@ class AnnualPlanPanel(
             background = ui.outlined(ui.activeSurface, ui.lineColor, 0)
             setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(8))
         }
-        body.addView(targetInput, LinearLayout.LayoutParams(-1, ui.dp(44)).apply { bottomMargin = ui.dp(12) })
+        body.addView(targetInput, LinearLayout.LayoutParams(-1, ui.dp(44)).apply { bottomMargin = ui.dp(8) })
 
         val modeButtons = mutableMapOf<PlanGoalMode, TextView>()
         fun repaintModes() {
@@ -715,13 +725,13 @@ class AnnualPlanPanel(
                 PlanGoalMode.PAGES_PER_DAY -> {
                     targetLabel.visibility = View.VISIBLE
                     targetInput.visibility = View.VISIBLE
-                    targetLabel.text = "Meta de páginas por dia"
+                    targetLabel.text = "Páginas por dia"
                     targetInput.setText(plan.dailyPagesTarget.toString())
                 }
                 PlanGoalMode.BOOKS_PER_MONTH -> {
                     targetLabel.visibility = View.VISIBLE
                     targetInput.visibility = View.VISIBLE
-                    targetLabel.text = "Meta de livros por mês"
+                    targetLabel.text = "Livros por mês"
                     targetInput.setText(plan.monthlyBooksTarget.toString())
                 }
                 PlanGoalMode.NONE -> {
@@ -743,31 +753,14 @@ class AnnualPlanPanel(
         }
         repaintModes()
 
-        val purchaseToggle = CheckBox(activity).apply {
-            text = "Integrar Meta de Compra (3:1 / Fichas)"
-            setTextColor(ui.text)
-            isChecked = plan.showPurchaseGoal
-        }
-        body.addView(purchaseToggle)
-
-        val builder = AlertDialog.Builder(activity)
-            .setTitle(if (creating) "Criar plano ${plan.year}" else "Configurar plano ${plan.year}")
-            .setView(ScrollView(activity).apply { addView(body) })
-            .setPositiveButton("Salvar", null)
-            .setNegativeButton("Cancelar", null)
-        if (!creating) {
-            builder.setNeutralButton("Excluir plano") { _, _ ->
-                tracked(
-                    AlertDialog.Builder(activity)
-                        .setTitle("Excluir plano ${plan.year}?")
-                        .setMessage("Os livros na sua Estante permanecem intactos.")
-                        .setPositiveButton("Excluir") { _, _ -> store.delete(plan.year); changed() }
-                        .setNegativeButton("Cancelar", null)
-                        .create(),
-                )
-            }
-        }
-        val dlg = tracked(builder.create())
+        val dlg = tracked(
+            AlertDialog.Builder(activity)
+                .setTitle("Ritmo do plano ${plan.year}")
+                .setView(ScrollView(activity).apply { addView(body) })
+                .setPositiveButton("Salvar", null)
+                .setNegativeButton("Cancelar", null)
+                .create(),
+        )
         dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             val rawNum = targetInput.text.toString().trim().toIntOrNull()
             val updated = when (chosenMode) {
@@ -776,256 +769,44 @@ class AnnualPlanPanel(
                         targetInput.error = "Informe entre 1 e 2.000 páginas/dia."
                         return@setOnClickListener
                     }
-                    plan.copy(goalMode = chosenMode, dailyPagesTarget = rawNum, showPurchaseGoal = purchaseToggle.isChecked)
+                    plan.copy(goalMode = chosenMode, dailyPagesTarget = rawNum)
                 }
                 PlanGoalMode.BOOKS_PER_MONTH -> {
                     if (rawNum == null || rawNum !in 1..100) {
                         targetInput.error = "Informe entre 1 e 100 livros/mês."
                         return@setOnClickListener
                     }
-                    plan.copy(goalMode = chosenMode, monthlyBooksTarget = rawNum, showPurchaseGoal = purchaseToggle.isChecked)
+                    plan.copy(goalMode = chosenMode, monthlyBooksTarget = rawNum)
                 }
-                PlanGoalMode.NONE -> plan.copy(goalMode = chosenMode, showPurchaseGoal = purchaseToggle.isChecked)
+                PlanGoalMode.NONE -> plan.copy(goalMode = chosenMode)
             }
             dlg.dismiss()
             mutatePlan(updated)
         }
     }
 
-    private fun openAddMenu(plan: AnnualReadingPlan) {
-        val options = arrayOf(
-            "Puxar livro da Estante",
-            "Adicionar Slot livre (Coringa)",
-            "Puxar da Wishlist (Quero comprar)",
-        )
-        tracked(
-            AlertDialog.Builder(activity)
-                .setTitle("Adicionar em ${AnnualPlanCalculator.fullName(selectedMonth)}")
-                .setItems(options) { _, which ->
-                    when (which) {
-                        0 -> pickBookFromShelf(plan, null)
-                        1 -> addJokerSlot(plan)
-                        2 -> pickFromWishlist(plan, null, consumeToken = false)
-                    }
-                }
-                .setNegativeButton("Cancelar", null)
-                .create(),
-        )
-    }
-
-    private fun pickBookFromShelf(plan: AnnualReadingPlan, replaceEntryId: String?) {
-        val alreadyInPlan = plan.entries.mapNotNull { it.bookId.takeIf(String::isNotBlank) }.toSet()
-        val candidates = repo.books()
-            .filter { !it.archived && !it.complete && it.id !in alreadyInPlan }
-            .sortedWith(compareBy<LibraryBook> { if (it.currentPage > 0) 0 else 1 }.thenBy { it.title.lowercase(Locale("pt", "BR")) })
-        if (candidates.isEmpty()) {
-            Toast.makeText(activity, "Nenhum livro não concluído disponível na Estante.", Toast.LENGTH_LONG).show()
-            return
-        }
-        val labels = candidates.map { b ->
-            val rem = if (b.pagesKnown) "${(b.totalPages - b.currentPage).coerceAtLeast(0)}p" else "sem págs"
-            val extra = listOf(b.saga.ifBlank { b.author }, rem).filter { it.isNotBlank() }.joinToString(" · ")
-            "${b.title}\n$extra"
-        }.toTypedArray()
-
-        tracked(
-            AlertDialog.Builder(activity)
-                .setTitle("Escolher da Estante")
-                .setItems(labels) { _, idx ->
-                    val chosen = candidates[idx]
-                    val nextPos = (plan.entries.filter { it.month == selectedMonth }.maxOfOrNull { it.position } ?: -1) + 1
-                    val newEntry = PlanEntry(
-                        month = selectedMonth,
-                        position = nextPos,
-                        kind = PlanEntryKind.SHELF_BOOK,
-                        bookId = chosen.id,
-                        title = chosen.title,
-                        author = chosen.author,
-                        saga = chosen.saga,
-                        reservedPages = if (chosen.pagesKnown) chosen.totalPages else 200,
-                        tag = if (chosen.saga.isNotBlank()) "Saga" else "",
-                    )
-                    val updatedList = if (replaceEntryId != null) {
-                        plan.entries.map { if (it.id == replaceEntryId) newEntry.copy(position = it.position, month = it.month) else it }
-                    } else {
-                        plan.entries + newEntry
-                    }
-                    mutatePlan(plan.copy(entries = updatedList))
-                }
-                .setNegativeButton("Cancelar", null)
-                .create(),
-        )
-    }
-
-    private fun addJokerSlot(plan: AnnualReadingPlan) {
-        val input = EditText(activity).apply {
-            isSingleLine = true
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setText("200")
-            setTextColor(ui.text)
-            setHintTextColor(ui.muted)
-            hint = "Reserva estimada em páginas"
-        }
-        val box = ui.column().apply { setPadding(ui.dp(20), ui.dp(10), ui.dp(20), 0) }
-        ui.label(box, "Reserva estimada de páginas:", 12, ui.muted)
-        box.addView(input, LinearLayout.LayoutParams(-1, ui.dp(46)))
-
-        tracked(
-            AlertDialog.Builder(activity)
-                .setTitle("Novo Slot Coringa")
-                .setView(box)
-                .setPositiveButton("Adicionar") { _, _ ->
-                    val pages = input.text.toString().trim().toIntOrNull()?.coerceIn(1, 20000) ?: 200
-                    val nextPos = (plan.entries.filter { it.month == selectedMonth }.maxOfOrNull { it.position } ?: -1) + 1
-                    val entry = PlanEntry(
-                        month = selectedMonth,
-                        position = nextPos,
-                        kind = PlanEntryKind.JOKER,
-                        title = "Slot livre (Coringa)",
-                        reservedPages = pages,
-                    )
-                    mutatePlan(plan.copy(entries = plan.entries + entry))
-                }
-                .setNegativeButton("Cancelar", null)
-                .create(),
-        )
-    }
-
-    private fun pickFromWishlist(plan: AnnualReadingPlan, replaceEntryId: String?, consumeToken: Boolean) {
-        val cat = catalogProvider()
-        if (cat == null || !cat.configured) {
-            Toast.makeText(activity, "Conecte sua conta para acessar Quero comprar.", Toast.LENGTH_LONG).show()
-            return
-        }
-        Toast.makeText(activity, "Carregando Quero comprar…", Toast.LENGTH_SHORT).show()
-        cat.wishlist { res ->
-            if (closed) return@wishlist
-            res.fold({ list ->
-                if (list.isEmpty()) {
-                    Toast.makeText(activity, "Sua lista Quero comprar está vazia. Salve livros na aba Pesquisa.", Toast.LENGTH_LONG).show()
-                    return@fold
-                }
-                val labels = list.map { b ->
-                    val extra = listOf(b.author, b.pages?.let { "${it}p" }.orEmpty()).filter { it.isNotBlank() }.joinToString(" · ")
-                    if (extra.isBlank()) b.title else "${b.title}\n$extra"
-                }.toTypedArray()
-                tracked(
-                    AlertDialog.Builder(activity)
-                        .setTitle(if (consumeToken) "Usar ficha · Quero comprar" else "Escolher de Quero comprar")
-                        .setItems(labels) { _, idx ->
-                            val chosen = list[idx]
-                            if (consumeToken) {
-                                confirmWishlistPurchase(plan, replaceEntryId, chosen)
-                            } else {
-                                attachWishlistBook(plan, replaceEntryId, chosen)
-                            }
-                        }
-                        .setNegativeButton("Cancelar", null)
-                        .create(),
-                )
-            }, {
-                Toast.makeText(activity, "Não foi possível carregar Quero comprar.", Toast.LENGTH_LONG).show()
-            })
-        }
-    }
-
-    private fun confirmWishlistPurchase(plan: AnnualReadingPlan, replaceEntryId: String?, chosen: CatalogBook) {
-        tracked(
-            AlertDialog.Builder(activity)
-                .setTitle(chosen.title)
-                .setMessage("Deseja registrar o uso de 1 ficha de compra (3:1), remover da Wishlist e cadastrar na Estante?")
-                .setPositiveButton("Comprar e planejar") { _, _ ->
-                    findPurchaseGoal()?.let { (entry, goal) ->
-                        val prog = ReadingGoals.progress(goal, repo.books(true), repo.sessions(), System.currentTimeMillis())
-                        if (prog.value >= goal.target) {
-                            runCatching { goalStore.save(ReadingGoals.purchase(goal, prog, System.currentTimeMillis()), entry.raw) }
-                        }
-                    }
-                    catalogProvider()?.removeWishlist(chosen.id) {}
-                    attachWishlistBook(plan, replaceEntryId, chosen)
-                    onAddCatalogBook?.invoke(chosen)
-                }
-                .setNeutralButton("Só planejar") { _, _ ->
-                    attachWishlistBook(plan, replaceEntryId, chosen)
-                }
-                .setNegativeButton("Cancelar", null)
-                .create(),
-        )
-    }
-
-    private fun attachWishlistBook(plan: AnnualReadingPlan, replaceEntryId: String?, chosen: CatalogBook) {
-        val nextPos = (plan.entries.filter { it.month == selectedMonth }.maxOfOrNull { it.position } ?: -1) + 1
-        val newEntry = PlanEntry(
-            month = selectedMonth,
-            position = nextPos,
-            kind = PlanEntryKind.WISHLIST_BOOK,
-            wishlistCatalogId = chosen.id,
-            title = chosen.title,
-            author = chosen.author,
-            saga = chosen.saga,
-            coverUrl = chosen.coverUrl,
-            reservedPages = chosen.pages ?: 250,
-            tag = "Wishlist",
-        )
-        val updated = if (replaceEntryId != null) {
-            plan.entries.map { if (it.id == replaceEntryId) newEntry.copy(position = it.position, month = it.month) else it }
-        } else {
-            plan.entries + newEntry
-        }
-        mutatePlan(plan.copy(entries = updated))
-    }
-
     private fun openEntryMenu(plan: AnnualReadingPlan, item: ResolvedPlanItem) {
+        val entry = item.entry ?: return
         val actions = mutableListOf<Pair<String, () -> Unit>>()
         if (item.linkedBook != null && onOpenBook != null) {
             actions.add("Abrir livro na Estante" to { onOpenBook.invoke(item.linkedBook.id) })
         }
-        actions.add("Mover para outro mês" to { pickTargetMonth(plan, item.entry) })
-        actions.add("Editar etiqueta (Saga / Pausa)" to { editTag(plan, item.entry) })
+        if (item.isReread) {
+            actions.add(
+                (if (entry.completed) "Desmarcar conclusão da releitura" else "Marcar releitura concluída") to {
+                    mutatePlan(plan.copy(entries = plan.entries.map { if (it.id == entry.id) it.copy(completed = !it.completed) else it }))
+                },
+            )
+        }
+        actions.add("Mover para outro mês" to { pickTargetMonth(plan, entry) })
+        actions.add("Editar etiqueta" to { editTag(plan, entry) })
         actions.add("Remover do plano" to {
-            mutatePlan(plan.copy(entries = plan.entries.filterNot { it.id == item.entry.id }))
+            mutatePlan(plan.copy(entries = plan.entries.filterNot { it.id == entry.id }))
         })
         tracked(
             AlertDialog.Builder(activity)
                 .setTitle(item.title)
                 .setItems(actions.map { it.first }.toTypedArray()) { _, idx -> actions[idx].second.invoke() }
-                .setNegativeButton("Fechar", null)
-                .create(),
-        )
-    }
-
-    private fun openJokerMenu(plan: AnnualReadingPlan, item: ResolvedPlanItem) {
-        val actions = arrayOf("Alterar reserva de páginas", "Mover para outro mês", "Remover Slot Coringa")
-        tracked(
-            AlertDialog.Builder(activity)
-                .setTitle("Slot Coringa (~${item.remainingPages} págs)")
-                .setItems(actions) { _, which ->
-                    when (which) {
-                        0 -> {
-                            val input = EditText(activity).apply {
-                                isSingleLine = true
-                                inputType = InputType.TYPE_CLASS_NUMBER
-                                setText(item.entry.reservedPages.toString())
-                                setTextColor(ui.text)
-                            }
-                            val box = ui.column().apply { setPadding(ui.dp(20), ui.dp(10), ui.dp(20), 0) }
-                            box.addView(input, LinearLayout.LayoutParams(-1, ui.dp(46)))
-                            tracked(
-                                AlertDialog.Builder(activity)
-                                    .setTitle("Reserva estimada de páginas")
-                                    .setView(box)
-                                    .setPositiveButton("Salvar") { _, _ ->
-                                        val pages = input.text.toString().trim().toIntOrNull()?.coerceIn(1, 20000) ?: item.entry.reservedPages
-                                        mutatePlan(plan.copy(entries = plan.entries.map { if (it.id == item.entry.id) it.copy(reservedPages = pages) else it }))
-                                    }
-                                    .setNegativeButton("Cancelar", null)
-                                    .create(),
-                            )
-                        }
-                        1 -> pickTargetMonth(plan, item.entry)
-                        2 -> mutatePlan(plan.copy(entries = plan.entries.filterNot { it.id == item.entry.id }))
-                    }
-                }
                 .setNegativeButton("Fechar", null)
                 .create(),
         )
@@ -1069,7 +850,7 @@ class AnnualPlanPanel(
         val booksById = repo.books().associateBy { it.id }
         var nextPos = (plan.entries.filter { it.month == toMonth }.maxOfOrNull { it.position } ?: -1) + 1
         val updated = plan.entries.map { e ->
-            if (e.month == fromMonth && e.kind != PlanEntryKind.JOKER) {
+            if (e.month == fromMonth && e.kind == PlanEntryKind.SHELF_BOOK) {
                 val resolved = AnnualPlanCalculator.resolveItem(e, booksById)
                 if (resolved.status != PlanItemStatus.COMPLETED) {
                     e.copy(month = toMonth, position = nextPos++)
@@ -1077,33 +858,5 @@ class AnnualPlanPanel(
             } else e
         }
         mutatePlan(plan.copy(entries = updated))
-    }
-
-    private fun offerCreatePurchaseGoal() {
-        tracked(
-            AlertDialog.Builder(activity)
-                .setTitle("Ativar Meta de Compra 3:1?")
-                .setMessage("A cada 3 livros concluídos você libera 1 ficha para comprar um livro da sua Wishlist.")
-                .setPositiveButton("Criar 3:1") { _, _ ->
-                    val now = System.currentTimeMillis()
-                    val books = repo.books(true)
-                    val goal = ReadingGoal(
-                        name = "Próxima compra",
-                        metric = GoalMetric.PURCHASE,
-                        target = 3,
-                        reward = 1,
-                        period = GoalPeriod.CONTINUOUS,
-                        kind = "book",
-                        createdAt = now,
-                        fromAt = now,
-                        baseline = books.associate { it.id to it.currentPage },
-                        excluded = books.filter { it.complete }.map { it.id }.toSet(),
-                    )
-                    runCatching { goalStore.save(goal, null); changed() }
-                        .onFailure { Toast.makeText(activity, it.message ?: "Não foi possível criar a meta.", Toast.LENGTH_LONG).show() }
-                }
-                .setNegativeButton("Agora não", null)
-                .create(),
-        )
     }
 }

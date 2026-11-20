@@ -36,7 +36,8 @@ class AnnualPlanStore(context: Context) {
                         .put("coverUrl", e.coverUrl)
                         .put("reservedPages", e.reservedPages)
                         .put("tag", e.tag)
-                        .put("completed", e.completed),
+                        .put("completed", e.completed)
+                        .put("reread", e.reread),
                 )
             }
             return JSONObject()
@@ -89,6 +90,7 @@ class AnnualPlanStore(context: Context) {
                     reservedPages = e.optInt("reservedPages", 200),
                     tag = e.optString("tag"),
                     completed = e.optBoolean("completed", false),
+                    reread = e.optBoolean("reread", false),
                 )
             }
             return AnnualReadingPlan(

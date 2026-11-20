@@ -48,6 +48,20 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     var planCatalogProvider:()->br.com.centralcasa.books.catalog.BookCatalog?={null}
     var onOpenPlannedBook:((String)->Unit)?=null
     var onAddCatalogToShelf:((br.com.centralcasa.books.catalog.CatalogBook)->Unit)?=null
+    var onRequestShelfBookForPlan:((Int,Int)->Unit)?=null
+    var planSelectionTitle:String?=null
+    var onPlanBookSelected:((LibraryBook)->Unit)?=null
+    var onCancelPlanSelection:(()->Unit)?=null
+    fun clearPlanSelection(){ planSelectionTitle=null; onPlanBookSelected=null; onCancelPlanSelection=null }
+    fun openPlanTab(year:Int,month:Int){ statisticsTab="plan"; annualPlanPanel?.selectPeriod(year,month) }
+    fun completePlanBookSelection(year:Int,month:Int,book:LibraryBook){
+        statisticsTab="plan"
+        val panel=annualPlanPanel ?: AnnualPlanPanel(
+            activity=activity,ui=ui,repo=repository,catalogProvider={planCatalogProvider()},
+            onOpenBook=onOpenPlannedBook,onAddCatalogBook=onAddCatalogToShelf,onPickBookFromShelf=onRequestShelfBookForPlan,
+        ){ if(!destroyed) changed() }.also { annualPlanPanel=it }
+        panel.onShelfBookPicked(year,month,book)
+    }
     var onAccount:(()->Unit)?=null
     var jsonAllowed:()->Boolean={true}
     var useGroupedReadingHistory=false
@@ -234,6 +248,12 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
                 .setPositiveButton("Cancelar mudanças") { _,_->cancelManualOrder() }.setNegativeButton("Continuar organizando",null).show()
             return true
         }
+        if (screen == "library" && planSelectionTitle != null) {
+            val cancel = onCancelPlanSelection
+            clearPlanSelection()
+            cancel?.invoke()
+            return true
+        }
         if (screen == "library") return false
         if (screen == "collection_editor") {
             AlertDialog.Builder(activity).setTitle("Sair da edição?").setMessage("As alterações não salvas serão descartadas.")
@@ -380,7 +400,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     }
     fun openShelf() { fields.clear();editor=null;collectionFields.clear();collectionEditor=null;selected=null;selectedCollection=null;show("library") }
     fun openCurrent() { selectedCollection = repository.current()?.collectionId?.takeIf { it.isNotBlank() }; selected = repository.currentId(); show(if (selected == null) "library" else "detail") }
-    fun openBook(id: String) { selectedCollection = repository.book(id)?.collectionId?.takeIf { it.isNotBlank() }; open(id) }
+    fun openBook(id: String) { clearPlanSelection(); selectedCollection = repository.book(id)?.collectionId?.takeIf { it.isNotBlank() }; open(id) }
     private fun show(destination: String) {
         if (screen == "library") shelfScroll = activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll).scrollY
         catalogGeneration++
@@ -444,7 +464,48 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
             put("order", ShelfOrder.encode(shelfFilters.order))
         }.toString())
     }
-    private fun open(id: String) { selected = id; shownSessions = 4; historyExpanded = false; show("detail") }
+    private fun open(id: String) {
+        val picker = onPlanBookSelected
+        if (planSelectionTitle != null && picker != null) {
+            val picked = repository.book(id)
+            if (picked != null) {
+                picker(picked)
+                return
+            }
+        }
+        selected = id; shownSessions = 4; historyExpanded = false; show("detail")
+    }
+    private fun renderPlanSelectionBanner(parent: LinearLayout) {
+        val label = planSelectionTitle ?: return
+        val banner = row(parent).apply {
+            tag = "plan-selection-banner"
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(ui.dp(12), ui.dp(10), ui.dp(10), ui.dp(10))
+            background = ui.outlined(ui.activeSurface, ui.accent, 0)
+        }
+        (banner.layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(10)
+        val textCol = ui.column()
+        banner.addView(textCol, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) })
+        ui.label(textCol, "ADICIONAR EM ${label.uppercase(Locale("pt", "BR"))}", 10, ui.accent, bold = true).apply {
+            letterSpacing = 0.08f
+            (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(2)
+        }
+        ui.label(textCol, "Toque em um livro (ou volume de coleção) para levar ao plano.", 11, ui.muted).apply {
+            (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
+        }
+        TextView(activity).apply {
+            text = "Cancelar"
+            textSize = 11f
+            setTextColor(ui.text)
+            background = ui.outlined(ui.surface, ui.lineColor, 0)
+            setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(6))
+            setOnClickListener {
+                val cancel = onCancelPlanSelection
+                clearPlanSelection()
+                cancel?.invoke() ?: changed()
+            }
+        }.also { banner.addView(it, LinearLayout.LayoutParams(-2, -2)) }
+    }
     private fun backgroundBook():LibraryBook?=when(screen){
         "detail"->selected?.let(repository::book)
         "collection"->repository.collections().firstOrNull {it.id==selectedCollection}?.shelfBook(repository.books())
@@ -699,6 +760,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
             if(reconciled!=saved && !usePersonalArchive) settings.set("SHELF_MANUAL_ORDER:$shelfType",org.json.JSONArray(reconciled).toString())
         }
         val currentShelfId = repository.current()?.let { it.collectionId.ifBlank { it.id } }
+        renderPlanSelectionBanner(parent)
         val header = row(parent)
         ui.label(header, if(ui.rectilinear)"ESTANTE" else "Estante", if(ui.rectilinear)30 else 36, bold = true).apply {
             typeface = Typeface.create("serif", if(ui.rectilinear)Typeface.NORMAL else Typeface.BOLD); layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
@@ -1093,6 +1155,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
         val c = repository.collections().firstOrNull { it.id == selectedCollection }
         if (c == null) { selectedCollection = null; screen = "library"; library(parent); return }
         val volumes = repository.books().filter { it.collectionId == c.id }.sortedWith(compareBy<LibraryBook> { it.sequenceNumber ?: Int.MAX_VALUE }.thenBy { it.title })
+        renderPlanSelectionBanner(parent)
         val header = row(parent)
         ui.icon(header, "back", "Voltar à estante", 40) { selectedCollection = null; show("library") }
         stars(header, c.rating) { repository.setRating(c.id, it, true) }
@@ -2038,6 +2101,8 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     private fun periodStatistics(parent:LinearLayout,books:List<LibraryBook>,sessions:List<ReadingSession>,mint:Int){
         val dates=repository.dates();val range=ReadingPeriods.range(readingPeriodAnchor,readingPeriodUnit)
         val summary=PeriodReading.from(books,sessions,dates,range)
+        val completedIds=PeriodCompletions.completedBookIds(books,sessions,dates,range)
+        val activeBookIds=summary.bookIds+completedIds
         val controls=ui.column().apply {setPadding(ui.dp(20),ui.dp(12),ui.dp(20),ui.dp(8))};parent.addView(controls)
         val units=row(controls)
         ReadingPeriodUnit.entries.forEach {unit->
@@ -2065,30 +2130,63 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
         val overview=card("Leitura no período")
         val countUnit=when(statisticsType){"book"->"livros";"manga","comic"->"volumes";else->"exemplares"}
         val singleUnit=when(statisticsType){"book"->"livro";"manga","comic"->"volume";else->"exemplar"}
-        val metrics=row(overview)
-        listOf(summary.bookIds.size.toString() to "$countUnit com leitura",summary.pages.toString() to "páginas registradas",compactReadingTime(summary.durationMs) to "tempo de leitura").forEachIndexed {i,(value,name)->
-            val column=ui.column();metrics.addView(column,LinearLayout.LayoutParams(0,-2,1f))
-            ui.label(column,value,24,mint,true).apply {tag="period-metric:$i"}
+        val metricsRow1=row(overview).apply {setPadding(0,ui.dp(4),0,ui.dp(6))}
+        val metricsRow2=row(overview)
+        listOf(
+            Triple(3, completedIds.size.toString(), if(completedIds.size==1)"$singleUnit concluído" else "$countUnit concluídos"),
+            Triple(0, activeBookIds.size.toString(), "$countUnit com leitura"),
+        ).forEach {(idx,value,name)->
+            val column=ui.column();metricsRow1.addView(column,LinearLayout.LayoutParams(0,-2,1f))
+            ui.label(column,value,24,mint,true).apply {tag="period-metric:$idx"}
+            ui.label(column,name,10,ui.muted)
+        }
+        listOf(
+            Triple(1, summary.pages.toString(), "páginas registradas"),
+            Triple(2, compactReadingTime(summary.durationMs), "tempo de leitura"),
+        ).forEach {(idx,value,name)->
+            val column=ui.column();metricsRow2.addView(column,LinearLayout.LayoutParams(0,-2,1f))
+            ui.label(column,value,24,mint,true).apply {tag="period-metric:$idx"}
             ui.label(column,name,10,ui.muted)
         }
         val annual=card("Leitura por mês · ${readingPeriodAnchor.take(4)}")
         if(readingPeriodUnit==ReadingPeriodUnit.YEAR){
-        val months=ReadingPeriods.months(readingPeriodAnchor).map {it to PeriodReading.from(books,sessions,dates,it)}
-        val peak=(months.maxOfOrNull {it.second.pages} ?: 0).coerceAtLeast(1)
-        months.forEach { (month,data)->
+        val months=ReadingPeriods.months(readingPeriodAnchor).map {m->
+            Triple(m, PeriodReading.from(books,sessions,dates,m), PeriodCompletions.completedBookIds(books,sessions,dates,m))
+        }
+        val peakPages=months.maxOfOrNull {it.second.pages} ?: 0L
+        val peakDone=(months.maxOfOrNull {it.third.size} ?: 0).coerceAtLeast(1)
+        months.forEach { (month,data,doneIds)->
             val line=row(annual)
+            val totalMonthBooks=(data.bookIds+doneIds).size
+            val barVal=if(peakPages>0L)(data.pages*100/peakPages).toInt() else (doneIds.size*100/peakDone)
             ui.label(line,month.label.substringBefore(" de ").take(3).replaceFirstChar {it.uppercase()},12).layoutParams=LinearLayout.LayoutParams(ui.dp(36),-2)
-            ui.progress(line,(data.pages*100/peak).toInt()).apply {progressTintList=android.content.res.ColorStateList.valueOf(mint);layoutParams=LinearLayout.LayoutParams(0,ui.dp(8),1f).apply {marginEnd=ui.dp(10)}}
-            ui.label(line,data.pages.toString(),12).apply {gravity=Gravity.END;layoutParams=LinearLayout.LayoutParams(-2,-2)}
-            ui.label(annual,"${data.bookIds.size} ${if(data.bookIds.size==1)singleUnit else countUnit} · ${compactReadingTime(data.durationMs)}",10,ui.muted).apply {setPadding(ui.dp(36),0,0,ui.dp(6))}
+            ui.progress(line,barVal).apply {progressTintList=android.content.res.ColorStateList.valueOf(mint);layoutParams=LinearLayout.LayoutParams(0,ui.dp(8),1f).apply {marginEnd=ui.dp(10)}}
+            val rightLabel=if(peakPages>0L) "${data.pages} p" else "${doneIds.size}"
+            ui.label(line,rightLabel,12).apply {gravity=Gravity.END;layoutParams=LinearLayout.LayoutParams(-2,-2)}
+            val subParts=mutableListOf<String>()
+            if(doneIds.isNotEmpty()) subParts.add("${doneIds.size} ${if(doneIds.size==1)"concluído" else "concluídos"}")
+            subParts.add("$totalMonthBooks ${if(totalMonthBooks==1)singleUnit else countUnit}")
+            if(data.durationMs>0L) subParts.add(compactReadingTime(data.durationMs))
+            ui.label(annual,subParts.joinToString(" · "),10,ui.muted).apply {setPadding(ui.dp(36),0,0,ui.dp(6))}
         }
         }else ui.action(annual,"Ver meses do ano"){readingPeriodUnit=ReadingPeriodUnit.YEAR;changed()}
         val titles=card("Leituras no período")
-        val rows=books.filter {it.id in summary.bookIds}.sortedBy {ShelfFilters.key(it.title)}
+        val rows=books.filter {it.id in activeBookIds}.sortedWith(compareBy<LibraryBook> {if(it.id in completedIds)0 else 1}.thenBy {ShelfFilters.key(it.title)})
         rows.take(periodVisibleBooks).forEach {book->
+            val isDoneInPeriod=book.id in completedIds
             ui.label(titles,book.title+(book.sequenceNumber?.let {if(book.kind=="book" && book.collectionId.isBlank())" · Livro $it" else " · Vol. $it"} ?: ""),15,bold=true)
             val records=summary.sessions.filter {it.bookId==book.id}
-            ui.label(titles,if(records.isEmpty())"Leitura registrada" else "${if(book.pagesKnown)records.sumOf {it.pages}.toString()+" páginas · " else ""}${compactReadingTime(records.sumOf {it.durationMs})}",11,ui.muted).apply {setPadding(0,0,0,ui.dp(10))}
+            val metaParts=mutableListOf<String>()
+            if(isDoneInPeriod) metaParts.add("Concluído")
+            if(records.isNotEmpty()){
+                if(book.pagesKnown) metaParts.add("${records.sumOf {it.pages}} páginas")
+                if(records.sumOf {it.durationMs}>0L) metaParts.add(compactReadingTime(records.sumOf {it.durationMs}))
+            } else if(!isDoneInPeriod){
+                metaParts.add("Leitura registrada")
+            } else if(book.pagesKnown){
+                metaParts.add("${book.totalPages} páginas")
+            }
+            ui.label(titles,metaParts.joinToString(" · "),11,if(isDoneInPeriod)mint else ui.muted).apply {setPadding(0,0,0,ui.dp(10))}
         }
         if(rows.isEmpty())ui.label(titles,"Nenhuma leitura registrada neste período.",12,ui.muted)
         if(rows.size>periodVisibleBooks)ui.action(titles,"Ver mais títulos"){periodVisibleBooks+=10;changed()}
@@ -2134,6 +2232,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
                 catalogProvider = { planCatalogProvider() },
                 onOpenBook = onOpenPlannedBook,
                 onAddCatalogBook = onAddCatalogToShelf,
+                onPickBookFromShelf = onRequestShelfBookForPlan,
             ) { if(!destroyed) changed() }.also { annualPlanPanel = it }
             panel.render(parent)
             return

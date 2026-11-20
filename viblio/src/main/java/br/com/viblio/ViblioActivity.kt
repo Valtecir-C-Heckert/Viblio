@@ -195,7 +195,7 @@ class ViblioActivity : Activity() {
     private fun switchTab(destination:String) {
         if(tab==destination) return
         positions[tab]=scroll.scrollY
-        if(tab=="shelf") library.onStop()
+        if(tab=="shelf") { library.clearPlanSelection(); library.onStop() }
         if(tab=="search") search.hide()
         if(tab=="friends") {friends.hide(resetSelection=true);positions["friends"]=0}
         tab=destination
@@ -229,6 +229,24 @@ class ViblioActivity : Activity() {
                     planCatalogProvider={ catalog }
                     onOpenPlannedBook={ id -> switchTab("shelf");library.openBook(id) }
                     onAddCatalogToShelf={ rec -> switchTab("shelf");library.addFromCatalog(rec) }
+                    onRequestShelfBookForPlan={ year, month ->
+                        val label="${br.com.centralcasa.books.AnnualPlanCalculator.fullName(month)} $year"
+                        library.planSelectionTitle=label
+                        library.onPlanBookSelected={ picked ->
+                            library.clearPlanSelection()
+                            statistics?.openPlanTab(year,month)
+                            switchTab("stats")
+                            statistics?.completePlanBookSelection(year,month,picked)
+                        }
+                        library.onCancelPlanSelection={
+                            library.clearPlanSelection()
+                            statistics?.openPlanTab(year,month)
+                            switchTab("stats")
+                        }
+                        switchTab("shelf")
+                        library.openShelf()
+                        scroll.post { scroll.scrollTo(0,0) }
+                    }
                     prepareStatistics()
                     onStatisticsBack={switchTab("shelf")}
                 }.also { statistics=it }

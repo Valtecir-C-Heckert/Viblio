@@ -24,6 +24,7 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
     private var closed=false
     val isEditing get()=dialogs.any {it.isShowing}
     private val numbers=NumberFormat.getIntegerInstance(Locale("pt","BR"))
+    var onRedeemPurchaseWithWishlist:((ReadingGoalStore.Entry,ReadingGoal,GoalProgress)->Unit)?=null
     private fun valid()=!closed && LibraryProfiles.settings(activity)==profile
     private fun tracked(dialog:AlertDialog):AlertDialog {dialogs.add(dialog);dialog.setOnDismissListener {dialogs.remove(dialog)};dialog.show();dialog.window?.setBackgroundDrawable(ui.shape(ui.surface,0));return dialog}
     fun close(){closed=true;dialogs.toList().forEach {it.dismiss()};dialogs.clear()}
@@ -32,6 +33,36 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
     private fun title(parent:LinearLayout,value:String,size:Int=21,color:Int=ui.text)=ui.label(parent,value,size,color).apply {typeface=Typeface.create("serif",Typeface.NORMAL);includeFontPadding=true}
     private fun defaultName(metric:GoalMetric)=when(metric){GoalMetric.PAGES->"Páginas lidas";GoalMetric.BOOKS->"Livros concluídos";GoalMetric.PURCHASE->"Próxima compra"}
     private fun kindName(kind:String)=mapOf("book" to "Livros","manga" to "Mangás","comic" to "Quadrinhos","all" to "Todos").getValue(kind)
+    fun openCreateDialog(){edit(null)}
+    fun renderEmbedded(parent:LinearLayout){
+        if(!valid())return
+        val section=ui.column().apply {tag="reading-goals-embedded";setPadding(ui.dp(12),ui.dp(10),ui.dp(12),ui.dp(10));background=ui.outlined(ui.surface,ui.lineColor,0)}
+        parent.addView(section,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
+        val entries=store.entries()
+        val heading=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+        section.addView(heading,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=if(entries.isEmpty())ui.dp(4) else ui.dp(8)})
+        ui.label(heading,if(entries.isEmpty())"METAS DE LEITURA" else "SUAS METAS (${entries.size})",10,ui.muted).apply {
+            letterSpacing=.09f
+            layoutParams=LinearLayout.LayoutParams(0,-2,1f)
+        }
+        TextView(activity).apply {
+            tag="goal-create"
+            text="+ Meta"
+            textSize=11f
+            setTextColor(ui.accent)
+            typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+            background=ui.outlined(ui.activeSurface,ui.lineColor,0)
+            setPadding(ui.dp(9),ui.dp(5),ui.dp(9),ui.dp(5))
+            setOnClickListener {edit(null)}
+        }.also {heading.addView(it,LinearLayout.LayoutParams(-2,-2))}
+        if(entries.isEmpty()){
+            ui.label(section,"Nenhuma meta criada. Crie metas de livros, páginas ou compra (3:1) ou use apenas a lista mensal abaixo.",11,ui.muted).apply {
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin=0
+            }
+            return
+        }
+        renderEntries(section,entries)
+    }
     fun render(parent:LinearLayout){
         if(!valid())return
         val section=ui.column().apply {tag="reading-goals";setPadding(ui.dp(20),0,ui.dp(20),ui.dp(12));setBackgroundColor(ui.surface)};parent.addView(section)
@@ -43,6 +74,9 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
         if(!store.expanded())return
         val entries=store.entries()
         if(entries.isEmpty()){ui.action(section,"Definir meta"){edit(null)};return}
+        renderEntries(section,entries)
+    }
+    private fun renderEntries(section:LinearLayout,entries:List<ReadingGoalStore.Entry>){
         val books=repo.books(true);val sessions=repo.sessions();val now=System.currentTimeMillis()
         entries.forEachIndexed {index,entry->
             val goal=entry.goal
@@ -164,11 +198,28 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
     }
     private fun confirmPurchase(entry:ReadingGoalStore.Entry){
         val goal=requireNotNull(entry.goal)
-        tracked(AlertDialog.Builder(activity).setTitle("Registrar compra?").setMessage(if(goal.reward==1)"Comprei 1 livro" else "Comprei ${goal.reward} livros")
-            .setPositiveButton("Registrar"){_,_->mutate {
+        val wishlistHandler=onRedeemPurchaseWithWishlist
+        val builder=AlertDialog.Builder(activity)
+            .setTitle("Registrar compra?")
+            .setMessage(if(goal.reward==1)"Compra liberada para 1 livro." else "Compra liberada para ${goal.reward} livros.")
+            .setNegativeButton("Cancelar",null)
+        if(wishlistHandler!=null){
+            builder.setPositiveButton("Escolher da Wishlist"){_,_->
+                val progress=ReadingGoals.progress(goal,repo.books(true),repo.sessions(),System.currentTimeMillis())
+                if(progress.value>=goal.target) wishlistHandler(entry,goal,progress)
+                else Toast.makeText(activity,"A compra ainda não foi liberada.",Toast.LENGTH_LONG).show()
+            }
+            builder.setNeutralButton("Registrar manual"){_,_->mutate {
                 val progress=ReadingGoals.progress(goal,repo.books(true),repo.sessions(),System.currentTimeMillis())
                 store.save(ReadingGoals.purchase(goal,progress,System.currentTimeMillis()),entry.raw)
-            }}.setNegativeButton("Cancelar",null).create())
+            }}
+        } else {
+            builder.setPositiveButton("Registrar"){_,_->mutate {
+                val progress=ReadingGoals.progress(goal,repo.books(true),repo.sessions(),System.currentTimeMillis())
+                store.save(ReadingGoals.purchase(goal,progress,System.currentTimeMillis()),entry.raw)
+            }}
+        }
+        tracked(builder.create())
     }
     private fun remove(entry:ReadingGoalStore.Entry){tracked(AlertDialog.Builder(activity).setTitle("Remover meta?").setPositiveButton("Remover"){_,_->mutate {store.remove(entry)}}.setNegativeButton("Cancelar",null).create())}
     private fun edit(entry:ReadingGoalStore.Entry?){
