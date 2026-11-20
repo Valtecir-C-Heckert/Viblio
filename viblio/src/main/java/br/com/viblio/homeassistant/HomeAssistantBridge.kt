@@ -25,10 +25,10 @@ class HomeAssistantBridge(private val activity:Activity) {
     private val handler=Handler(Looper.getMainLooper())
     private val library=LibraryRepository(activity)
     private val images=BookImages(activity)
-    private var running=false
-    private var closed=false
-    private var lastSnapshot=""
-    private var lastCover=""
+    @Volatile private var running=false
+    @Volatile private var closed=false
+    @Volatile private var lastSnapshot=""
+    @Volatile private var lastCover=""
     private val periodic=object:Runnable { override fun run() { if(running && !closed) { requestSync();handler.postDelayed(this,15000) } } }
     private val pending=Runnable { enqueue(false) }
     fun start() { running=true;handler.removeCallbacks(periodic);handler.post(periodic) }
@@ -57,7 +57,7 @@ class HomeAssistantBridge(private val activity:Activity) {
                 prefs.edit().putLong("sent_at",System.currentTimeMillis()).putString("error","").apply()
             }
             result.exceptionOrNull()?.let { prefs.edit().putString("error",if(it is java.io.IOException) "Sem conexão. Tentaremos ao abrir o Viblio." else it.message ?: "Falha no envio.").apply() }
-            if(done!=null) handler.post { if(!closed && !activity.isFinishing) done(result.isSuccess) }
+            if(done!=null) handler.post { if(!closed && !activity.isFinishing && !activity.isDestroyed) done(result.isSuccess) }
         }
     }
     fun configure() {

@@ -38,7 +38,7 @@ def record_activity(db,owner,previous,snapshot,revision):
     for r in old_sessions.values():first_read[r['bookId']]=True
     events={};finished_books=set();changed_books={r['bookId'] for r in changed}
     def event(key,book,kind,at,data):
-        if not floor<=at<=ceiling:return
+        if type(at) is not int or not floor<=at<=ceiling:return
         row=dict(id=str(uuid.uuid5(owner,key)),event_key=key,book_id=book,kind=kind,occurred_at=datetime.fromtimestamp(at/1000,timezone.utc).isoformat(),data=data)
         if key not in events or kind!='started' or row['occurred_at']<events[key]['occurred_at']:events[key]=row
     for r in changed:
@@ -56,7 +56,8 @@ def record_activity(db,owner,previous,snapshot,revision):
         if not prior or prior.get('archived',False):
             if previous is not None:newly_added.append((identifier,b))
             continue
-        at=b.get('updatedAt',0)
+        raw_at=b.get('updatedAt',0)
+        at=raw_at if type(raw_at) is int else 0
         if not prior.get('currentPage',0) and b.get('currentPage',0)>0 and identifier not in changed_books:event('started:'+identifier,identifier,'started',at,{})
         if complete(b) and not complete(prior) and identifier not in finished_books:
             event('finished:'+identifier+':'+str(revision),identifier,'finished',at,dict(total_duration_ms=durations.get(identifier,0),rating=b.get('rating')))
@@ -64,7 +65,8 @@ def record_activity(db,owner,previous,snapshot,revision):
             event('rated:'+identifier+':'+str(revision),identifier,'rated',int(now.timestamp()*1000),dict(rating=b['rating']))
     if 1<=len(newly_added)<=5:
         for identifier,b in newly_added:
-            at=b.get('updatedAt') or int(now.timestamp()*1000)
+            raw_at=b.get('updatedAt')
+            at=raw_at if type(raw_at) is int and raw_at>0 else int(now.timestamp()*1000)
             event('added:'+identifier,identifier,'added',at,{})
     events=sorted(events.values(),key=lambda e:(e['occurred_at'],e['id']),reverse=True)[:MAX_EVENTS_PER_SYNC]
     if events:
@@ -122,23 +124,39 @@ def mount_activity(app,connect,current):
                 WHERE a.user_id=ANY(%s::uuid[]) AND a.occurred_at>=now()-interval '180 days'
                 AND (%s::timestamptz IS NULL OR (a.occurred_at,a.id)<(%s,%s))
                 ORDER BY a.occurred_at DESC,a.id DESC LIMIT 41''',(actors,position[0] if position else None,position[0] if position else None,position[1] if position else None)).fetchall() if actors else []
-            actor_ids=list({r['user_id'] for r in rows[:40]})
-            bases=db.execute('''SELECT DISTINCT ON (user_id) user_id,revision,
-                snapshot->'library'->'books' books,snapshot->'library'->'collections' collections
-                FROM public.viblio_library_bases WHERE user_id=ANY(%s::uuid[])
-                ORDER BY user_id,revision DESC''',(actor_ids,)).fetchall() if actor_ids else []
+            page_rows=rows[:40]
+            pairs=list({(r['user_id'],r['book_id']) for r in page_rows})
+            needed_users=[p[0] for p in pairs]
+            needed_books=[p[1] for p in pairs]
+            projected=db.execute('''WITH req AS (
+                    SELECT DISTINCT u_id, b_id FROM unnest(%s::uuid[], %s::text[]) AS t(u_id, b_id)
+                ), latest_bases AS (
+                    SELECT DISTINCT ON (s.user_id) s.user_id, s.revision, s.snapshot
+                    FROM public.viblio_library_bases s
+                    WHERE s.user_id IN (SELECT DISTINCT u_id FROM req)
+                    ORDER BY s.user_id, s.revision DESC
+                ), archived_colls AS (
+                    SELECT lb.user_id,
+                           coalesce(array_agg(c->>'id') FILTER (WHERE coalesce(c->>'archived','false')='true'), ARRAY[]::text[]) AS ids
+                    FROM latest_bases lb
+                    LEFT JOIN LATERAL jsonb_array_elements(coalesce(lb.snapshot->'library'->'collections','[]'::jsonb)) c ON true
+                    GROUP BY lb.user_id
+                )
+                SELECT lb.user_id, lb.revision, b AS book
+                FROM latest_bases lb
+                JOIN archived_colls ac ON ac.user_id=lb.user_id
+                JOIN req ON req.u_id=lb.user_id
+                CROSS JOIN LATERAL jsonb_array_elements(coalesce(lb.snapshot->'library'->'books','[]'::jsonb)) b
+                WHERE b->>'id'=req.b_id
+                  AND coalesce(b->>'archived','false')='false'
+                  AND NOT (coalesce(b->>'collectionId','') = ANY(ac.ids))''',(needed_users,needed_books)).fetchall() if pairs else []
             setting=db.execute('SELECT share_activity FROM public.viblio_users WHERE id=%s',(user['id'],)).fetchone()
-        from .friends import project,visible
-        catalog_by_user={}
-        for base in bases:
-            colls={c['id']:c for c in (base['collections'] or []) if isinstance(c,dict) and 'id' in c}
-            catalog_by_user[base['user_id']]=(base['revision'],{b['id']:b for b in (base['books'] or []) if isinstance(b,dict) and 'id' in b and visible(b,colls)})
+        from .friends import project
+        book_by_pair={(p['user_id'],p['book']['id']):(p['revision'],p['book']) for p in projected if isinstance(p['book'],dict) and 'id' in p['book']}
         items=[]
-        for r in rows[:40]:
-            entry=catalog_by_user.get(r['user_id'])
+        for r in page_rows:
+            entry=book_by_pair.get((r['user_id'],r['book_id']))
             if not entry:continue
-            rev,books_map=entry
-            book=books_map.get(r['book_id'])
-            if not book:continue
+            rev,book=entry
             items.append(dict(id=str(r['id']),actor=dict(id=str(r['user_id']),username=r['username']),kind=r['kind'],occurred_at=int(r['occurred_at'].timestamp()*1000),book=project(book,r['user_id'],rev),**r['data']))
         return dict(items=items,next_cursor=encode_cursor(rows[39]) if len(rows)>40 else None,sharing=setting['share_activity'],visible_actor_ids=[str(a) for a in actors])

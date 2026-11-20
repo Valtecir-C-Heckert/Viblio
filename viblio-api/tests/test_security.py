@@ -69,3 +69,42 @@ def test_invalid_forms_do_not_echo_credentials(tmp_path):
         assert response.status_code==422
         assert 'short-xyz' not in response.text and 'private-reader' not in response.text
         assert response.headers['cache-control']=='no-store'
+
+
+def test_sse_stream_classification_handles_non_hyphenated_uuids():
+    from app.security import is_discussion_stream
+    u1='11111111111141118111111111111111'
+    u2='22222222222242228222222222222222'
+    assert is_discussion_stream(f'/v1/clubs/{u1}/stages/{u2}/events', 'GET')
+    assert is_discussion_stream('/v1/clubs/11111111-1111-4111-8111-111111111111/stages/22222222-2222-4222-8222-222222222222/events', 'GET')
+    assert not is_discussion_stream(f'/v1/clubs/{u1}/stages/{u2}/events', 'POST')
+
+
+def test_non_ascii_bearer_and_bigint_bounds_and_v1_covers_cache(tmp_path):
+    import gzip
+    from app.personal_library import unpack
+    from fastapi import HTTPException
+    import pytest
+    with TestClient(create_app(DSN,TOKEN,tmp_path,'http://localhost:8088')) as api:
+        # Non-ASCII bearer must return 401, never 500 TypeError
+        bad=api.get('/v1/health',headers={'Authorization':'Bearer \xe9\xe9\xe9'})
+        assert bad.status_code==401
+        # Unauthenticated sync rejected before reading body
+        unauth_sync=api.post('/v1/me/library/sync',content=b'{}')
+        assert unauth_sync.status_code==401
+        # Out-of-range 64-bit bigint cursor returns 422, not 503
+        big=api.get('/v1/books?q=teste&cursor=9999999999999999999',headers=AUTH)
+        assert big.status_code==422
+        # /v1/covers/* keeps immutable Cache-Control
+        cover_name='a'*32+'.jpg'
+        (tmp_path/cover_name).write_bytes(b'\xff\xd8\xff\xd9')
+        cov=api.get('/v1/covers/'+cover_name)
+        assert cov.status_code==200 and 'immutable' in cov.headers.get('cache-control','')
+    # NaN and deep nesting rejected in unpack()
+    with pytest.raises(HTTPException) as exc1:
+        unpack(gzip.compress(b'{"a": NaN}'))
+    assert exc1.value.status_code==422
+    with pytest.raises(HTTPException) as exc2:
+        unpack(gzip.compress(('['*20 + ']'*20).encode()))
+    assert exc2.value.status_code==422
+

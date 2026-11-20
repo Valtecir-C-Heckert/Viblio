@@ -29,13 +29,12 @@ object ReadingWebhook {
             color?.let { addProperty("color",it) }
         })
     }
-    private val client=OkHttpClient.Builder().connectTimeout(5,TimeUnit.SECONDS).readTimeout(10,TimeUnit.SECONDS).callTimeout(15,TimeUnit.SECONDS)
-        .followRedirects(false).followSslRedirects(false).build()
+    private val client get() = br.com.centralcasa.books.catalog.ViblioHttp.webhook
     fun send(url:String,body:JsonObject) {
         require(validUrl(url)) { "Confira a URL de pareamento do Home Assistant." }
         client.newCall(Request.Builder().url(url).post(body.toString().toRequestBody("application/json".toMediaType())).build()).execute().use { response ->
             check(response.isSuccessful) { "O Home Assistant recusou o envio (HTTP ${response.code})." }
-            val text=response.body?.string().orEmpty()
+            val text=response.peekBody(1025L).string()
             check(text.length<1024 && runCatching { JsonParser.parseString(text).asJsonObject.get("viblio").asBoolean }.getOrDefault(false)) {
                 "Integração Viblio não encontrada. Confira a instalação e o pareamento no HA."
             }

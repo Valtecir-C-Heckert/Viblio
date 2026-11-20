@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
 /** Visible covers first; completed thumbnails survive redraws, filters and app restarts. */
 class SearchCoverLoader(context:Context) {
     private val directory=File(context.cacheDir,"catalog-thumbnails").apply { mkdirs() }
-    private val client=okhttp3.OkHttpClient.Builder().connectTimeout(4,TimeUnit.SECONDS).readTimeout(8,TimeUnit.SECONDS).callTimeout(12,TimeUnit.SECONDS).build()
+    private val client get() = br.com.centralcasa.books.catalog.ViblioHttp.searchThumbnails
     private val worker=Executors.newFixedThreadPool(3)
     private val handler=Handler(Looper.getMainLooper())
     private val memory=object:LruCache<String,Bitmap>(8*1024*1024) { override fun sizeOf(key:String,value:Bitmap)=value.byteCount }

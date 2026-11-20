@@ -20,10 +20,10 @@ Estatísticas → Por período: Dia/Semana/Mês/Ano, anterior/próximo/período 
 
 No GitHub autenticado → Releases → Viblio 0.2.9, baixe **viblio-api-0.2.9.zip** e envie ao seu Nextcloud com esse nome. Baixe também o APK, mas atualize o servidor antes de instalar.
 
-## 2. Backup no servidor, como valtecir
+## 2. Backup no servidor, como `<usuario>`
 
 ```bash
-sudo install -d -m 700 -o valtecir -g valtecir /opt/viblio/backups
+sudo install -d -m 700 -o <usuario> -g <usuario> /opt/viblio/backups
 VIBLIO_UPDATE_BACKUP="/opt/viblio/backups/antes-0.2.9-$(date +%Y%m%d-%H%M%S)"
 (
   set -e
@@ -34,7 +34,7 @@ VIBLIO_UPDATE_BACKUP="/opt/viblio/backups/antes-0.2.9-$(date +%Y%m%d-%H%M%S)"
   cp /opt/viblio/api/.env "$VIBLIO_UPDATE_BACKUP/.env"
   docker volume inspect viblio-catalog-api_viblio-covers > /dev/null
   docker run --rm --mount type=volume,source=viblio-catalog-api_viblio-covers,target=/data,readonly --mount "type=bind,source=$VIBLIO_UPDATE_BACKUP,target=/backup" alpine:3.22 tar -czf /backup/covers-and-private.tar.gz -C /data .
-  sudo chown valtecir:valtecir "$VIBLIO_UPDATE_BACKUP/covers-and-private.tar.gz"
+  sudo chown <usuario>:<usuario> "$VIBLIO_UPDATE_BACKUP/covers-and-private.tar.gz"
   chmod 600 "$VIBLIO_UPDATE_BACKUP/.env" "$VIBLIO_UPDATE_BACKUP/covers-and-private.tar.gz"
   echo "Backup concluído: $VIBLIO_UPDATE_BACKUP"
 )
@@ -51,8 +51,8 @@ sudo find /DATA/AppData/nextcloud -type f -name 'viblio-api-0.2.9.zip' 2>/dev/nu
 Se estiver na raiz do seu Nextcloud, use:
 
 ```bash
-sudo cp /DATA/AppData/nextcloud/var/www/html/data/valtecir/files/viblio-api-0.2.9.zip /tmp/viblio-api-0.2.9.zip
-sudo chown valtecir:valtecir /tmp/viblio-api-0.2.9.zip
+sudo cp /DATA/AppData/nextcloud/var/www/html/data/<usuario>/files/viblio-api-0.2.9.zip /tmp/viblio-api-0.2.9.zip
+sudo chown <usuario>:<usuario> /tmp/viblio-api-0.2.9.zip
 chmod 600 /tmp/viblio-api-0.2.9.zip
 sha256sum /tmp/viblio-api-0.2.9.zip
 unzip -t /tmp/viblio-api-0.2.9.zip

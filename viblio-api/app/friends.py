@@ -134,7 +134,7 @@ def mount_friends(app,connect,storage,current):
             page=matches[cursor:cursor+40]
             return dict(friend=friend,revision=row['revision'],items=page,next_cursor=cursor+40 if len(matches)>cursor+40 else None,
                         collection=dict(id=target['id'],title=str(target['title'])[:500]) if target else None)
-    @lru_cache(maxsize=6)
+    @lru_cache(maxsize=2)
     def cover_sources(owner,filename):
         if not re.fullmatch(r'[a-f0-9]{32}\.json\.gz',filename):raise HTTPException(404,'Capa indisponível.')
         try:
@@ -143,7 +143,7 @@ def mount_friends(app,connect,storage,current):
         if len(raw)>MAX_PACKED:raise HTTPException(413,'Acervo acima do limite.')
         library=unpack(raw)['library'];collections={c['id']:c for c in library.get('collections',[])}
         return {b['id']:b.get('coverData','') for b in library.get('books',[])+library.get('collections',[]) if visible(b,collections)}
-    @lru_cache(maxsize=512)
+    @lru_cache(maxsize=256)
     def thumbnail(owner,filename,book_id):
         art=cover_sources(owner,filename).get(book_id,'')
         if not isinstance(art,str) or not art.startswith('data:image/jpeg;base64,'):raise HTTPException(404,'Capa indisponível.')
@@ -156,12 +156,13 @@ def mount_friends(app,connect,storage,current):
             result=out.getvalue()
             if len(result)>96*1024:raise ValueError()
             return result
-        except (ValueError,OSError):raise HTTPException(404,'Capa indisponível.') from None
+        except (ValueError,OSError,Image.DecompressionBombError):raise HTTPException(404,'Capa indisponível.') from None
     @app.get('/v1/friends/{other}/cover')
-    def cover(other:uuid.UUID,book_id:str=Query(min_length=1,max_length=200),revision:int=Query(ge=1),user=Depends(current)):
+    def cover(other:uuid.UUID,book_id:str=Query(min_length=1,max_length=200),revision:int=Query(ge=1,le=2**63-1),user=Depends(current)):
         with connect() as db:
             allowed(db,user['id'],other)
             row=db.execute('SELECT revision,filename FROM public.viblio_library_versions WHERE user_id=%s ORDER BY revision DESC LIMIT 1',(other,)).fetchone()
             if not row or revision!=row['revision']:raise HTTPException(404,'Capa desatualizada. Atualize a estante.')
-            data=thumbnail(other,row['filename'],book_id)
-            return Response(data,media_type='image/jpeg',headers={'Cache-Control':'no-store'})
+            filename=row['filename']
+        data=thumbnail(other,filename,book_id)
+        return Response(data,media_type='image/jpeg',headers={'Cache-Control':'no-store'})

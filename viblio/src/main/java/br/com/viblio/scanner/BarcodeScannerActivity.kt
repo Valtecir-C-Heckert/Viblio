@@ -85,13 +85,16 @@ class BarcodeScannerActivity:Activity(),SurfaceHolder.Callback {
             val generation=++epoch
             device.setPreviewCallbackWithBuffer {data,owner->
                 val now=android.os.SystemClock.elapsedRealtime()
-                if(data!=null && resumed && camera===owner && now-lastFrame>=250 && busy.compareAndSet(false,true)){
+                if(data!=null && resumed && !worker.isShutdown && camera===owner && now-lastFrame>=250 && busy.compareAndSet(false,true)){
                     lastFrame=now;val frame=data.copyOf(size.width*size.height)
-                    worker.execute {
-                        val isbn=runCatching {decoder.decode(frame,size.width,size.height)}.getOrNull()
-                        busy.set(false)
-                        if(isbn!=null)handler.post {if(resumed && generation==epoch && !isFinishing){setResult(RESULT_OK,Intent().putExtra("isbn",isbn));finish()}}
-                    }
+                    val submitted=runCatching {
+                        worker.execute {
+                            val isbn=runCatching {decoder.decode(frame,size.width,size.height)}.getOrNull()
+                            busy.set(false)
+                            if(isbn!=null)handler.post {if(resumed && generation==epoch && !isFinishing && !isDestroyed){setResult(RESULT_OK,Intent().putExtra("isbn",isbn));finish()}}
+                        }
+                    }.isSuccess
+                    if(!submitted) busy.set(false)
                 }
                 if(camera===owner)runCatching {owner.addCallbackBuffer(data)}
             }

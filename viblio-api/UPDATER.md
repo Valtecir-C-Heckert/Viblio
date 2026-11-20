@@ -4,7 +4,7 @@ O script atualiza a instalação existente em `/opt/viblio/api`, usando o ZIP co
 
 ## Instalar uma vez
 
-No terminal, conectado como **valtecir**, execute:
+No terminal, conectado como **<usuario>**, execute:
 
 ```bash
 curl --fail --location --proto '=https' --proto-redir '=https' https://raw.githubusercontent.com/Valtecir-C-Heckert/Viblio/main/downloads/atualizar-viblio.py -o ~/atualizar-viblio.py
@@ -20,7 +20,7 @@ Envie o novo `viblio-api-VERSÃO.zip` para o seu Nextcloud, como já faz. Depois
 python3 ~/atualizar-viblio.py
 ```
 
-Ele procura em `/DATA/AppData/nextcloud/var/www/html/data/valtecir/files`, incluindo subpastas, e escolhe a maior versão numérica. Arquivos com sufixos como `(1)` não são selecionados; mantenha o nome original do pacote. Caso encontre cópias da mesma versão em pastas diferentes, pede que indique o caminho com `--zip`.
+Ele procura em `/DATA/AppData/nextcloud/var/www/html/data/<usuario>/files`, incluindo subpastas, e escolhe a maior versão numérica. Arquivos com sufixos como `(1)` não são selecionados; mantenha o nome original do pacote. Caso encontre cópias da mesma versão em pastas diferentes, pede que indique o caminho com `--zip`.
 
 Se o Nextcloud exigir permissão, o script usa `sudo` somente para localizar e ler seu pacote. A senha é digitada no terminal. **Não execute o script inteiro com sudo.** A pasta `/opt/viblio/api` precisa pertencer ao usuário que o executa.
 
@@ -73,7 +73,7 @@ python3 ~/atualizar-viblio.py --version 0.2.2
 Escolher o caminho quando há cópias duplicadas:
 
 ```bash
-python3 ~/atualizar-viblio.py --zip '/DATA/AppData/nextcloud/var/www/html/data/valtecir/files/viblio-api-0.2.2.zip'
+python3 ~/atualizar-viblio.py --zip '/DATA/AppData/nextcloud/var/www/html/data/<usuario>/files/viblio-api-0.2.2.zip'
 ```
 
 Sem acesso ao GitHub, informe o SHA-256 recebido da publicação confiável da versão:

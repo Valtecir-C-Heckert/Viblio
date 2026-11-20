@@ -1,6 +1,13 @@
 .env
+.env.*
+.git
 .venv
+.update.lock
 __pycache__
 .pytest_cache
 tests
 *.pyc
+*.pem
+*.key
+*.dump
+backups

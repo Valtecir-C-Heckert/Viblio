@@ -10,94 +10,62 @@ import android.os.SystemClock
 import android.provider.Settings
 
 /** Local source of truth. A future server adapter can exchange snapshots without coupling UI to transport. */
-class LibraryRepository(private val context: Context, databaseName: String = LibraryProfiles.database(context)) : SQLiteOpenHelper(context, databaseName, null, 11) {
-    init { setWriteAheadLoggingEnabled(true) }
-    override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE books(id TEXT PRIMARY KEY,title TEXT NOT NULL,author TEXT NOT NULL,genre TEXT NOT NULL,total_pages INTEGER NOT NULL,current_page INTEGER NOT NULL,cover TEXT NOT NULL,background TEXT NOT NULL,updated_at INTEGER NOT NULL,sequence_number INTEGER,saga TEXT NOT NULL DEFAULT '',subgenre TEXT NOT NULL DEFAULT '',subgenres TEXT NOT NULL DEFAULT '[]',kind TEXT NOT NULL DEFAULT 'book',collection_id TEXT NOT NULL DEFAULT '',publisher TEXT NOT NULL DEFAULT '',rating REAL,pages_known INTEGER NOT NULL DEFAULT 1,read_finished INTEGER NOT NULL DEFAULT 0,archived INTEGER NOT NULL DEFAULT 0)")
-        db.execSQL("CREATE TABLE sessions(id TEXT PRIMARY KEY,book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,started_at INTEGER NOT NULL,finished_at INTEGER NOT NULL,duration_ms INTEGER NOT NULL,start_page INTEGER NOT NULL,end_page INTEGER NOT NULL,reading_day TEXT)")
-        createCollections(db)
-        createDates(db)
-        db.execSQL("CREATE INDEX sessions_book ON sessions(book_id,finished_at)")
-        db.execSQL("CREATE TABLE preferences(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
-        db.execSQL("CREATE TABLE draft(singleton INTEGER PRIMARY KEY CHECK(singleton=1),book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,start_page INTEGER NOT NULL,started_at INTEGER NOT NULL,elapsed_ms INTEGER NOT NULL,running_since INTEGER,boot INTEGER NOT NULL)")
+class LibraryRepository(private val context: Context, private val databaseName: String = LibraryProfiles.database(context)) : SQLiteOpenHelper(context.applicationContext ?: context, databaseName, null, 11) {
+    private val closedFlag = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val lease: SharedLease = acquire(context.applicationContext ?: context, databaseName)
+
+    override fun getReadableDatabase(): SQLiteDatabase = lease.helper.readableDatabase
+    override fun getWritableDatabase(): SQLiteDatabase = lease.helper.writableDatabase
+    override fun close() {
+        if (closedFlag.compareAndSet(false, true)) {
+            release(databaseName, lease)
+        }
     }
-    override fun onConfigure(db: SQLiteDatabase) { db.setForeignKeyConstraintsEnabled(true) }
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        if (oldVersion < 2) {
-            db.execSQL("ALTER TABLE books ADD COLUMN sequence_number INTEGER")
-            val updates = db.rawQuery("SELECT id,title,author FROM books", null).use { c -> buildList {
-                while (c.moveToNext()) add(c.getString(0) to LegacyBookMetadata.read(c.getString(1), c.getString(2)))
-            } }
-            updates.forEach { (id, metadata) -> db.update("books", ContentValues().apply {
-                put("title", metadata.title); metadata.sequenceNumber?.let { put("sequence_number", it) }
-            }, "id=?", arrayOf(id)) }
-        }
-        if (oldVersion < 3) db.execSQL("ALTER TABLE books ADD COLUMN saga TEXT NOT NULL DEFAULT ''")
-        if (oldVersion < 4) { db.execSQL("ALTER TABLE sessions ADD COLUMN reading_day TEXT"); createDates(db) }
-        if (oldVersion < 5) upgradeGenres(db)
-        if (oldVersion < 6) {
-            db.execSQL("ALTER TABLE books ADD COLUMN subgenres TEXT NOT NULL DEFAULT '[]'")
-            val rows = db.rawQuery("SELECT id,subgenre FROM books", null).use { c -> buildList {
-                while (c.moveToNext()) add(c.getString(0) to c.getString(1))
-            } }
-            rows.forEach { (id, tag) -> db.update("books", ContentValues().apply {
-                put("subgenres", org.json.JSONArray(listOf(tag).filter(String::isNotBlank)).toString())
-            }, "id=?", arrayOf(id)) }
-        }
-        if (oldVersion < 8) {
-            db.execSQL("ALTER TABLE books ADD COLUMN kind TEXT NOT NULL DEFAULT 'book'")
-            db.execSQL("ALTER TABLE books ADD COLUMN collection_id TEXT NOT NULL DEFAULT ''")
-            db.execSQL("ALTER TABLE books ADD COLUMN publisher TEXT NOT NULL DEFAULT ''")
-            db.execSQL("ALTER TABLE books ADD COLUMN rating REAL")
-            db.execSQL("ALTER TABLE books ADD COLUMN pages_known INTEGER NOT NULL DEFAULT 1")
-            db.execSQL("ALTER TABLE books ADD COLUMN read_finished INTEGER NOT NULL DEFAULT 0")
-            createCollections(db)
-        }
-        if (oldVersion == 8) db.execSQL("ALTER TABLE collections ADD COLUMN subgenres TEXT NOT NULL DEFAULT '[]'")
-        if (oldVersion < 10) {
-            db.execSQL("ALTER TABLE books ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
-            if(oldVersion>=8) db.execSQL("ALTER TABLE collections ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
-        }
-        if (oldVersion < 11) {
-            // Collections created by older upgrade steps already include this column.
-            if(oldVersion>=8) db.execSQL("ALTER TABLE collections ADD COLUMN expected_volumes INTEGER")
-            db.execSQL("UPDATE collections SET expected_volumes=missing_volumes+(SELECT COUNT(DISTINCT CASE WHEN sequence_number IS NULL THEN 'id:'||id ELSE 'number:'||sequence_number END) FROM books WHERE collection_id=collections.id) WHERE missing_volumes IS NOT NULL")
-            db.execSQL("UPDATE collections SET expected_volumes=NULL WHERE expected_volumes=0")
-        }
-        if (oldVersion < 7) {
-            // Update classification in place: never replace books or their reading records.
-            val rows = db.rawQuery("SELECT * FROM books", null).use { c -> buildList {
-                while (c.moveToNext()) add(c.book())
-            } }
-            rows.forEach { original ->
-                val book = BookGenres.normalize(original)
-                if (book.selectedSubgenres.size <= 3) db.update("books", ContentValues().apply {
-                    put("genre", book.genre); put("subgenre", book.subgenre)
-                    put("subgenres", org.json.JSONArray(book.selectedSubgenres).toString())
-                }, "id=?", arrayOf(book.id))
+    override fun onCreate(db: SQLiteDatabase) = lease.helper.onCreate(db)
+    override fun onConfigure(db: SQLiteDatabase) = lease.helper.onConfigure(db)
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = lease.helper.onUpgrade(db, oldVersion, newVersion)
+
+    fun hasReadOnDay(day: String): Boolean {
+        ReadingDays.validate(day)
+        val hasDate = readableDatabase.rawQuery(
+            "SELECT 1 FROM reading_dates d JOIN books b ON b.id=d.book_id WHERE b.archived=0 AND d.day=? LIMIT 1",
+            arrayOf(day),
+        ).use { it.moveToFirst() }
+        if (hasDate) return true
+        val hasTaggedSession = readableDatabase.rawQuery(
+            "SELECT 1 FROM sessions s JOIN books b ON b.id=s.book_id WHERE b.archived=0 AND s.reading_day=? LIMIT 1",
+            arrayOf(day),
+        ).use { it.moveToFirst() }
+        if (hasTaggedSession) return true
+        return readableDatabase.rawQuery(
+            "SELECT s.started_at FROM sessions s JOIN books b ON b.id=s.book_id WHERE b.archived=0 AND s.reading_day IS NULL",
+            null,
+        ).use { c ->
+            while (c.moveToNext()) {
+                if (ReadingDays.at(c.getLong(0)) == day) return@use true
             }
+            false
         }
     }
-    private fun createCollections(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE collections(id TEXT PRIMARY KEY,kind TEXT NOT NULL,title TEXT NOT NULL,author TEXT NOT NULL,genre TEXT NOT NULL,publisher TEXT NOT NULL,missing_volumes INTEGER,expected_volumes INTEGER,source_read_count INTEGER NOT NULL,source_rating REAL,rating REAL,cover TEXT NOT NULL,updated_at INTEGER NOT NULL,subgenres TEXT NOT NULL DEFAULT '[]',archived INTEGER NOT NULL DEFAULT 0)")
-        db.execSQL("CREATE INDEX books_collection ON books(collection_id)")
-    }
+
     fun collections(includeArchived:Boolean=false): List<CollectionTitle> = readableDatabase.rawQuery("SELECT * FROM collections"+(if(includeArchived) "" else " WHERE archived=0")+" ORDER BY title COLLATE NOCASE", null).use { c -> buildList {
         while (c.moveToNext()) add(CollectionTitle(c.string("id"), c.string("kind"), c.string("title"), c.string("author"), c.string("genre"), c.string("publisher"), if (c.isNull(c.getColumnIndexOrThrow("missing_volumes"))) null else c.number("missing_volumes").toInt(), c.number("source_read_count").toInt(), c.optionalDouble("source_rating"), c.optionalDouble("rating"), c.string("cover"), c.number("updated_at"), org.json.JSONArray(c.string("subgenres")).let { a -> (0 until a.length()).map { a.getString(it) } }, c.number("archived")!=0L, c.getColumnIndex("expected_volumes").takeIf {it>=0 && !c.isNull(it)}?.let(c::getInt) ))
     } }.let { titles -> val owned=books(true);titles.map { title->
         title.copy(missingVolumes=if(title.expectedVolumes==null)null else CollectionInventory.of(title,owned).missing)
     } }
     fun saveCollection(input: CollectionTitle) {
-        val c = input.copy(expectedVolumes=CollectionInventory.expected(input,books(true))).validated()
-        val values = ContentValues().apply {
-            put("archived", if(c.archived)1 else 0); put("id", c.id); put("kind", c.kind); put("title", c.title); put("author", c.author); put("genre", c.genre); put("publisher", c.publisher)
-            if (c.missingVolumes == null) putNull("missing_volumes") else put("missing_volumes", c.missingVolumes)
-            if(c.expectedVolumes==null)putNull("expected_volumes") else put("expected_volumes",c.expectedVolumes)
-            put("source_read_count", c.sourceReadCount); if (c.sourceRating == null) putNull("source_rating") else put("source_rating", c.sourceRating)
-            if (c.rating == null) putNull("rating") else put("rating", c.rating)
-            put("cover", c.cover); put("updated_at", c.updatedAt); put("subgenres", org.json.JSONArray(c.subgenres).toString())
+        transaction {
+            val c = input.copy(expectedVolumes=CollectionInventory.expected(input,books(true))).validated()
+            val values = ContentValues().apply {
+                put("archived", if(c.archived)1 else 0); put("id", c.id); put("kind", c.kind); put("title", c.title); put("author", c.author); put("genre", c.genre); put("publisher", c.publisher)
+                if (c.missingVolumes == null) putNull("missing_volumes") else put("missing_volumes", c.missingVolumes)
+                if(c.expectedVolumes==null)putNull("expected_volumes") else put("expected_volumes",c.expectedVolumes)
+                put("source_read_count", c.sourceReadCount); if (c.sourceRating == null) putNull("source_rating") else put("source_rating", c.sourceRating)
+                if (c.rating == null) putNull("rating") else put("rating", c.rating)
+                put("cover", c.cover); put("updated_at", c.updatedAt); put("subgenres", org.json.JSONArray(c.subgenres).toString())
+            }
+            if (writableDatabase.update("collections", values, "id=?", arrayOf(c.id)) == 0) writableDatabase.insertOrThrow("collections", null, values)
         }
-        if (writableDatabase.update("collections", values, "id=?", arrayOf(c.id)) == 0) writableDatabase.insertOrThrow("collections", null, values)
     }
     fun saveTitleCover(input: CollectionTitle) {
         transaction {
@@ -120,18 +88,6 @@ class LibraryRepository(private val context: Context, databaseName: String = Lib
     fun markVolumeRead(id: String, value: Boolean) {
         val b = requireNotNull(book(id)); require(!b.pagesKnown)
         writableDatabase.update("books", ContentValues().apply { put("read_finished", if (value) 1 else 0);put("updated_at",System.currentTimeMillis()) }, "id=?", arrayOf(id))
-    }
-    private fun upgradeGenres(db: SQLiteDatabase) {
-        db.execSQL("ALTER TABLE books ADD COLUMN subgenre TEXT NOT NULL DEFAULT ''")
-        val rows = db.rawQuery("SELECT id,genre FROM books", null).use { c -> buildList {
-            while (c.moveToNext()) add(c.getString(0) to BookGenres.split(c.getString(1)))
-        } }
-        rows.forEach { (id, category) -> db.update("books", ContentValues().apply {
-            put("genre", category.genre); put("subgenre", category.subgenre)
-        }, "id=?", arrayOf(id)) }
-    }
-    private fun createDates(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE reading_dates(id TEXT PRIMARY KEY,book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,day TEXT NOT NULL,UNIQUE(book_id,day))")
     }
     fun dates(bookId: String? = null): List<ReadingDate> = readableDatabase.rawQuery(
         "SELECT * FROM reading_dates" + (if (bookId == null) "" else " WHERE book_id=?") + " ORDER BY day DESC", bookId?.let { arrayOf(it) }
@@ -204,22 +160,24 @@ class LibraryRepository(private val context: Context, databaseName: String = Lib
             "id=? AND cover='' AND archived=0 AND EXISTS(SELECT 1 FROM preferences WHERE key=? AND value=?)",arrayOf(id,"catalog:$id",binding))==1
     }
     fun save(input: LibraryBook) {
-        val book = BookGenres.normalize(input)
-        book.validated()
-        require(sessions(book.id).all { it.endPage <= book.totalPages }) { "O total de páginas não pode ser menor que as páginas das sessões salvas." }
-        val active = draft()
-        require(active?.bookId != book.id || (book(id = book.id)!!.currentPage == book.currentPage && book.totalPages >= active.startPage)) { "Finalize ou descarte a sessão antes de alterar as páginas deste livro." }
-        val values = ContentValues().apply {
-            put("archived",if(book.archived)1 else 0); put("id", book.id); put("title", book.title.trim()); put("author", book.author.trim()); put("genre", book.genre.trim()); put("saga", book.saga.trim()); put("subgenre", book.subgenre); put("subgenres", org.json.JSONArray(book.selectedSubgenres).toString())
-            put("kind", book.kind); put("collection_id", book.collectionId); put("publisher", book.publisher)
-            if (book.rating == null) putNull("rating") else put("rating", book.rating)
-            put("pages_known", if (book.pagesKnown) 1 else 0); put("read_finished", if (book.readFinished) 1 else 0)
-            put("total_pages", book.totalPages); put("current_page", book.currentPage); put("cover", book.cover); put("background", book.background); put("updated_at", book.updatedAt); if (book.sequenceNumber == null) putNull("sequence_number") else put("sequence_number", book.sequenceNumber)
+        transaction {
+            val book = BookGenres.normalize(input)
+            book.validated()
+            require(sessions(book.id).all { it.endPage <= book.totalPages }) { "O total de páginas não pode ser menor que as páginas das sessões salvas." }
+            val active = draft()
+            require(active?.bookId != book.id || (book(id = book.id)!!.currentPage == book.currentPage && book.totalPages >= active.startPage)) { "Finalize ou descarte a sessão antes de alterar as páginas deste livro." }
+            val values = ContentValues().apply {
+                put("archived",if(book.archived)1 else 0); put("id", book.id); put("title", book.title.trim()); put("author", book.author.trim()); put("genre", book.genre.trim()); put("saga", book.saga.trim()); put("subgenre", book.subgenre); put("subgenres", org.json.JSONArray(book.selectedSubgenres).toString())
+                put("kind", book.kind); put("collection_id", book.collectionId); put("publisher", book.publisher)
+                if (book.rating == null) putNull("rating") else put("rating", book.rating)
+                put("pages_known", if (book.pagesKnown) 1 else 0); put("read_finished", if (book.readFinished) 1 else 0)
+                put("total_pages", book.totalPages); put("current_page", book.currentPage); put("cover", book.cover); put("background", book.background); put("updated_at", book.updatedAt); if (book.sequenceNumber == null) putNull("sequence_number") else put("sequence_number", book.sequenceNumber)
+            }
+            // UPDATE, never REPLACE: REPLACE would delete child sessions through the foreign key.
+            if (writableDatabase.update("books", values, "id=?", arrayOf(book.id)) == 0) writableDatabase.insertOrThrow("books", null, values)
+            if(book.catalogId!=null) setCatalogBinding(book.id,book.catalogId,book.catalogSource)
+            if (current() == null && book.pagesKnown && !book.archived) setCurrent(book.id)
         }
-        // UPDATE, never REPLACE: REPLACE would delete child sessions through the foreign key.
-        if (writableDatabase.update("books", values, "id=?", arrayOf(book.id)) == 0) writableDatabase.insertOrThrow("books", null, values)
-        if(book.catalogId!=null) setCatalogBinding(book.id,book.catalogId,book.catalogSource)
-        if (current() == null && book.pagesKnown && !book.archived) setCurrent(book.id)
     }
     /** Progress changes never close or reset the persisted reading timer. */
     fun updateProgress(id: String, page: Int) {
@@ -249,7 +207,13 @@ class LibraryRepository(private val context: Context, databaseName: String = Lib
         require(draft()?.bookId == id) { "Este livro não tem leitura em andamento." }
         return finish(requireNotNull(book(id)).totalPages)
     }
-    fun delete(id: String) { writableDatabase.delete("preferences","key=?",arrayOf("catalog:$id")); writableDatabase.delete("books", "id=?", arrayOf(id)); if (currentId() == id) writableDatabase.delete("preferences", "key='current_book'", null) }
+    fun delete(id: String) {
+        transaction {
+            writableDatabase.delete("preferences","key=?",arrayOf("catalog:$id"))
+            writableDatabase.delete("books", "id=?", arrayOf(id))
+            if (currentId() == id) writableDatabase.delete("preferences", "key='current_book'", null)
+        }
+    }
     fun archive(id:String,collection:Boolean=false,removed:Boolean=true) {
         val ids=if(collection)books(true).filter {it.collectionId==id}.map {it.id} else listOf(id)
         require(draft()?.bookId !in ids) {"Pause e salve a sessão antes de remover esta leitura."}
@@ -355,5 +319,137 @@ class LibraryRepository(private val context: Context, databaseName: String = Lib
     private fun transaction(action: () -> Unit) {
         val db = writableDatabase; db.beginTransaction()
         try { action(); db.setTransactionSuccessful() } finally { db.endTransaction() }
+    }
+
+    private class SharedLease(val helper: SharedHelper, var refs: Int)
+
+    private class SharedHelper(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 11) {
+        init { setWriteAheadLoggingEnabled(true) }
+        override fun onConfigure(db: SQLiteDatabase) {
+            db.setForeignKeyConstraintsEnabled(true)
+            runCatching { db.rawQuery("PRAGMA busy_timeout = 5000", null).use { it.moveToFirst() } }
+        }
+        override fun onCreate(db: SQLiteDatabase) {
+            db.execSQL("CREATE TABLE books(id TEXT PRIMARY KEY,title TEXT NOT NULL,author TEXT NOT NULL,genre TEXT NOT NULL,total_pages INTEGER NOT NULL,current_page INTEGER NOT NULL,cover TEXT NOT NULL,background TEXT NOT NULL,updated_at INTEGER NOT NULL,sequence_number INTEGER,saga TEXT NOT NULL DEFAULT '',subgenre TEXT NOT NULL DEFAULT '',subgenres TEXT NOT NULL DEFAULT '[]',kind TEXT NOT NULL DEFAULT 'book',collection_id TEXT NOT NULL DEFAULT '',publisher TEXT NOT NULL DEFAULT '',rating REAL,pages_known INTEGER NOT NULL DEFAULT 1,read_finished INTEGER NOT NULL DEFAULT 0,archived INTEGER NOT NULL DEFAULT 0)")
+            db.execSQL("CREATE TABLE sessions(id TEXT PRIMARY KEY,book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,started_at INTEGER NOT NULL,finished_at INTEGER NOT NULL,duration_ms INTEGER NOT NULL,start_page INTEGER NOT NULL,end_page INTEGER NOT NULL,reading_day TEXT)")
+            createCollections(db)
+            createDates(db)
+            db.execSQL("CREATE INDEX sessions_book ON sessions(book_id,finished_at)")
+            db.execSQL("CREATE TABLE preferences(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+            db.execSQL("CREATE TABLE draft(singleton INTEGER PRIMARY KEY CHECK(singleton=1),book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,start_page INTEGER NOT NULL,started_at INTEGER NOT NULL,elapsed_ms INTEGER NOT NULL,running_since INTEGER,boot INTEGER NOT NULL)")
+        }
+        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+            if (oldVersion < 2) {
+                db.execSQL("ALTER TABLE books ADD COLUMN sequence_number INTEGER")
+                val updates = db.rawQuery("SELECT id,title,author FROM books", null).use { c -> buildList {
+                    while (c.moveToNext()) add(c.getString(0) to LegacyBookMetadata.read(c.getString(1), c.getString(2)))
+                } }
+                updates.forEach { (id, metadata) -> db.update("books", ContentValues().apply {
+                    put("title", metadata.title); metadata.sequenceNumber?.let { put("sequence_number", it) }
+                }, "id=?", arrayOf(id)) }
+            }
+            if (oldVersion < 3) db.execSQL("ALTER TABLE books ADD COLUMN saga TEXT NOT NULL DEFAULT ''")
+            if (oldVersion < 4) { db.execSQL("ALTER TABLE sessions ADD COLUMN reading_day TEXT"); createDates(db) }
+            if (oldVersion < 5) upgradeGenres(db)
+            if (oldVersion < 6) {
+                db.execSQL("ALTER TABLE books ADD COLUMN subgenres TEXT NOT NULL DEFAULT '[]'")
+                val rows = db.rawQuery("SELECT id,subgenre FROM books", null).use { c -> buildList {
+                    while (c.moveToNext()) add(c.getString(0) to c.getString(1))
+                } }
+                rows.forEach { (id, tag) -> db.update("books", ContentValues().apply {
+                    put("subgenres", org.json.JSONArray(listOf(tag).filter(String::isNotBlank)).toString())
+                }, "id=?", arrayOf(id)) }
+            }
+            if (oldVersion < 8) {
+                db.execSQL("ALTER TABLE books ADD COLUMN kind TEXT NOT NULL DEFAULT 'book'")
+                db.execSQL("ALTER TABLE books ADD COLUMN collection_id TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE books ADD COLUMN publisher TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE books ADD COLUMN rating REAL")
+                db.execSQL("ALTER TABLE books ADD COLUMN pages_known INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE books ADD COLUMN read_finished INTEGER NOT NULL DEFAULT 0")
+                createCollections(db)
+            }
+            if (oldVersion == 8) db.execSQL("ALTER TABLE collections ADD COLUMN subgenres TEXT NOT NULL DEFAULT '[]'")
+            if (oldVersion < 10) {
+                db.execSQL("ALTER TABLE books ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+                if(oldVersion>=8) db.execSQL("ALTER TABLE collections ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+            }
+            if (oldVersion < 11) {
+                // Collections created by older upgrade steps already include this column.
+                if(oldVersion>=8) db.execSQL("ALTER TABLE collections ADD COLUMN expected_volumes INTEGER")
+                db.execSQL("UPDATE collections SET expected_volumes=missing_volumes+(SELECT COUNT(DISTINCT CASE WHEN sequence_number IS NULL THEN 'id:'||id ELSE 'number:'||sequence_number END) FROM books WHERE collection_id=collections.id) WHERE missing_volumes IS NOT NULL")
+                db.execSQL("UPDATE collections SET expected_volumes=NULL WHERE expected_volumes=0")
+            }
+            if (oldVersion < 7) {
+                // Update classification in place: never replace books or their reading records.
+                val rows = db.rawQuery("SELECT * FROM books", null).use { c -> buildList {
+                    while (c.moveToNext()) add(readLegacyBook(c))
+                } }
+                rows.forEach { original ->
+                    val book = BookGenres.normalize(original)
+                    if (book.selectedSubgenres.size <= 3) db.update("books", ContentValues().apply {
+                        put("genre", book.genre); put("subgenre", book.subgenre)
+                        put("subgenres", org.json.JSONArray(book.selectedSubgenres).toString())
+                    }, "id=?", arrayOf(book.id))
+                }
+            }
+        }
+        private fun createCollections(db: SQLiteDatabase) {
+            db.execSQL("CREATE TABLE collections(id TEXT PRIMARY KEY,kind TEXT NOT NULL,title TEXT NOT NULL,author TEXT NOT NULL,genre TEXT NOT NULL,publisher TEXT NOT NULL,missing_volumes INTEGER,expected_volumes INTEGER,source_read_count INTEGER NOT NULL,source_rating REAL,rating REAL,cover TEXT NOT NULL,updated_at INTEGER NOT NULL,subgenres TEXT NOT NULL DEFAULT '[]',archived INTEGER NOT NULL DEFAULT 0)")
+            db.execSQL("CREATE INDEX books_collection ON books(collection_id)")
+        }
+        private fun createDates(db: SQLiteDatabase) {
+            db.execSQL("CREATE TABLE reading_dates(id TEXT PRIMARY KEY,book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,day TEXT NOT NULL,UNIQUE(book_id,day))")
+        }
+        private fun upgradeGenres(db: SQLiteDatabase) {
+            db.execSQL("ALTER TABLE books ADD COLUMN subgenre TEXT NOT NULL DEFAULT ''")
+            val rows = db.rawQuery("SELECT id,genre FROM books", null).use { c -> buildList {
+                while (c.moveToNext()) add(c.getString(0) to BookGenres.split(c.getString(1)))
+            } }
+            rows.forEach { (id, category) -> db.update("books", ContentValues().apply {
+                put("genre", category.genre); put("subgenre", category.subgenre)
+            }, "id=?", arrayOf(id)) }
+        }
+        private fun readLegacyBook(c: Cursor): LibraryBook {
+            fun str(name: String) = c.getString(c.getColumnIndexOrThrow(name))
+            fun num(name: String) = c.getLong(c.getColumnIndexOrThrow(name))
+            fun optDouble(name: String): Double? = c.getColumnIndex(name).takeIf { it >= 0 && !c.isNull(it) }?.let { c.getDouble(it) }
+            return LibraryBook(
+                str("id"), str("title"), str("author"), str("genre"),
+                num("total_pages").toInt(), num("current_page").toInt(), str("cover"), str("background"), num("updated_at"),
+                if (c.isNull(c.getColumnIndexOrThrow("sequence_number"))) null else num("sequence_number").toInt(),
+                str("saga"), str("subgenre"),
+                org.json.JSONArray(str("subgenres")).let { array -> (0 until array.length()).map { array.getString(it) } },
+                str("kind"), str("collection_id"), str("publisher"), optDouble("rating"),
+                num("pages_known") == 1L, num("read_finished") == 1L,
+            )
+        }
+    }
+
+    companion object {
+        private val lock = Any()
+        private val leases = HashMap<String, SharedLease>()
+
+        private fun acquire(appContext: Context, name: String): SharedLease = synchronized(lock) {
+            val existing = leases[name]
+            if (existing != null) {
+                existing.refs++
+                existing
+            } else {
+                SharedLease(SharedHelper(appContext, name), 1).also { leases[name] = it }
+            }
+        }
+
+        private fun release(name: String, lease: SharedLease) {
+            val toClose = synchronized(lock) {
+                if (leases[name] !== lease) return
+                lease.refs--
+                if (lease.refs <= 0) {
+                    leases.remove(name)
+                    lease.helper
+                } else null
+            }
+            toClose?.let { runCatching { it.close() } }
+        }
     }
 }

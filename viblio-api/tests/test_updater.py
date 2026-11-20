@@ -126,5 +126,18 @@ class UpdaterChecks(unittest.TestCase):
     def test_copy_is_bounded_before_filling_tmp(self):
         source=self.root/'source.zip';source.write_bytes(b'12345')
         with patch.object(u,'MAX_ZIP',4),self.assertRaises(u.UpdateError):u.Updater(self.config).copy_package(source,self.root/'copy.zip')
+    def test_copy_rejects_symlink_source(self):
+        real=self.root/'real.zip';real.write_bytes(b'12345')
+        link=self.root/'link.zip';link.symlink_to(real)
+        with self.assertRaises(u.UpdateError):u.Updater(self.config).copy_package(link,self.root/'copy.zip')
+    def test_streaming_unpack_enforces_real_expanded_limit(self):
+        path=self.package([('app/big.txt','x'*4096)])
+        # Even if MAX_EXPANDED is tiny relative to real decompressed bytes, streaming check catches it.
+        with patch.object(u,'MAX_EXPANDED',2048),self.assertRaises(u.UpdateError):
+            u.unpack(path,self.root/'out_big')
+    def test_https_only_redirect_handler_blocks_downgrade(self):
+        handler=u._HttpsOnlyRedirectHandler()
+        with self.assertRaises(u.UpdateError):
+            handler.redirect_request(None,None,302,'Found',{},'http://example.org/SHA256SUMS')
 
 if __name__=='__main__':unittest.main()

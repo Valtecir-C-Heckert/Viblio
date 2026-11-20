@@ -14,8 +14,8 @@ import java.util.concurrent.TimeUnit
 
 /** API credentials are never attached to external cover requests or redirected requests. */
 class CatalogApi(val address:String,private val token:String) {
-    private val api=OkHttpClient.Builder().connectTimeout(5,TimeUnit.SECONDS).readTimeout(15,TimeUnit.SECONDS).callTimeout(25,TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build()
-    private val publicImages=OkHttpClient.Builder().connectTimeout(5,TimeUnit.SECONDS).readTimeout(15,TimeUnit.SECONDS).callTimeout(25,TimeUnit.SECONDS).build()
+    private val api get() = ViblioHttp.catalog
+    private val publicImages get() = ViblioHttp.publicImages
     init { require(validAddress(address)) { "Use HTTPS ou um endereço HTTP da rede local/Tailscale." };require(token.length>=32) { "Confira a chave do catálogo." } }
     fun health():String=healthInfo().first
     fun healthInfo():Pair<String,Int> {
@@ -171,8 +171,22 @@ class CatalogApi(val address:String,private val token:String) {
         // Independent client with no account headers, even for covers stored on the API server.
         return publicImages.newCall(Request.Builder().url(url).build()).execute().use { response ->
             check(response.isSuccessful) { "Não foi possível carregar a capa." }
-            require(response.body!!.contentLength()<=12*1024*1024) { "A capa precisa ter até 12 MB." }
-            response.body!!.byteStream().use(accept)
+            val body=requireNotNull(response.body) { "Não foi possível carregar a capa." }
+            require(body.contentLength()<=12*1024*1024) { "A capa precisa ter até 12 MB." }
+            val bounded=object:java.io.FilterInputStream(body.byteStream()) {
+                private var total=0L
+                override fun read():Int {
+                    val b=super.read()
+                    if(b>=0) { total++; require(total<=12*1024*1024) { "A capa precisa ter até 12 MB." } }
+                    return b
+                }
+                override fun read(b:ByteArray,off:Int,len:Int):Int {
+                    val n=super.read(b,off,len)
+                    if(n>0) { total+=n; require(total<=12*1024*1024) { "A capa precisa ter até 12 MB." } }
+                    return n
+                }
+            }
+            bounded.use(accept)
         }
     }
     private fun call(builder:Request.Builder):JsonObject = api.newCall(builder.header("Authorization","Bearer $token").build()).execute().use { response ->

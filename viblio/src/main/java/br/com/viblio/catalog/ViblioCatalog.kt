@@ -33,7 +33,7 @@ class ViblioCatalog(private val activity:Activity,private val changed:(Boolean)-
     @Volatile private var closed=false
     override val configured get()=prefs.getString("url","").orEmpty().isNotBlank() && (personalToken() ?: credentials.load()).isNotBlank()
     private fun api()=CatalogApi(prefs.getString("url","").orEmpty(),personalToken() ?: credentials.load())
-    private fun post(action:()->Unit) { handler.post { if(!closed && !activity.isFinishing) action() } }
+    private fun post(action:()->Unit) { handler.post { if(!closed && !activity.isFinishing && !activity.isDestroyed) action() } }
     private fun toast(value:String) { post { Toast.makeText(activity,value,Toast.LENGTH_LONG).show() } }
     override fun configure() {
         if(personalMode()){toast("Configure a conexão em Conta.");return}
@@ -267,6 +267,11 @@ class ViblioCatalog(private val activity:Activity,private val changed:(Boolean)-
     }
     fun close() {
         closed=true;handler.removeCallbacksAndMessages(null);browse.shutdown()
-        writer.execute { outbox.close();library.close() };writer.shutdown()
+        writer.execute {
+            runCatching { browse.awaitTermination(3, java.util.concurrent.TimeUnit.SECONDS) }
+            runCatching { outbox.close() }
+            runCatching { library.close() }
+        }
+        writer.shutdown()
     }
 }

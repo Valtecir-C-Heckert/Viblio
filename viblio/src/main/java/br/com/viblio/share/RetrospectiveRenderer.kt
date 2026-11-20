@@ -267,8 +267,11 @@ object RetrospectiveRenderer {
         var end = text.length
         while (end > 1 && paint.measureText(text.substring(0, end) + "…") > maxWidth) {
             end--
+            if (end > 0 && Character.isHighSurrogate(text[end - 1])) {
+                end--
+            }
         }
-        return text.substring(0, end).trimEnd() + "…"
+        return text.substring(0, end.coerceAtLeast(0)).trimEnd() + "…"
     }
 
     private fun normalizeAccent(color: Int): Int {

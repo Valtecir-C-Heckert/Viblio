@@ -14,14 +14,17 @@ from pydantic import BaseModel,ConfigDict,Field,field_validator,model_validator
 
 
 def digest(value): return hashlib.sha256(value.encode()).hexdigest()
-def password_hash(password,salt=None):
+def _token_matches(provided: str, expected: str) -> bool:
+    return hmac.compare_digest(provided.encode('utf-8'), expected.encode('utf-8'))
+def password_hash(password,salt=None,cost=32768):
     salt=salt or secrets.token_bytes(16)
-    key=hashlib.scrypt(password.encode(),salt=salt,n=16384,r=8,p=1,maxmem=64*1024*1024,dklen=32)
-    return 'scrypt$16384$'+base64.b64encode(salt).decode()+'$'+base64.b64encode(key).decode()
+    key=hashlib.scrypt(password.encode(),salt=salt,n=cost,r=8,p=1,maxmem=64*1024*1024,dklen=32)
+    return f'scrypt${cost}$'+base64.b64encode(salt).decode()+'$'+base64.b64encode(key).decode()
 def password_matches(password,encoded):
     try:
-        _,cost,salt,_=encoded.split('$')
-        return cost=='16384' and hmac.compare_digest(password_hash(password,base64.b64decode(salt)),encoded)
+        scheme,cost_str,salt,_=encoded.split('$')
+        if scheme!='scrypt' or cost_str not in ('16384','32768'): return False
+        return hmac.compare_digest(password_hash(password,base64.b64decode(salt),cost=int(cost_str)).encode('utf-8'),encoded.encode('utf-8'))
     except (ValueError,TypeError): return False
 def normalize_username(value):
     if value is None:return None
@@ -62,6 +65,7 @@ class Reset(BaseModel):
 class InviteInput(BaseModel): days:int=Field(default=7,ge=1,le=30)
 
 def mount_accounts(app,connect,install_key,source,limits):
+    from .security import client_peer
     bearer=HTTPBearer(auto_error=False)
     def lookup(token,request=None):
         if not token or len(token)>200: raise HTTPException(401,'Entre novamente para acessar sua conta.')
@@ -75,19 +79,20 @@ def mount_accounts(app,connect,install_key,source,limits):
         if not user['is_admin']:raise HTTPException(403,'Apenas o administrador pode fazer isso.')
         return user
     def installation(credentials:Annotated[HTTPAuthorizationCredentials|None,Depends(bearer)]):
-        if not credentials or not hmac.compare_digest(credentials.credentials,install_key):raise HTTPException(401,'Chave da instalação inválida.')
+        if not credentials or not _token_matches(credentials.credentials,install_key):raise HTTPException(401,'Chave da instalação inválida.')
     def public(user):return dict(id=str(user['id']),email=user['email'],admin=user['is_admin'],server_id=source,username=user.get('username'))
     def session(db,user):
         token=secrets.token_urlsafe(32)
         db.execute('DELETE FROM public.viblio_sessions WHERE expires_at<now()')
         db.execute('INSERT INTO public.viblio_sessions(token_hash,user_id) VALUES (%s,%s)',(digest(token),user['id']))
         return dict(token=token,user=public(user))
-    def throttle(request,email,action):
-        peer=request.client.host if request.client else 'local'
+    def throttle(request,email,action,email_limit=12,peer_limit=120):
+        raw_peer=request.client.host if request.client else 'local'
+        peer=client_peer(raw_peer, dict(request.headers))
         with connect() as db:
             db.execute("DELETE FROM public.viblio_auth_attempts WHERE started_at<now()-interval '1 day'")
             denied=False
-            for bucket,limit in [(digest(action+':email:'+email),12),(digest(action+':peer:'+peer),120)]:
+            for bucket,limit in [(digest(action+':email:'+email),email_limit),(digest(action+':peer:'+peer),peer_limit)]:
                 row=db.execute("INSERT INTO public.viblio_auth_attempts(bucket,attempts) VALUES (%s,1) ON CONFLICT(bucket) DO UPDATE SET attempts=CASE WHEN viblio_auth_attempts.started_at<now()-interval '15 minutes' THEN 1 ELSE viblio_auth_attempts.attempts+1 END,started_at=CASE WHEN viblio_auth_attempts.started_at<now()-interval '15 minutes' THEN now() ELSE viblio_auth_attempts.started_at END RETURNING attempts",(bucket,)).fetchone()
                 denied |= row['attempts']>limit
         if denied:raise HTTPException(429,'Muitas tentativas. Aguarde 15 minutos.',headers={'Retry-After':'900'})
@@ -105,11 +110,12 @@ def mount_accounts(app,connect,install_key,source,limits):
             return session(db,user)
     @app.post('/v1/auth/register')
     def register(body:Register,request:Request):
-        throttle(request,body.email,'register');hashed=password_hash(body.password)
+        throttle(request,body.email,'register')
         try:
             with connect() as db:
                 invite=db.execute('SELECT * FROM public.viblio_invites WHERE token_hash=%s FOR UPDATE',(digest(body.invitation),)).fetchone()
                 if not invite or invite['revoked'] or invite['used_by'] or invite['expires_at']<=datetime.now(timezone.utc):raise HTTPException(400,'Convite inválido, expirado ou já utilizado.')
+                hashed=password_hash(body.password)
                 user=db.execute('INSERT INTO public.viblio_users(id,email,password_hash,username) VALUES (%s,%s,%s,%s) RETURNING id,email,is_admin,username',(uuid.uuid4(),body.email,hashed,body.username)).fetchone()
                 db.execute('UPDATE public.viblio_invites SET used_by=%s,used_at=now() WHERE id=%s',(user['id'],invite['id']))
                 return session(db,user)
@@ -119,7 +125,7 @@ def mount_accounts(app,connect,install_key,source,limits):
         throttle(request,body.identifier,'login')
         with connect() as db:
             user=db.execute('SELECT id,email,is_admin,username,password_hash FROM public.viblio_users WHERE email=%s OR lower(username)=%s',(body.identifier,body.identifier)).fetchone()
-            dummy='scrypt$16384$MDAwMDAwMDAwMDAwMDAwMA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+            dummy='scrypt$32768$MDAwMDAwMDAwMDAwMDAwMA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
             matched=password_matches(body.password,user['password_hash'] if user else dummy)
             if not user or not matched:raise HTTPException(401,'Usuário, e-mail ou senha inválidos.')
             return session(db,user)
@@ -163,10 +169,13 @@ def mount_accounts(app,connect,install_key,source,limits):
         return dict(code=code,valid_hours=24)
     @app.post('/v1/auth/reset-password')
     def reset(body:Reset,request:Request):
-        throttle(request,digest(body.code),'reset');hashed=password_hash(body.password)
+        raw_peer=request.client.host if request.client else 'local'
+        peer=client_peer(raw_peer, dict(request.headers))
+        throttle(request,peer,'reset',email_limit=20,peer_limit=60)
         with connect() as db:
             row=db.execute('SELECT user_id FROM public.viblio_recovery WHERE token_hash=%s AND expires_at>now() FOR UPDATE',(digest(body.code),)).fetchone()
             if not row:raise HTTPException(400,'Código de recuperação inválido ou expirado.')
+            hashed=password_hash(body.password)
             user=db.execute('UPDATE public.viblio_users SET password_hash=%s WHERE id=%s RETURNING id,email,is_admin,username',(hashed,row['user_id'])).fetchone()
             db.execute('DELETE FROM public.viblio_sessions WHERE user_id=%s',(user['id'],));db.execute('DELETE FROM public.viblio_recovery WHERE user_id=%s',(user['id'],))
             return session(db,user)

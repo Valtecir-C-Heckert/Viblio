@@ -40,7 +40,24 @@ class AccountLibrary(private val context:Context) {
             val db=repo.writableDatabase;db.beginTransaction()
             try {db.delete("books",null,null);db.delete("collections",null,null);db.delete("preferences",null,null);repo.importSnapshot(parsed.books,parsed.sessions,parsed.currentId,parsed.dates,parsed.collections);if(parsed.currentId==null)db.delete("preferences","key='current_book'",null);db.setTransactionSuccessful()}finally {db.endTransaction()}
             val prefs=context.getSharedPreferences(settings,0);val edit=prefs.edit();prefs.all.keys.filter(::allowed).forEach(edit::remove)
-            snapshot.getAsJsonObject("appearance")?.entrySet()?.forEach {(key,value)->if(allowed(key)){when {value.isJsonArray->edit.putStringSet(key,value.asJsonArray.map {it.asString}.toSet());value.isJsonPrimitive->{val p=value.asJsonPrimitive;when {p.isBoolean->edit.putBoolean(key,p.asBoolean);p.isNumber->edit.putInt(key,p.asInt);else->edit.putString(key,p.asString)}}}}}
+            snapshot.getAsJsonObject("appearance")?.entrySet()?.forEach {(key,value)->if(allowed(key)){when {
+                value.isJsonArray->edit.putStringSet(key,value.asJsonArray.map {it.asString}.toSet())
+                value.isJsonPrimitive->{
+                    val p=value.asJsonPrimitive
+                    when {
+                        p.isBoolean->edit.putBoolean(key,p.asBoolean)
+                        p.isNumber->{
+                            val raw=p.asString
+                            if(raw.contains('.') || raw.contains('e') || raw.contains('E')) edit.putFloat(key,p.asFloat)
+                            else {
+                                val lv=p.asLong
+                                if(lv in Int.MIN_VALUE..Int.MAX_VALUE) edit.putInt(key,lv.toInt()) else edit.putLong(key,lv)
+                            }
+                        }
+                        else->edit.putString(key,p.asString)
+                    }
+                }
+            }}}
             check(edit.commit()) {"Não foi possível gravar as preferências. Um backup local foi preservado."}
         }finally {repo.close()}
     }

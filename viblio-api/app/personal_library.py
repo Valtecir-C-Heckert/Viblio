@@ -12,13 +12,25 @@ MISSING=object()
 SECTIONS=('books','collections','sessions','readingDates')
 def canonical(value):return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
 def checksum(value):return hashlib.sha256(canonical(value)).hexdigest()
+MAX_JSON_DEPTH=12
+def _reject_constant(token): raise ValueError(f'Invalid JSON constant: {token}')
+def _check_depth(value, depth=0):
+    if depth>MAX_JSON_DEPTH: raise ValueError('JSON nesting too deep')
+    if isinstance(value, dict):
+        for v in value.values():
+            if isinstance(v, (dict, list)): _check_depth(v, depth+1)
+    elif isinstance(value, list):
+        for v in value:
+            if isinstance(v, (dict, list)): _check_depth(v, depth+1)
 def unpack(raw):
     try:
         with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:data=stream.read(MAX_SNAPSHOT+1)
         if len(data)>MAX_SNAPSHOT:raise HTTPException(413,'O backup completo deve ter até 32 MB descompactado.')
-        return json.loads(data)
+        parsed=json.loads(data, parse_constant=_reject_constant)
+        _check_depth(parsed)
+        return parsed
     except HTTPException:raise
-    except (OSError,ValueError,EOFError):raise HTTPException(422,'Backup comprimido inválido.') from None
+    except (OSError,ValueError,EOFError,RecursionError):raise HTTPException(422,'Backup comprimido inválido.') from None
 
 DERIVED_COUNTS={'missingVolumes','obtainedVolumes','readVolumes','totalVolumes'}
 def collection_inventory(data):
@@ -69,6 +81,12 @@ def validate_snapshot(data):
             identifiers.add(row['id'])
             if section in ('books','collections'):
                 if not isinstance(row.get('title'),str) or not row['title'].strip():raise HTTPException(422,'Título ausente.')
+                for opt_str in ('author','genre','subgenre','saga','publisher','catalogSource'):
+                    val=row.get(opt_str)
+                    if val is not None and not isinstance(val,str):raise HTTPException(422,'Campo textual inválido.')
+                if row.get('catalogId') is not None and not isinstance(row.get('catalogId'),str):raise HTTPException(422,'Identificador de catálogo inválido.')
+                updated_at=row.get('updatedAt')
+                if updated_at is not None and (type(updated_at) is not int or not 0<=updated_at<2**63):raise HTTPException(422,'Data de atualização inválida.')
                 if row.get('kind','book') not in ('book','manga','comic'):raise HTTPException(422,'Tipo inválido.')
                 if row.get('sequenceNumber') is not None and (type(row['sequenceNumber']) is not int or not 1<=row['sequenceNumber']<=10000):raise HTTPException(422,'Volume inválido.')
                 if row.get('background','black') not in ('black','graphite','slate','warm','blue','wine','cover'):raise HTTPException(422,'Fundo inválido.')
@@ -76,7 +94,7 @@ def validate_snapshot(data):
                 if not isinstance(tags,list) or len(tags)>3 or any(not isinstance(t,str) or not t.strip() for t in tags):raise HTTPException(422,'Subgêneros inválidos.')
                 if type(row.get('archived',False)) is not bool:raise HTTPException(422,'Remoção inválida.')
                 rating=row.get('rating')
-                if rating is not None and (type(rating) not in (int,float) or not 0<=rating<=5 or rating*2!=int(rating*2)):raise HTTPException(422,'Nota inválida.')
+                if rating is not None and (type(rating) not in (int,float) or not math.isfinite(rating) or not 0<=rating<=5 or rating*2!=int(rating*2)):raise HTTPException(422,'Nota inválida.')
                 art=row.get('coverData','')
                 if not isinstance(art,str):raise HTTPException(422,'Capa inválida.')
                 if art:
@@ -104,7 +122,7 @@ def validate_snapshot(data):
             if not isinstance(row.get('bookId'),str) or row['bookId'] not in books:raise HTTPException(422,'Histórico sem livro.')
             if section=='sessions':
                 for key in ('startPage','endPage','durationMs','startedAt','finishedAt'):
-                    if type(row.get(key)) is not int or row[key]<0:raise HTTPException(422,'Sessão inválida.')
+                    if type(row.get(key)) is not int or not 0<=row[key]<2**63:raise HTTPException(422,'Sessão inválida.')
                 if not row['startPage']<=row['endPage']<=(books[row['bookId']].get('totalPages') or 1) or row['finishedAt']<row['startedAt']:raise HTTPException(422,'Sessão inválida.')
                 day=row.get('readingDay')
             else:
@@ -180,6 +198,7 @@ def mount_library(app,connect,root,current):
         with connect() as db:return status_for(db,user)
     @app.get('/v1/me/library')
     def download(revision:int|None=None,user=Depends(current)):
+        if revision is not None and not 0<=revision<2**63:raise HTTPException(422,'Revisão inválida.')
         with connect() as db:row=db.execute('SELECT * FROM public.viblio_library_versions WHERE user_id=%s'+(' AND revision=%s' if revision is not None else '')+' ORDER BY revision DESC LIMIT 1',(user['id'],revision) if revision is not None else (user['id'],)).fetchone()
         if not row:raise HTTPException(404,'Nenhum backup encontrado nesta conta.')
         return Response(gzip.compress(canonical(read(user,row)),mtime=0),media_type='application/gzip')
@@ -188,7 +207,7 @@ def mount_library(app,connect,root,current):
         if not isinstance(message,dict):raise HTTPException(422,'Pedido inválido.')
         try:identifier=uuid.UUID(message['request_id']);base_rev=message['base_revision']
         except (KeyError,ValueError,TypeError):raise HTTPException(422,'Pedido de sincronização inválido.') from None
-        if type(base_rev) is not int or base_rev<0:raise HTTPException(422,'Revisão inválida.')
+        if type(base_rev) is not int or not 0<=base_rev<2**63:raise HTTPException(422,'Revisão inválida.')
         snapshot=validate_snapshot(message.get('snapshot'));resolutions=message.get('resolutions',{})
         if not isinstance(resolutions,dict) or any(v not in ('local','server') for v in resolutions.values()):raise HTTPException(422,'Resoluções inválidas.')
         request_hash=checksum(message);created=None;obsolete=[]

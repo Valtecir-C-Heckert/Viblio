@@ -30,13 +30,26 @@ class BookImages(private val context: Context, private val profileSuffix:String=
     }
     private val directory get() = File(context.filesDir, "book-covers"+profileSuffix).apply { mkdirs() }
     fun file(name: String): File? = if (name.matches(Regex("[a-zA-Z0-9-]+\\.jpg"))) File(directory, name).takeIf { it.isFile } else null
+    private fun writeAtomically(target: File, writer: (java.io.OutputStream) -> Unit) {
+        val dir = directory
+        val tmp = File.createTempFile("cover-", ".tmp", dir)
+        try {
+            tmp.outputStream().use(writer)
+            if (!tmp.renameTo(target)) {
+                tmp.copyTo(target, overwrite = true)
+            }
+        } finally {
+            if (tmp.exists()) tmp.delete()
+        }
+    }
     fun saveStoredJpeg(bytes:ByteArray):String {
         require(bytes.size<=12*1024*1024 && bytes.size>2 && bytes[0]==0xff.toByte() && bytes[1]==0xd8.toByte()) {"Capa JPEG inválida."}
         val bounds=BitmapFactory.Options().apply {inJustDecodeBounds=true};BitmapFactory.decodeByteArray(bytes,0,bytes.size,bounds)
         require(bounds.outWidth in 1..2048 && bounds.outHeight in 1..2048) {"Dimensões da capa inválidas."}
         requireNotNull(BitmapFactory.decodeByteArray(bytes,0,bytes.size)) {"Capa inválida."}.recycle()
         val name=java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") {"%02x".format(it)}+".jpg"
-        File(directory,name).writeBytes(bytes);return name
+        writeAtomically(File(directory,name)) { it.write(bytes) }
+        return name
     }
     fun save(input: InputStream): String {
         val bytes = input.use { stream ->
@@ -52,7 +65,7 @@ class BookImages(private val context: Context, private val profileSuffix:String=
         val scale = minOf(1f, 2048f / maxOf(bitmap.width, bitmap.height))
         val stored = if (scale < 1f) Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt().coerceAtLeast(1), (bitmap.height * scale).toInt().coerceAtLeast(1), true) else bitmap
         val name = "${UUID.randomUUID()}.jpg"
-        try { File(directory, name).outputStream().use { require(stored.compress(Bitmap.CompressFormat.JPEG, 95, it)) } }
+        try { writeAtomically(File(directory, name)) { require(stored.compress(Bitmap.CompressFormat.JPEG, 95, it)) } }
         finally { if (stored !== bitmap) stored.recycle(); bitmap.recycle() }
         return name
     }
@@ -65,7 +78,7 @@ class BookImages(private val context: Context, private val profileSuffix:String=
         val bitmap = BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
         cache[name] = bitmap; return bitmap
     }
-    fun background(book: LibraryBook): Drawable {
+    @Synchronized fun background(book: LibraryBook): Drawable {
         val color = when (book.background) {
             "graphite" -> Color.rgb(34, 34, 34); "slate" -> Color.rgb(25, 30, 35)
             "warm" -> Color.rgb(35, 29, 24); "blue" -> Color.rgb(16, 29, 42)

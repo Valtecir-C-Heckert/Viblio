@@ -11,7 +11,7 @@ Atualize a API e depois instale o APK por cima, sem desinstalar. Preserva perfis
 
 ## Atualizar pelo script existente
 
-Envie **viblio-api-0.2.3.zip** ao seu Nextcloud, com esse nome. No servidor, como valtecir, execute:
+Envie **viblio-api-0.2.3.zip** ao seu Nextcloud, com esse nome. No servidor, como `<usuario>`, execute:
 
 ```bash
 python3 ~/atualizar-viblio.py --version 0.2.3
@@ -27,13 +27,13 @@ Faça o backup de banco, volume e configuração conforme a seção 2 de [UPDATE
 
 ```bash
 sudo find /DATA/AppData/nextcloud -type f -name 'viblio-api-0.2.3.zip' 2>/dev/null
-sudo cp /DATA/AppData/nextcloud/var/www/html/data/valtecir/files/viblio-api-0.2.3.zip /tmp/viblio-api-0.2.3.zip
-sudo chown valtecir:valtecir /tmp/viblio-api-0.2.3.zip
+sudo cp /DATA/AppData/nextcloud/var/www/html/data/<usuario>/files/viblio-api-0.2.3.zip /tmp/viblio-api-0.2.3.zip
+sudo chown <usuario>:<usuario> /tmp/viblio-api-0.2.3.zip
 chmod 600 /tmp/viblio-api-0.2.3.zip
 unzip -t /tmp/viblio-api-0.2.3.zip
 ```
 
-Se o find indicar outra pasta, use esse caminho no cp. Confira também o SHA-256 publicado para o pacote. Após o backup e as verificações, extraia como valtecir:
+Se o find indicar outra pasta, use esse caminho no cp. Confira também o SHA-256 publicado para o pacote. Após o backup e as verificações, extraia como `<usuario>`:
 
 ```bash
 cd /opt/viblio/api

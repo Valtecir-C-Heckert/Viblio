@@ -13,13 +13,24 @@ android {
     namespace = "br.com.centralcasa"
     compileSdk = 35
     buildToolsVersion = "35.0.0"
-    defaultConfig { applicationId = "br.com.viblio"; minSdk = 21; targetSdk = 35; versionCode = 51; versionName = "0.6.0"; testInstrumentationRunner = "br.com.viblio.CatalogInstrumentation" }
+    defaultConfig { applicationId = "br.com.viblio"; minSdk = 21; targetSdk = 35; versionCode = 52; versionName = "0.6.1"; testInstrumentationRunner = "br.com.viblio.CatalogInstrumentation" }
+    signingConfigs {
+        val releaseStore = System.getenv("VIBLIO_KEYSTORE_PATH")?.trim().orEmpty()
+        if (releaseStore.isNotEmpty()) {
+            create("releaseCustom") {
+                storeFile = file(releaseStore)
+                storePassword = System.getenv("VIBLIO_STORE_PASS") ?: ""
+                keyAlias = System.getenv("VIBLIO_KEY_ALIAS") ?: ""
+                keyPassword = System.getenv("VIBLIO_KEY_PASS") ?: ""
+            }
+        }
+    }
     buildTypes {
         getByName("release") {
             isDebuggable = false
             isMinifyEnabled = false
-            // Preserve the existing installation certificate for this private beta.
-            signingConfig = signingConfigs.getByName("debug")
+            // Preserve the existing installation certificate; supports migrating the same cert to a dedicated release keystore.
+            signingConfig = signingConfigs.findByName("releaseCustom") ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

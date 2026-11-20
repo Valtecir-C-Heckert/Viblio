@@ -16,7 +16,7 @@ A migração **007_friends.sql** acrescenta somente a tabela de amizades e um í
 
 1. No GitHub autenticado → Releases → Viblio 0.2.13, baixe `viblio-api-0.2.13.zip` e o arquivo de checksums do mesmo Release.
 2. Envie o ZIP com o nome original ao seu Nextcloud.
-3. Como `valtecir`, use o atualizador instalado **fora de /opt/viblio/api**:
+3. Como `<usuario>`, use o atualizador instalado **fora de /opt/viblio/api**:
 
 ```bash
 python3 ~/atualizar-viblio.py --version 0.2.13
@@ -32,10 +32,10 @@ O script localiza o ZIP no Nextcloud, confere o pacote, faz backup de banco/.env
 
 ## Opção B — atualização manual da instalação existente
 
-### 1. Backup, como valtecir
+### 1. Backup, como `<usuario>`
 
 ```bash
-sudo install -d -m 700 -o valtecir -g valtecir /opt/viblio/backups
+sudo install -d -m 700 -o <usuario> -g <usuario> /opt/viblio/backups
 VIBLIO_UPDATE_BACKUP="/opt/viblio/backups/antes-0.2.13-$(date +%Y%m%d-%H%M%S)"
 (
   set -e
@@ -46,7 +46,7 @@ VIBLIO_UPDATE_BACKUP="/opt/viblio/backups/antes-0.2.13-$(date +%Y%m%d-%H%M%S)"
   cp /opt/viblio/api/.env "$VIBLIO_UPDATE_BACKUP/.env"
   docker volume inspect viblio-catalog-api_viblio-covers > /dev/null
   docker run --rm --mount type=volume,source=viblio-catalog-api_viblio-covers,target=/data,readonly --mount "type=bind,source=$VIBLIO_UPDATE_BACKUP,target=/backup" alpine:3.22 tar -czf /backup/covers-and-private.tar.gz -C /data .
-  sudo chown valtecir:valtecir "$VIBLIO_UPDATE_BACKUP/covers-and-private.tar.gz"
+  sudo chown <usuario>:<usuario> "$VIBLIO_UPDATE_BACKUP/covers-and-private.tar.gz"
   chmod 600 "$VIBLIO_UPDATE_BACKUP/.env" "$VIBLIO_UPDATE_BACKUP/covers-and-private.tar.gz"
 )
 ```
@@ -62,8 +62,8 @@ sudo find /DATA/AppData/nextcloud -type f -name 'viblio-api-0.2.13.zip' 2>/dev/n
 Se estiver na raiz dos seus arquivos do Nextcloud:
 
 ```bash
-sudo cp /DATA/AppData/nextcloud/var/www/html/data/valtecir/files/viblio-api-0.2.13.zip /tmp/viblio-api-0.2.13.zip
-sudo chown valtecir:valtecir /tmp/viblio-api-0.2.13.zip
+sudo cp /DATA/AppData/nextcloud/var/www/html/data/<usuario>/files/viblio-api-0.2.13.zip /tmp/viblio-api-0.2.13.zip
+sudo chown <usuario>:<usuario> /tmp/viblio-api-0.2.13.zip
 chmod 600 /tmp/viblio-api-0.2.13.zip
 sha256sum /tmp/viblio-api-0.2.13.zip
 unzip -t /tmp/viblio-api-0.2.13.zip

@@ -281,34 +281,38 @@ class SearchPanel(
         }
     }
 
+    private val wishlistInFlight = mutableSetOf<String>()
     private fun toggleWishlist(book: CatalogBook) {
+        if (!wishlistInFlight.add(book.id)) return
         val existing = wishlistIds().contains(book.id)
         if (existing) {
-            val previous = wishlistItems
             wishlistItems = wishlistItems.filterNot { it.id == book.id }
             repaintSubtabs()
             if (query.trim().length < 3) drawBrowse() else drawResults()
             catalog.removeWishlist(book.id) { res ->
+                wishlistInFlight.remove(book.id)
                 if (!active || closed) return@removeWishlist
                 res.onFailure { err ->
-                    wishlistItems = previous
+                    if (wishlistItems.none { it.id == book.id }) {
+                        wishlistItems = listOf(book) + wishlistItems
+                    }
                     repaintSubtabs()
                     if (query.trim().length < 3) drawBrowse() else drawResults()
                     Toast.makeText(activity, err.message ?: "Não foi possível remover da lista.", Toast.LENGTH_LONG).show()
                 }
             }
         } else {
-            val previous = wishlistItems
             wishlistItems = listOf(book) + wishlistItems.filterNot { it.id == book.id }
             repaintSubtabs()
             if (query.trim().length < 3) drawBrowse() else drawResults()
             catalog.addWishlist(book) { res ->
+                wishlistInFlight.remove(book.id)
                 if (!active || closed) return@addWishlist
                 res.fold({ saved ->
                     wishlistItems = listOf(saved) + wishlistItems.filterNot { it.id == saved.id }
                     repaintSubtabs()
                 }, { err ->
-                    wishlistItems = previous
+                    wishlistItems = wishlistItems.filterNot { it.id == book.id }
                     repaintSubtabs()
                     if (query.trim().length < 3) drawBrowse() else drawResults()
                     Toast.makeText(activity, err.message ?: "Não foi possível salvar em Quero comprar.", Toast.LENGTH_LONG).show()
@@ -587,7 +591,13 @@ class SearchPanel(
                 }
             }
 
-            val railScroll = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
+            var onRailScroll: (() -> Unit)? = null
+            val railScroll = object : HorizontalScrollView(activity) {
+                override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
+                    super.onScrollChanged(l, t, oldl, oldt)
+                    onRailScroll?.invoke()
+                }
+            }.apply { isHorizontalScrollBarEnabled = false }
             val rail = ui.row()
             railScroll.addView(rail)
             target.addView(railScroll, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(14) })
@@ -652,10 +662,11 @@ class SearchPanel(
             }
 
             if (hasMore) {
-                railScroll.viewTreeObserver.addOnScrollChangedListener {
-                    if (!hasMore || loadingMore || !active || closed || railScroll.width <= 0) return@addOnScrollChangedListener
-                    val remaining = rail.width - (railScroll.scrollX + railScroll.width)
-                    if (remaining <= cardW * 3) fetchMore()
+                onRailScroll = {
+                    if (hasMore && !loadingMore && active && !closed && railScroll.width > 0) {
+                        val remaining = rail.width - (railScroll.scrollX + railScroll.width)
+                        if (remaining <= cardW * 3) fetchMore()
+                    }
                 }
             }
         }

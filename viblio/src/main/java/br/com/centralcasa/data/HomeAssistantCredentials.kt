@@ -5,9 +5,14 @@ import android.content.Context
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.util.Base64
+import java.security.GeneralSecurityException
 import java.security.KeyStore
+import javax.crypto.AEADBadTagException
+import javax.crypto.BadPaddingException
 import javax.crypto.Cipher
+import javax.crypto.IllegalBlockSizeException
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
@@ -26,7 +31,10 @@ class HomeAssistantCredentials(context: Context, private val preferenceName: Str
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)))
             String(cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP)), Charsets.UTF_8)
-        } catch (_: Exception) { clear(); "" }
+        } catch (e: Exception) {
+            if (isIrrecoverable(e)) clear()
+            ""
+        }
     }
     @TargetApi(23)
     fun save(token: String) {
@@ -37,6 +45,7 @@ class HomeAssistantCredentials(context: Context, private val preferenceName: Str
             .putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP)).apply()
     }
     @TargetApi(23)
+    @Synchronized
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey(keyAlias, null) as? SecretKey)?.let { return it }
@@ -44,5 +53,15 @@ class HomeAssistantCredentials(context: Context, private val preferenceName: Str
             init(KeyGenParameterSpec.Builder(keyAlias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
         }.generateKey()
+    }
+    companion object {
+        internal fun isIrrecoverable(error: Throwable): Boolean = when (error) {
+            is AEADBadTagException,
+            is BadPaddingException,
+            is IllegalBlockSizeException,
+            is KeyPermanentlyInvalidatedException,
+            is IllegalArgumentException -> true
+            else -> error.cause?.let { it !== error && isIrrecoverable(it) } == true
+        }
     }
 }

@@ -34,7 +34,7 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
     fun personalMode()=config.getBoolean("personal_mode",false)
     private fun api()=AccountApi(address,catalogToken().orEmpty())
     private fun toast(text:String)=Toast.makeText(activity,text,Toast.LENGTH_LONG).show()
-    private fun post(action:()->Unit){handler.post {if(!closed && !activity.isFinishing)action()}}
+    private fun post(action:()->Unit){handler.post {if(!closed && !activity.isFinishing && !activity.isDestroyed)action()}}
     private val scheduled=Runnable {automatic()}
     private fun scheduleAutomatic(delay:Long){handler.removeCallbacks(scheduled);if(running && !closed)handler.postDelayed(scheduled,delay.coerceAtLeast(0))}
     private fun deferAutomatic(delay:Long){automaticPending=true;scheduleAutomatic(delay)}
@@ -262,7 +262,14 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
             io.apply(snapshot);prefs.edit().putBoolean("restore_pending",historical).putLong("revision",baseline).putString("local_hash",io.hash(io.capture())).putBoolean("remote_changed",false).commit()
         }) {conflictProfile=null;status="Backup restaurado neste perfil. Sincronize para publicar novas alterações.";reloaded();changed()}
     }
-    private fun showCode(title:String,text:String){AlertDialog.Builder(activity).setTitle(title).setMessage(text).setPositiveButton("Copiar") {_,_->(activity.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText(title,text));toast("Copiado. Compartilhe apenas com a pessoa convidada.")}.setNegativeButton("Fechar",null).show()}
+    private fun copySensitive(label:String,text:String) {
+        val clip=android.content.ClipData.newPlainText(label,text)
+        if(android.os.Build.VERSION.SDK_INT>=33){
+            clip.description.extras=android.os.PersistableBundle().apply { putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE,true) }
+        }
+        (activity.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(clip)
+    }
+    private fun showCode(title:String,text:String){AlertDialog.Builder(activity).setTitle(title).setMessage(text).setPositiveButton("Copiar") {_,_->copySensitive(title,text);toast("Copiado. Compartilhe apenas com a pessoa convidada.")}.setNegativeButton("Fechar",null).show()}
     fun createInvitation(){work("Gerando convite…",action={api().call("/v1/admin/invitations","POST",JsonObject())}) {r->
         val code=r.get("code").asString
         val ui=br.com.centralcasa.ui.DisplayUi(activity)
@@ -276,18 +283,23 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
         ui.label(body,"Uso único · válido até $expires",12,ui.muted)
         AlertDialog.Builder(activity).setTitle("Convite do Viblio").setView(body)
             .setPositiveButton("Copiar código"){_,_->
-                (activity.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Convite do Viblio",code))
+                copySensitive("Convite do Viblio",code)
                 toast("Código copiado. Envie somente para a pessoa convidada.")
             }.setNegativeButton("Fechar",null).show()
     }}
     fun manageInvitations(){work("Carregando convites…",action={api().call("/v1/admin/invitations")}) {data->
         val rows=data.getAsJsonArray("items")
-        AlertDialog.Builder(activity).setTitle("Convites · toque para revogar").setItems(rows.map {r->r.asJsonObject.let {"${it.get("id").asString.take(8)} · ${if(it.get("revoked").asBoolean)"revogado" else if(!it.get("used_at").isJsonNull)"utilizado" else "até "+it.get("expires_at").asString}"}}.toTypedArray()) {_,i->val id=rows[i].asJsonObject.get("id").asString;work("Revogando convite…",action={api().call("/v1/admin/invitations/$id","DELETE")}) {toast("Convite revogado.")}}.setNegativeButton("Fechar",null).show()
+        AlertDialog.Builder(activity).setTitle("Convites · toque para revogar").setItems(rows.map {r->r.asJsonObject.let {"${it.get("id").asString.take(8)} · ${if(it.get("revoked").asBoolean)"revogado" else if(!it.get("used_at").isJsonNull)"utilizado" else "até "+it.get("expires_at").asString}"}}.toTypedArray()) {_,i->
+            val id=rows[i].asJsonObject.get("id").asString
+            val validId=runCatching { UUID.fromString(id).toString() }.getOrNull() ?: return@setItems
+            work("Revogando convite…",action={api().call("/v1/admin/invitations/$validId","DELETE")}) {toast("Convite revogado.")}
+        }.setNegativeButton("Fechar",null).show()
     }}
     fun recoverUser(){work("Carregando contas…",action={api().call("/v1/admin/users")}) {data->
         val rows=data.getAsJsonArray("items")
         AlertDialog.Builder(activity).setTitle("Recuperar acesso").setItems(rows.map {it.asJsonObject.get("email").asString}.toTypedArray()) {_,i->val row=rows[i].asJsonObject
-            AlertDialog.Builder(activity).setTitle("Gerar código para ${row.get("email").asString}?").setMessage("O código permite definir outra senha. Compartilhe somente com o dono da conta.").setPositiveButton("Gerar código") {_,_->work("Gerando código…",action={api().call("/v1/admin/users/${row.get("id").asString}/recovery","POST")}) {showCode("Recuperação de acesso",it.get("code").asString+"\nValidade: 24 horas.")}}.setNegativeButton("Cancelar",null).show()
+            val validId=runCatching { UUID.fromString(row.get("id").asString).toString() }.getOrNull() ?: return@setItems
+            AlertDialog.Builder(activity).setTitle("Gerar código para ${row.get("email").asString}?").setMessage("O código permite definir outra senha. Compartilhe somente com o dono da conta.").setPositiveButton("Gerar código") {_,_->work("Gerando código…",action={api().call("/v1/admin/users/$validId/recovery","POST")}) {showCode("Recuperação de acesso",it.get("code").asString+"\nValidade: 24 horas.")}}.setNegativeButton("Cancelar",null).show()
         }.setNegativeButton("Fechar",null).show()
     }}
     fun close(){stop();closed=true;running=false;progress?.dismiss();progress=null;handler.removeCallbacksAndMessages(null);worker.shutdown()}

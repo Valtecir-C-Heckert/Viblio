@@ -8,8 +8,8 @@ Envie `viblio-api-0.2.2.zip` para a raiz dos seus arquivos no Nextcloud. No term
 
 ```bash
 sudo find /DATA/AppData/nextcloud -type f -name 'viblio-api-0.2.2.zip' 2>/dev/null
-sudo cp /DATA/AppData/nextcloud/var/www/html/data/valtecir/files/viblio-api-0.2.2.zip /tmp/viblio-api-0.2.2.zip
-sudo chown valtecir:valtecir /tmp/viblio-api-0.2.2.zip
+sudo cp /DATA/AppData/nextcloud/var/www/html/data/<usuario>/files/viblio-api-0.2.2.zip /tmp/viblio-api-0.2.2.zip
+sudo chown <usuario>:<usuario> /tmp/viblio-api-0.2.2.zip
 chmod 600 /tmp/viblio-api-0.2.2.zip
 unzip -t /tmp/viblio-api-0.2.2.zip
 ```
@@ -43,7 +43,7 @@ Copie este bloco inteiro. Ele pausa a API durante o backup e a inicia novamente 
 
 ## 3. Extrair e reconstruir
 
-Execute como `valtecir`, não com `sudo unzip`. O ZIP não contém `.env`. Não execute configure.py novamente, não troque o compose da raiz `/opt/viblio` e não use `down -v`.
+Execute como `<usuario>`, não com `sudo unzip`. O ZIP não contém `.env`. Não execute configure.py novamente, não troque o compose da raiz `/opt/viblio` e não use `down -v`.
 
 ```bash
 cd /opt/viblio/api

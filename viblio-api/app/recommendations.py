@@ -11,6 +11,20 @@ MAX_WISHLIST_ITEMS = 500
 MAX_EXCLUDE_IDS = 220
 MAX_RAIL_CURSOR = 20
 CATALOG_ID_RE = re.compile(r'^-?[0-9]{1,19}$')
+MAX_BIGINT = 2**63 - 1
+MIN_BIGINT = -(2**63)
+
+
+def _safe_bigint(value: str | None) -> int | None:
+    if not value or not isinstance(value, str):
+        return None
+    s = value.strip()
+    if not CATALOG_ID_RE.fullmatch(s):
+        return None
+    n = int(s)
+    return n if MIN_BIGINT <= n <= MAX_BIGINT else None
+
+
 ROLE_PARENS_RE = re.compile(r'\s*[\(\[][^\)\]]*[\)\]]')
 VOLUME_MARKER_RE = re.compile(
     r'\b(?:vol(?:ume)?|livro|book|tomo|parte|pt|n[oº°]?)\s*#?\s*0*(\d{1,4})\b|#\s*0*(\d{1,4})\b',
@@ -345,7 +359,7 @@ def _build_owned(db, library: dict | None, live_anchor: dict | None = None) -> t
             title=live_anchor.get('title'),
             author=live_anchor.get('author'),
         )
-    numeric_ids = [int(cid) for cid in owned.ids if CATALOG_ID_RE.fullmatch(cid)]
+    numeric_ids = [n for cid in owned.ids if (n := _safe_bigint(cid)) is not None]
     if numeric_ids:
         owned_cat_rows = db.execute(
             'SELECT id, work_key, titulo, autor, isbn, ordem FROM public.valteca WHERE id = ANY(%s)',
@@ -361,16 +375,16 @@ def _enrich_anchor_from_catalog(db, anchor: dict | None) -> dict | None:
         return None
     enriched = dict(anchor)
     need_meta = not (enriched.get('subgenre') or enriched.get('subgenres')) or not enriched.get('genre') or not enriched.get('saga') or not enriched.get('author')
-    cid = str(enriched.get('catalogId') or '').strip()
+    cid_num = _safe_bigint(str(enriched.get('catalogId') or ''))
     cat_row = None
-    if cid and CATALOG_ID_RE.fullmatch(cid):
+    if cid_num is not None:
         cat_row = db.execute(
             'SELECT titulo, autor, genero, subgenero, saga, categoria, tipo FROM public.valteca WHERE id=%s',
-            (int(cid),),
+            (cid_num,),
         ).fetchone()
-    elif need_meta and enriched.get('title'):
+    elif need_meta and isinstance(enriched.get('title'), str) and enriched.get('title'):
         t_toks = [t for t in _norm(enriched.get('title')).split() if len(t) >= 3][:2]
-        a_toks = [t for t in _author_tokens(enriched.get('author')) if len(t) >= 3][:2]
+        a_toks = [t for t in _author_tokens(enriched.get('author') if isinstance(enriched.get('author'), str) else '') if len(t) >= 3][:2]
         if t_toks:
             clauses = ["public.viblio_normalize(titulo) LIKE public.viblio_normalize(%s) ESCAPE E'\\\\'" for _ in t_toks]
             params = ['%' + _like_escape(t) + '%' for t in t_toks]
@@ -378,7 +392,7 @@ def _enrich_anchor_from_catalog(db, anchor: dict | None) -> dict | None:
                 clauses.append("public.viblio_normalize(autor) LIKE public.viblio_normalize(%s) ESCAPE E'\\\\'")
                 params.append('%' + _like_escape(at) + '%')
             cat_row = db.execute(
-                f"SELECT titulo, autor, genero, subgenero, saga, categoria, tipo FROM public.valteca WHERE {' AND '.join(clauses)} LIMIT 1",
+                f"SELECT titulo, autor, genero, subgenero, saga, categoria, tipo FROM public.valteca WHERE {' AND '.join(clauses)} ORDER BY id LIMIT 1",
                 params,
             ).fetchone()
     if cat_row:
@@ -393,6 +407,10 @@ def _enrich_anchor_from_catalog(db, anchor: dict | None) -> dict | None:
         if not enriched.get('kind'):
             enriched['kind'] = _row_kind(cat_row)
     return enriched
+
+
+def _num_key(v) -> float:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
 
 
 def _select_anchor(library: dict | None, active_books: list[dict], requested_kind: str, live_anchor: dict | None):
@@ -418,17 +436,17 @@ def _select_anchor(library: dict | None, active_books: list[dict], requested_kin
                         anchor_kind = 'current'
                         break
             if anchor is None:
-                in_progress = [b for b in scoped if (b.get('currentPage') or 0) > 0 and not _book_complete(b)]
+                in_progress = [b for b in scoped if _num_key(b.get('currentPage')) > 0 and not _book_complete(b)]
                 if in_progress:
-                    anchor = dict(max(in_progress, key=lambda b: b.get('updatedAt') or 0))
+                    anchor = dict(max(in_progress, key=lambda b: _num_key(b.get('updatedAt'))))
                     anchor_kind = 'current'
             if anchor is None:
                 finished = [b for b in scoped if _book_complete(b)]
                 if finished:
-                    anchor = dict(max(finished, key=lambda b: (b.get('updatedAt') or 0, b.get('rating') or 0)))
+                    anchor = dict(max(finished, key=lambda b: (_num_key(b.get('updatedAt')), _num_key(b.get('rating')))))
                     anchor_kind = 'last_finished'
             if anchor is None:
-                anchor = dict(max(scoped, key=lambda b: (b.get('rating') or 0, b.get('updatedAt') or 0)))
+                anchor = dict(max(scoped, key=lambda b: (_num_key(b.get('rating')), _num_key(b.get('updatedAt')))))
                 anchor_kind = 'favorite'
 
     # Effective kind: when user is on 'all', lock to the current book's kind so reading a book never leaks manga!
@@ -461,13 +479,15 @@ def _series_dedup_tags(active_books: list[dict], effective_kind: str):
     for b in active_books:
         if effective_kind != 'all' and (b.get('kind') or 'book') != effective_kind:
             continue
-        series_key = b.get('collectionId') or _norm(b.get('saga')) or b.get('id')
+        raw_saga = b.get('saga') if isinstance(b.get('saga'), str) else ''
+        series_key = (b.get('collectionId') if isinstance(b.get('collectionId'), str) else '') or _norm(raw_saga) or str(b.get('id') or '')
         if series_key in seen_series:
             continue
         seen_series.add(series_key)
         rating = b.get('rating')
-        weight = 3.0 if (isinstance(rating, (int, float)) and rating >= 4.0) else (2.0 if _book_complete(b) else 1.0)
-        for g in TAG_SPLIT_RE.split(b.get('genre') or ''):
+        weight = 3.0 if (isinstance(rating, (int, float)) and not isinstance(rating, bool) and rating >= 4.0) else (2.0 if _book_complete(b) else 1.0)
+        raw_genre = b.get('genre') if isinstance(b.get('genre'), str) else ''
+        for g in TAG_SPLIT_RE.split(raw_genre):
             bump(genre_scores, g, weight)
         for sub in _subgenres_of(b):
             bump(sub_scores, sub, weight)
@@ -481,6 +501,8 @@ def _valid_cover_url(url: str) -> str:
     cleaned = url.strip()
     if not cleaned:
         return ''
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in cleaned):
+        raise HTTPException(422, 'URL de capa inválida.')
     parsed = urlparse(cleaned)
     if parsed.scheme not in ('http', 'https') or not parsed.netloc or parsed.username or parsed.password:
         raise HTTPException(422, 'URL de capa inválida.')
@@ -572,7 +594,7 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
                     toks = [norm_t]
                 where, params = _token_like_clauses('saga', toks)
                 rows = db.execute(
-                    f"SELECT {rec_columns} FROM public.valteca WHERE {kind_sql} AND {where} LIMIT %s OFFSET %s",
+                    f"SELECT {rec_columns} FROM public.valteca WHERE {kind_sql} AND {where} ORDER BY id LIMIT %s OFFSET %s",
                     [*params, chunk_size, offset],
                 ).fetchall()
                 return rows, len(rows) >= chunk_size
@@ -587,7 +609,7 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
                 where_parts = ["public.viblio_normalize(autor) LIKE public.viblio_normalize(%s) ESCAPE E'\\\\'" for _ in toks]
                 params = ['%' + _like_escape(t) + '%' for t in toks]
                 rows = db.execute(
-                    f"SELECT {rec_columns} FROM public.valteca WHERE {kind_sql} AND {' AND '.join(where_parts)} LIMIT %s OFFSET %s",
+                    f"SELECT {rec_columns} FROM public.valteca WHERE {kind_sql} AND {' AND '.join(where_parts)} ORDER BY id LIMIT %s OFFSET %s",
                     [*params, chunk_size, offset],
                 ).fetchall()
                 return rows, len(rows) >= chunk_size
@@ -605,6 +627,7 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
                 rows = db.execute(
                     f"""SELECT {rec_columns} FROM public.valteca
                         WHERE {kind_sql} AND (({sub_where}) OR ({gen_where}))
+                        ORDER BY id
                         LIMIT %s OFFSET %s""",
                     [*sub_params, *gen_params, chunk_size, offset],
                 ).fetchall()
@@ -619,14 +642,14 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
                     toks = [norm_t]
                 where, params = _token_like_clauses('genero', toks)
                 rows = db.execute(
-                    f"SELECT {rec_columns} FROM public.valteca WHERE {kind_sql} AND {where} LIMIT %s OFFSET %s",
+                    f"SELECT {rec_columns} FROM public.valteca WHERE {kind_sql} AND {where} ORDER BY id LIMIT %s OFFSET %s",
                     [*params, chunk_size, offset],
                 ).fetchall()
                 return rows, len(rows) >= chunk_size
 
             # Featured fallback
             rows = db.execute(
-                f"SELECT {rec_columns} FROM public.valteca WHERE {kind_sql} LIMIT %s OFFSET %s",
+                f"SELECT {rec_columns} FROM public.valteca WHERE {kind_sql} ORDER BY id LIMIT %s OFFSET %s",
                 (chunk_size, offset),
             ).fetchall()
             return rows, len(rows) >= chunk_size
@@ -720,7 +743,7 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
             clean_ak = ''
         if any(s.strip() for s in (anchor_catalog_id, anchor_title, anchor_author, anchor_genre, anchor_subgenre, anchor_saga)):
             live_anchor = {
-                'catalogId': anchor_catalog_id.strip() if CATALOG_ID_RE.fullmatch(anchor_catalog_id.strip()) else '',
+                'catalogId': str(n) if (n := _safe_bigint(anchor_catalog_id)) is not None else '',
                 'kind': clean_ak,
                 'title': anchor_title.strip(),
                 'author': anchor_author.strip(),
@@ -752,13 +775,14 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
 
             fallback_subs, fallback_genres = _series_dedup_tags(active_books, effective_kind)
 
-            anchor_saga = (anchor.get('saga') or '').strip() if anchor else ''
-            anchor_authors = _split_authors(anchor.get('author')) if anchor else []
+            anchor_saga = (anchor.get('saga') if isinstance(anchor.get('saga'), str) else '').strip() if anchor else ''
+            anchor_authors = _split_authors(anchor.get('author') if isinstance(anchor.get('author'), str) else '') if anchor else []
             anchor_subs = _subgenres_of(anchor) if anchor else []
-            anchor_genres = [g.strip() for g in TAG_SPLIT_RE.split((anchor.get('genre') or '') if anchor else '') if g.strip()]
+            raw_anchor_genre = (anchor.get('genre') if isinstance(anchor.get('genre'), str) else '') if anchor else ''
+            anchor_genres = [g.strip() for g in TAG_SPLIT_RE.split(raw_anchor_genre) if g.strip()]
             primary_genre = anchor_genres[0] if anchor_genres else ''
 
-            # Dedup subgenre & genre candidate lists (anchor FIRST, same-kind fallback only when anchor has none).
+            # Dedup subgenre & genre candidate lists (bounded to <= 4 to prevent query amplification).
             sub_candidates: list[str] = []
             seen_sub: set[str] = set()
             for raw in (anchor_subs if anchor_subs else fallback_subs):
@@ -766,6 +790,8 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
                 if len(k) >= 2 and k not in seen_sub:
                     seen_sub.add(k)
                     sub_candidates.append(raw)
+                    if len(sub_candidates) >= 4:
+                        break
 
             genre_candidates: list[str] = []
             seen_gen: set[str] = set()
@@ -774,6 +800,8 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
                 if len(k) >= 2 and k not in seen_gen:
                     seen_gen.add(k)
                     genre_candidates.append(raw)
+                    if len(genre_candidates) >= 4:
+                        break
 
             shown = _WorkIndex()
             sections: list[dict] = []
@@ -893,9 +921,9 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
         excluded: list[int] = []
         if exclude_ids.strip():
             for raw in exclude_ids.split(',')[:MAX_EXCLUDE_IDS]:
-                s = raw.strip()
-                if s and CATALOG_ID_RE.fullmatch(s):
-                    excluded.append(int(s))
+                n = _safe_bigint(raw)
+                if n is not None:
+                    excluded.append(n)
 
         with connect() as db:
             base = db.execute(
@@ -953,8 +981,11 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
 
     @app.post('/v1/me/wishlist', status_code=201)
     def add_wishlist(body: WishlistInput, user=Depends(current)):
+        if _safe_bigint(body.catalog_id) is None:
+            raise HTTPException(422, 'Identificador inválido.')
         cover_url = _valid_cover_url(body.cover_url)
         with connect() as db:
+            db.execute('SELECT id FROM public.viblio_users WHERE id=%s FOR UPDATE', (user['id'],))
             existing = db.execute(
                 'SELECT 1 FROM public.viblio_wishlist WHERE user_id=%s AND catalog_id=%s',
                 (user['id'], body.catalog_id),
@@ -990,7 +1021,7 @@ def mount_recommendations(app, connect, current, catalog_source, public_url, col
 
     @app.delete('/v1/me/wishlist/{catalog_id}')
     def remove_wishlist(catalog_id: str, user=Depends(current)):
-        if not CATALOG_ID_RE.fullmatch(catalog_id):
+        if _safe_bigint(catalog_id) is None:
             raise HTTPException(422, 'Identificador inválido.')
         with connect() as db:
             db.execute(

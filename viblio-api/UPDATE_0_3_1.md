@@ -4,16 +4,16 @@ Esta versão envia a página e o total de páginas do livro atual na lista de am
 
 ## No servidor, com o ZIP no Nextcloud
 
-Use o terminal de `srvValtecir`. Não use `$env:USERPROFILE` nesse terminal; essa variável é do PowerShell do PC.
+Use o terminal de `<servidor>`. Não use `$env:USERPROFILE` nesse terminal; essa variável é do PowerShell do PC.
 
 ```bash
-sudo find /DATA/AppData/nextcloud/var/www/html/data/valtecir/files -type f -name 'viblio-api-0.3.1.zip'
+sudo find /DATA/AppData/nextcloud/var/www/html/data/<usuario>/files -type f -name 'viblio-api-0.3.1.zip'
 ```
 
 Se estiver na raiz do Nextcloud:
 
 ```bash
-sudo cp /DATA/AppData/nextcloud/var/www/html/data/valtecir/files/viblio-api-0.3.1.zip /tmp/viblio-api-0.3.1.zip
+sudo cp /DATA/AppData/nextcloud/var/www/html/data/<usuario>/files/viblio-api-0.3.1.zip /tmp/viblio-api-0.3.1.zip
 sudo chown "$(id -un):$(id -gn)" /tmp/viblio-api-0.3.1.zip
 chmod 600 /tmp/viblio-api-0.3.1.zip
 ```

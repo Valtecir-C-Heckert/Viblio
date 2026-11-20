@@ -288,7 +288,7 @@ object AnnualPlanCalculator {
             }
             val effectiveReadPages = when {
                 pagesReadInMonth > 0 -> pagesReadInMonth
-                status == PlanItemStatus.COMPLETED && book.pagesKnown -> book.totalPages
+                (entry.completed || completedInMonth) && book.pagesKnown -> book.totalPages
                 else -> 0
             }
             return ResolvedPlanItem(

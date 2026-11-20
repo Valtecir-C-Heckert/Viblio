@@ -33,4 +33,4 @@ Semana de segunda a domingo, intervalos com fim exclusivo, mês/ano reais do cal
 
 ## Implantar
 
-[Guia completo](../viblio-api/UPDATE_0_2_9.md): localizar o ZIP novo no Nextcloud, copiar para /tmp, verificar checksum, fazer backup de banco/capas/snapshots/.env, extrair como valtecir sem substituir .env, confirmar 006 existe e executá-la fora de transação, recriar somente o projeto viblio-catalog-api e esperar healthy. Não down -v, não configure.py, não alterar /opt/viblio/compose.yaml. API antes do APK; instalar por cima sem desinstalar. URL pública e túnel existentes permanecem os mesmos.
+[Guia completo](../viblio-api/UPDATE_0_2_9.md): localizar o ZIP novo no Nextcloud, copiar para /tmp, verificar checksum, fazer backup de banco/capas/snapshots/.env, extrair como `<usuario>` sem substituir .env, confirmar 006 existe e executá-la fora de transação, recriar somente o projeto viblio-catalog-api e esperar healthy. Não down -v, não configure.py, não alterar /opt/viblio/compose.yaml. API antes do APK; instalar por cima sem desinstalar. URL pública e túnel existentes permanecem os mesmos.

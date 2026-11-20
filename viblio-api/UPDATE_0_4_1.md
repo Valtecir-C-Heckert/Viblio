@@ -9,18 +9,18 @@ Novas migrações: **010_club_home.sql** e **011_automatic_activity.sql**. O ZIP
 Depois de enviar `viblio-api-0.4.1.zip` pelo PC ou Nextcloud:
 
 ```bash
-sudo find /home/valtecir /DATA/AppData/nextcloud/var/www/html/data/valtecir/files -type f -name 'viblio-api-0.4.1.zip' 2>/dev/null
+sudo find /home/<usuario> /DATA/AppData/nextcloud/var/www/html/data/<usuario>/files -type f -name 'viblio-api-0.4.1.zip' 2>/dev/null
 ```
 
-Se estiver em `/home/valtecir`, use o atualizador já instalado:
+Se estiver em `/home/<usuario>`, use o atualizador já instalado:
 
 ```bash
-python3 ~/atualizar-viblio.py --zip /home/valtecir/viblio-api-0.4.1.zip --sha256 SHA256_PUBLICADO_COM_ESTE_ZIP
+python3 ~/atualizar-viblio.py --zip /home/<usuario>/viblio-api-0.4.1.zip --sha256 SHA256_PUBLICADO_COM_ESTE_ZIP
 ```
 
 O SHA-256 está no anexo de checksums desta versão e em `downloads/SHA256SUMS`. Não use o hash da 0.4.0.
 
-Se estiver no Nextcloud, copie o caminho encontrado para `/tmp/viblio-api-0.4.1.zip` com `sudo cp`, ajuste o dono para `valtecir:valtecir`, e use esse caminho em `--zip`. Mantenha o script em `~/atualizar-viblio.py`, fora de `/opt/viblio/api`.
+Se estiver no Nextcloud, copie o caminho encontrado para `/tmp/viblio-api-0.4.1.zip` com `sudo cp`, ajuste o dono para `<usuario>:<usuario>`, e use esse caminho em `--zip`. Mantenha o script em `~/atualizar-viblio.py`, fora de `/opt/viblio/api`.
 
 O atualizador confere o pacote e o histórico SQL, faz backup de PostgreSQL, capas/snapshots, configuração e código, aplica 010/011 e reconstrói a API usando o mesmo projeto/serviço/volume. Não rode `configure.py`, `down -v` nem substitua `/opt/viblio/compose.yaml`.
 

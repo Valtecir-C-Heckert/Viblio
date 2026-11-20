@@ -29,9 +29,24 @@ enum class WidgetSize { SIZE_1X2, SIZE_2X2, SIZE_3X2, SIZE_4X2 }
  */
 abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
-        appWidgetIds.forEach { id ->
-            val opts = appWidgetManager.getAppWidgetOptions(id)
-            updateOne(context, appWidgetManager, id, resolveSize(opts, defaultSize))
+        if (appWidgetIds.isEmpty()) return
+        val pending = goAsync()
+        val appCtx = context.applicationContext
+        val ids = appWidgetIds.copyOf()
+        widgetExecutor.execute {
+            try {
+                val snap = loadSnapshot(appCtx)
+                try {
+                    ids.forEach { id ->
+                        val opts = appWidgetManager.getAppWidgetOptions(id)
+                        runCatching { updateOne(appCtx, appWidgetManager, id, resolveSize(opts, defaultSize), snap) }
+                    }
+                } finally {
+                    snap.releaseTempCover()
+                }
+            } finally {
+                pending.finish()
+            }
         }
     }
 
@@ -41,7 +56,21 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
         appWidgetId: Int,
         newOptions: Bundle,
     ) {
-        updateOne(context, appWidgetManager, appWidgetId, resolveSize(newOptions, defaultSize))
+        val pending = goAsync()
+        val appCtx = context.applicationContext
+        val size = resolveSize(newOptions, defaultSize)
+        widgetExecutor.execute {
+            try {
+                val snap = loadSnapshot(appCtx)
+                try {
+                    runCatching { updateOne(appCtx, appWidgetManager, appWidgetId, size, snap) }
+                } finally {
+                    snap.releaseTempCover()
+                }
+            } finally {
+                pending.finish()
+            }
+        }
     }
 
     private fun resolveSize(options: Bundle?, fallback: WidgetSize): WidgetSize {
@@ -55,11 +84,40 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
         }
     }
 
+    private class WidgetSnapshot(
+        val book: LibraryBook?,
+        val readableAccent: Int,
+        val coverBmp: Bitmap,
+        val ownsCover: Boolean,
+    ) {
+        fun releaseTempCover() {
+            if (ownsCover && !coverBmp.isRecycled) coverBmp.recycle()
+        }
+    }
+
     companion object {
         private const val DEFAULT_ACCENT = 0xFFC9A77C.toInt()
         private const val TRACK_COLOR = 0xFF282828.toInt()
         private const val MAX_COVER_W = 240
         private const val MAX_COVER_H = 360
+        private val widgetExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+        private fun loadSnapshot(context: Context): WidgetSnapshot {
+            val repo = LibraryRepository(context)
+            val book: LibraryBook? = try {
+                repo.current()
+            } finally {
+                runCatching { repo.close() }
+            }
+            val images = BookImages(context)
+            val accent = book?.cover?.takeIf { it.isNotBlank() }?.let {
+                runCatching { images.coverColor(it) }.getOrNull()
+            } ?: DEFAULT_ACCENT
+            val readableAccent = brightenForDark(accent)
+            val (coverBmp, ownsCover) = book?.let { boundedCover(images, it.cover) }
+                ?: (placeholderCover(book?.title.orEmpty(), readableAccent) to true)
+            return WidgetSnapshot(book, readableAccent, coverBmp, ownsCover)
+        }
 
         fun refreshAll(context: Context) {
             val appCtx = context.applicationContext
@@ -70,9 +128,14 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
                 ViblioWidget3x2::class.java to WidgetSize.SIZE_3X2,
                 ViblioWidget4x2::class.java to WidgetSize.SIZE_4X2,
             )
-            providers.forEach { (cls, defSize) ->
-                val ids = runCatching { manager.getAppWidgetIds(ComponentName(appCtx, cls)) }.getOrNull() ?: return@forEach
-                ids.forEach { id ->
+            val targets = providers.flatMap { (cls, defSize) ->
+                val ids = runCatching { manager.getAppWidgetIds(ComponentName(appCtx, cls)) }.getOrNull() ?: IntArray(0)
+                ids.map { it to defSize }
+            }
+            if (targets.isEmpty()) return
+            val snap = loadSnapshot(appCtx)
+            try {
+                targets.forEach { (id, defSize) ->
                     val opts = manager.getAppWidgetOptions(id)
                     val minW = opts?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0) ?: 0
                     val size = if (minW <= 0) defSize else when {
@@ -81,19 +144,21 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
                         minW < 245 -> WidgetSize.SIZE_3X2
                         else -> WidgetSize.SIZE_4X2
                     }
-                    runCatching { updateOne(appCtx, manager, id, size) }
+                    runCatching { updateOne(appCtx, manager, id, size, snap) }
                 }
+            } finally {
+                snap.releaseTempCover()
             }
         }
 
-        private fun boundedCover(images: BookImages, coverName: String): Bitmap? {
+        private fun boundedCover(images: BookImages, coverName: String): Pair<Bitmap, Boolean>? {
             if (coverName.isBlank()) return null
             val raw = runCatching { images.thumbnail(coverName) }.getOrNull() ?: return null
-            if (raw.width <= MAX_COVER_W && raw.height <= MAX_COVER_H) return raw
+            if (raw.width <= MAX_COVER_W && raw.height <= MAX_COVER_H) return raw to false
             val scale = minOf(MAX_COVER_W.toFloat() / raw.width.coerceAtLeast(1), MAX_COVER_H.toFloat() / raw.height.coerceAtLeast(1))
             val w = (raw.width * scale).toInt().coerceAtLeast(1)
             val h = (raw.height * scale).toInt().coerceAtLeast(1)
-            return Bitmap.createScaledBitmap(raw, w, h, true)
+            return Bitmap.createScaledBitmap(raw, w, h, true) to true
         }
 
         private fun progressBitmap(percent: Int, accent: Int): Bitmap {
@@ -133,7 +198,7 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
             return bmp
         }
 
-        private fun updateOne(context: Context, manager: AppWidgetManager, widgetId: Int, size: WidgetSize) {
+        private fun updateOne(context: Context, manager: AppWidgetManager, widgetId: Int, size: WidgetSize, snap: WidgetSnapshot) {
             val layoutId = when (size) {
                 WidgetSize.SIZE_1X2 -> R.layout.widget_reading_1x2
                 WidgetSize.SIZE_2X2 -> R.layout.widget_reading_2x2
@@ -141,71 +206,75 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
                 WidgetSize.SIZE_4X2 -> R.layout.widget_reading_4x2
             }
             val views = RemoteViews(context.packageName, layoutId)
-
-            val repo = LibraryRepository(context)
-            val book: LibraryBook? = try {
-                repo.current()
-            } finally {
-                runCatching { repo.close() }
+            val book = snap.book
+            val readableAccent = snap.readableAccent
+            val pct = when {
+                book == null -> 0
+                book.pagesKnown -> book.percent.coerceIn(0, 100)
+                book.complete -> 100
+                else -> 0
             }
-            val images = BookImages(context)
-            val accent = book?.cover?.takeIf { it.isNotBlank() }?.let {
-                runCatching { images.coverColor(it) }.getOrNull()
-            } ?: DEFAULT_ACCENT
-            // Keep accent readable on dark editorial background (#101010)
-            val readableAccent = brightenForDark(accent)
+            val progBmp = progressBitmap(pct, readableAccent)
+            var barBmp: Bitmap? = null
+            try {
+                views.setImageViewBitmap(R.id.widget_cover, snap.coverBmp)
+                views.setImageViewBitmap(R.id.widget_progress_img, progBmp)
 
-            val pct = book?.percent?.coerceIn(0, 100) ?: 0
-            val coverBmp = book?.let { boundedCover(images, it.cover) }
-                ?: placeholderCover(book?.title.orEmpty(), readableAccent)
-
-            views.setImageViewBitmap(R.id.widget_cover, coverBmp)
-            views.setImageViewBitmap(R.id.widget_progress_img, progressBitmap(pct, readableAccent))
-
-            if (size != WidgetSize.SIZE_1X2) {
-                views.setImageViewBitmap(R.id.widget_accent_bar, solidBitmap(readableAccent))
-                views.setTextColor(R.id.widget_kicker, readableAccent)
-                if (book != null) {
-                    views.setTextViewText(R.id.widget_kicker, if (size == WidgetSize.SIZE_2X2) "LENDO" else "LENDO AGORA")
-                    views.setTextViewText(R.id.widget_title, book.title)
-                    views.setTextViewText(R.id.widget_author, book.author.ifBlank { book.saga })
-                    val pagesText = when {
-                        !book.pagesKnown -> if (book.complete) "Concluído" else "Em andamento"
-                        size == WidgetSize.SIZE_2X2 -> "${book.currentPage} / ${book.totalPages} ›"
-                        size == WidgetSize.SIZE_3X2 -> "${book.currentPage}/${book.totalPages} · $pct%"
-                        else -> "${book.currentPage} / ${book.totalPages} págs · $pct%"
+                if (size != WidgetSize.SIZE_1X2) {
+                    barBmp = solidBitmap(readableAccent)
+                    views.setImageViewBitmap(R.id.widget_accent_bar, barBmp)
+                    views.setTextColor(R.id.widget_kicker, readableAccent)
+                    if (book != null) {
+                        views.setTextViewText(R.id.widget_kicker, if (size == WidgetSize.SIZE_2X2) "LENDO" else "LENDO AGORA")
+                        views.setTextViewText(R.id.widget_title, book.title)
+                        views.setTextViewText(R.id.widget_author, book.author.ifBlank { book.saga })
+                        val pagesText = when {
+                            !book.pagesKnown -> if (book.complete) "Concluído" else "Em andamento"
+                            size == WidgetSize.SIZE_2X2 -> "${book.currentPage} / ${book.totalPages} ›"
+                            size == WidgetSize.SIZE_3X2 -> "${book.currentPage}/${book.totalPages} · $pct%"
+                            else -> "${book.currentPage} / ${book.totalPages} págs · $pct%"
+                        }
+                        views.setTextViewText(R.id.widget_pages, pagesText)
+                    } else {
+                        views.setTextViewText(R.id.widget_kicker, "VIBLIO")
+                        views.setTextViewText(R.id.widget_title, "Nenhuma leitura atual")
+                        views.setTextViewText(R.id.widget_author, "Toque para abrir a Estante")
+                        views.setTextViewText(R.id.widget_pages, "")
                     }
-                    views.setTextViewText(R.id.widget_pages, pagesText)
-                } else {
-                    views.setTextViewText(R.id.widget_kicker, "VIBLIO")
-                    views.setTextViewText(R.id.widget_title, "Nenhuma leitura atual")
-                    views.setTextViewText(R.id.widget_author, "Toque para abrir a Estante")
-                    views.setTextViewText(R.id.widget_pages, "")
                 }
-            }
 
-            if (size == WidgetSize.SIZE_1X2 || size == WidgetSize.SIZE_2X2) {
-                views.setTextColor(R.id.widget_percent, readableAccent)
-                views.setTextViewText(R.id.widget_percent, if (book != null) "$pct%" else "—")
-            }
-            if (size == WidgetSize.SIZE_4X2) {
-                views.setTextColor(R.id.widget_cta, readableAccent)
-                views.setTextViewText(R.id.widget_cta, if (book != null) "Continuar ›" else "Abrir ›")
-            }
+                if (size == WidgetSize.SIZE_1X2 || size == WidgetSize.SIZE_2X2) {
+                    views.setTextColor(R.id.widget_percent, readableAccent)
+                    val pctText = when {
+                        book == null -> "—"
+                        book.pagesKnown -> "$pct%"
+                        book.complete -> "100%"
+                        else -> "Lendo"
+                    }
+                    views.setTextViewText(R.id.widget_percent, pctText)
+                }
+                if (size == WidgetSize.SIZE_4X2) {
+                    views.setTextColor(R.id.widget_cta, readableAccent)
+                    views.setTextViewText(R.id.widget_cta, if (book != null) "Continuar ›" else "Abrir ›")
+                }
 
-            val openIntent = if (book != null) {
-                Intent(Intent.ACTION_VIEW, Uri.parse("viblio://current"), context, ViblioActivity::class.java)
-            } else {
-                Intent(context, ViblioActivity::class.java)
-            }.apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            }
-            val flags = PendingIntent.FLAG_UPDATE_CURRENT or
-                if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0
-            val pending = PendingIntent.getActivity(context, widgetId, openIntent, flags)
-            views.setOnClickPendingIntent(R.id.widget_root, pending)
+                val openIntent = if (book != null) {
+                    Intent(Intent.ACTION_VIEW, Uri.parse("viblio://current"), context, ViblioActivity::class.java)
+                } else {
+                    Intent(context, ViblioActivity::class.java)
+                }.apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                }
+                val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                    if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0
+                val pending = PendingIntent.getActivity(context, widgetId, openIntent, flags)
+                views.setOnClickPendingIntent(R.id.widget_root, pending)
 
-            manager.updateAppWidget(widgetId, views)
+                manager.updateAppWidget(widgetId, views)
+            } finally {
+                if (!progBmp.isRecycled) progBmp.recycle()
+                if (barBmp != null && !barBmp.isRecycled) barBmp.recycle()
+            }
         }
 
         private fun brightenForDark(color: Int): Int {

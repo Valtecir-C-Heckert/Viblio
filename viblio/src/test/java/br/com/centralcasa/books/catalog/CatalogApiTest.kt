@@ -69,7 +69,7 @@ class CatalogApiTest {
         }) { api,_->val result=api.write("""{"request_id":"request-key","title":"Title"}""",null);assertEquals("12",result.first.id);assertNull(result.third) }
     }
     @Test fun privateHttpAndHttpsAreAcceptedButCredentialUrlsAreRejected() {
-        assertTrue(CatalogApi.validAddress("http://192.168.1.10:8088"));assertTrue(CatalogApi.validAddress("http://100.120.140.83:8088"))
+        assertTrue(CatalogApi.validAddress("http://192.168.0.10:8088"));assertTrue(CatalogApi.validAddress("http://100.64.0.10:8088"))
         assertTrue(CatalogApi.validAddress("https://viblio.com.br"));assertFalse(CatalogApi.validAddress("http://example.org"))
         assertFalse(CatalogApi.validAddress("https://user:password@example.org"));assertFalse(CatalogApi.validAddress("file:///tmp/a"))
         assertFalse(CatalogApi.validAddress("https://example.org/?token=secret"))

@@ -4,4 +4,15 @@
 local.properties
 *.jks
 *.keystore
+*.p12
+*.pem
+*.key
+.env
+.env.*
+tunnel-token
+*.dump
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
 .idea/

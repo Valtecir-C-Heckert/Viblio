@@ -46,7 +46,7 @@ prazo/etapas em duas laterais e publicação de comentário à direita. Corrigid
 de carregamento ao trocar sessão/navegação e cancelamento de transferências paradas.
 
 [APK](https://github.com/Valtecir-C-Heckert/Home-assistant/releases/download/viblio-v0.4.2/viblio-0.4.2.apk) · [API](https://github.com/Valtecir-C-Heckert/Home-assistant/releases/download/viblio-v0.4.2/viblio-api-0.4.2.zip) ·
-[Checksums](https://github.com/Valtecir-C-Heckert/Home-assistant/releases/download/viblio-v0.4.2/viblio-0.4.2-SHA256SUMS.txt) · [Comandos PC/servidor](viblio-0.4.2-servidor.txt).
+[Checksums](https://github.com/Valtecir-C-Heckert/Home-assistant/releases/download/viblio-v0.4.2/viblio-0.4.2-SHA256SUMS.txt).
 **Atualize a API primeiro**, depois instale o APK por cima, sem limpar dados.
 Sem migração nova. [Guia](../viblio-api/UPDATE_0_4_2.md) ·
 [Validação](../docs/VALIDATION_VIBLIO_0_4_2.md).

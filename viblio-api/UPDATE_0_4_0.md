@@ -4,16 +4,16 @@ Atualize a API antes de instalar o APK 0.4.0. Inclui Feed, diretório de pessoas
 
 ## ZIP no Nextcloud → servidor
 
-No terminal de `srvValtecir`:
+No terminal de `<servidor>`:
 
 ```bash
-sudo find /DATA/AppData/nextcloud/var/www/html/data/valtecir/files -type f -name 'viblio-api-0.4.0.zip'
+sudo find /DATA/AppData/nextcloud/var/www/html/data/<usuario>/files -type f -name 'viblio-api-0.4.0.zip'
 ```
 
 Use o caminho encontrado; se estiver na raiz:
 
 ```bash
-sudo cp /DATA/AppData/nextcloud/var/www/html/data/valtecir/files/viblio-api-0.4.0.zip /tmp/viblio-api-0.4.0.zip
+sudo cp /DATA/AppData/nextcloud/var/www/html/data/<usuario>/files/viblio-api-0.4.0.zip /tmp/viblio-api-0.4.0.zip
 sudo chown "$(id -un):$(id -gn)" /tmp/viblio-api-0.4.0.zip
 chmod 600 /tmp/viblio-api-0.4.0.zip
 python3 ~/atualizar-viblio.py --zip /tmp/viblio-api-0.4.0.zip --sha256 SHA256_PUBLICADO_COM_ESTE_ZIP

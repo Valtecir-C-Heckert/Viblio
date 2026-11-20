@@ -98,30 +98,39 @@ class BodyLimit:
     def __init__(self, app): self.app = app
     async def __call__(self, scope, receive, send):
         if scope['type'] != 'http': return await self.app(scope, receive, send)
-        headers = dict(scope.get('headers', []))
+        headers = {k.lower(): v for k, v in scope.get('headers', [])}
         try: declared = int(headers.get(b'content-length', b'0'))
         except ValueError: declared = MAX_BODY + 1
-        limit=24*1024*1024 if scope.get('path')=='/v1/me/library/sync' else MAX_BODY if scope.get('path')=='/v1/books' and scope.get('method')=='POST' else 16*1024
+        path = scope.get('path', '')
+        is_sync = path == '/v1/me/library/sync'
+        is_upload = path == '/v1/books' and scope.get('method') == 'POST'
+        limit = 24*1024*1024 if is_sync else MAX_BODY if is_upload else 16*1024
+        if (is_sync or is_upload) and not headers.get(b'authorization', b'').startswith(b'Bearer '):
+            await send({'type': 'http.response.start', 'status': 401, 'headers': [(b'content-type', b'application/json'), (b'www-authenticate', b'Bearer')]})
+            return await send({'type': 'http.response.body', 'body': b'{"detail":"Autenticacao obrigatoria."}'})
         if declared < 0 or declared > limit:
-            return await self.reject(send,scope.get('path')=='/v1/me/library/sync',limit)
+            return await self.reject(send, is_sync, limit)
         # Buffer a strictly bounded body before the multipart parser can spool unbounded input.
-        body = bytearray(); size = 0; deadline=time.monotonic()+60
+        body = bytearray(); size = 0; deadline = time.monotonic() + (60 if (is_sync or is_upload) else 15)
         while True:
-            try:message = await asyncio.wait_for(receive(),timeout=max(0.001,min(15,deadline-time.monotonic())))
+            try: message = await asyncio.wait_for(receive(), timeout=max(0.001, min(15, deadline - time.monotonic())))
             except TimeoutError:
                 await send({'type':'http.response.start','status':408,'headers':[(b'content-type',b'application/json')]})
                 return await send({'type':'http.response.body','body':b'{"detail":"Tempo de envio excedido."}'})
             if message['type'] == 'http.disconnect': return
-            size += len(message.get('body', b''))
-            if size > limit: return await self.reject(send,scope.get('path')=='/v1/me/library/sync',limit)
-            body.extend(message.get('body',b''))
+            chunk = message.get('body', b'')
+            size += len(chunk)
+            if size > limit: return await self.reject(send, is_sync, limit)
+            body.extend(chunk)
             if not message.get('more_body'): break
         delivered = False
         async def limited_receive():
             nonlocal delivered
             if not delivered:
-                delivered=True
-                return {'type':'http.request','body':bytes(body),'more_body':False}
+                delivered = True
+                payload = bytes(body)
+                body.clear()
+                return {'type':'http.request','body':payload,'more_body':False}
             return await receive()
         await self.app(scope, limited_receive, send)
     async def reject(self, send,library=False,limit=MAX_BODY):
@@ -167,7 +176,7 @@ def create_app(database_url=None, api_token=None, storage=None, public_url=None)
             else:
                 conn = candidate
         if conn is None:
-            conn = psycopg.connect(database_url, row_factory=dict_row, connect_timeout=5)
+            conn = psycopg.connect(database_url, row_factory=dict_row, connect_timeout=5, options='-c statement_timeout=15000')
         try:
             yield conn
             conn.commit()
@@ -201,8 +210,10 @@ def create_app(database_url=None, api_token=None, storage=None, public_url=None)
         # FastAPI's default errors include raw input, which can contain a password.
         return JSONResponse(status_code=422,content={'detail':'Confira os campos informados.'})
     security = HTTPBearer(auto_error=False)
+    def _token_eq(a: str, b: str) -> bool:
+        return hmac.compare_digest(a.encode('utf-8'), b.encode('utf-8'))
     def installation_only(credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)]):
-        if not credentials or not hmac.compare_digest(credentials.credentials, api_token):
+        if not credentials or not _token_eq(credentials.credentials, api_token):
             raise HTTPException(401, 'Chave de acesso inválida.', headers={'WWW-Authenticate': 'Bearer'})
     from .accounts import mount_accounts
     from .personal_library import mount_library
@@ -217,7 +228,7 @@ def create_app(database_url=None, api_token=None, storage=None, public_url=None)
     from .recommendations import mount_recommendations
     mount_recommendations(app,connect,current_user,catalog_source,public_url,COLUMNS,present)
     def authenticate(request:Request,credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)]):
-        if credentials and hmac.compare_digest(credentials.credentials,api_token):return
+        if credentials and _token_eq(credentials.credentials,api_token):return
         lookup_user(credentials.credentials if credentials else '',request)
     @app.exception_handler(psycopg.Error)
     async def db_error(request, error):
@@ -235,6 +246,8 @@ def create_app(database_url=None, api_token=None, storage=None, public_url=None)
             connection.execute('SELECT 1 FROM public.viblio_library_bases LIMIT 1')
             connection.execute('SELECT share_activity,activity_enabled_at FROM public.viblio_users LIMIT 1')
             connection.execute('SELECT 1 FROM public.viblio_activity LIMIT 1')
+            if not connection.execute("SELECT 1 FROM pg_constraint WHERE conrelid='public.viblio_activity'::regclass AND contype='c' AND pg_get_constraintdef(oid) LIKE '%added%' LIMIT 1").fetchone():
+                raise HTTPException(503, 'Migração pendente no banco de dados.')
             connection.execute('SELECT book_id FROM public.viblio_club_progress LIMIT 1')
             connection.execute('SELECT source_user_id FROM public.viblio_club_proposals LIMIT 1')
             connection.execute('SELECT completed_at FROM public.viblio_club_rounds LIMIT 1')
@@ -250,6 +263,8 @@ def create_app(database_url=None, api_token=None, storage=None, public_url=None)
                kind: Literal['all', 'book', 'manga', 'comic'] = 'all',
                limit: int = Query(20, ge=1, le=50),
                cursor: int | None = None):
+        if cursor is not None and not -(2**63) <= cursor < 2**63:
+            raise HTTPException(422, 'Cursor inválido.')
         if query.strip() and not isbn.strip():
             cleaned = query.strip()
             if len(cleaned) < 3:

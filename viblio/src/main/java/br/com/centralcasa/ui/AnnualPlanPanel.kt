@@ -989,6 +989,7 @@ class AnnualPlanPanel(
         val bInput = EditText(activity).apply {
             isSingleLine = true
             inputType = InputType.TYPE_CLASS_NUMBER
+            filters = arrayOf(android.text.InputFilter.LengthFilter(5))
             setTextColor(ui.text)
             setHintTextColor(ui.muted)
             background = ui.outlined(ui.activeSurface, ui.lineColor, 0)
@@ -1010,9 +1011,9 @@ class AnnualPlanPanel(
             val show = bType != BooksGoalType.NONE
             bInput.visibility = if (show) View.VISIBLE else View.GONE
             bPreview.visibility = if (show) View.VISIBLE else View.GONE
-            val v = bInput.text.toString().trim().toIntOrNull() ?: 0
+            val v = (bInput.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 10000)
             bPreview.text = when (bType) {
-                BooksGoalType.PER_MONTH -> if (v > 0) "$v livro(s)/mês = ${numbers.format(v * 12)} no ano" else "Informe quantos livros por mês"
+                BooksGoalType.PER_MONTH -> if (v > 0) "$v livro(s)/mês = ${numbers.format(v.toLong() * 12L)} no ano" else "Informe quantos livros por mês"
                 BooksGoalType.PER_YEAR -> if (v > 0) "$v livro(s) em ${plan.year}" else "Informe quantos livros no ano"
                 BooksGoalType.NONE -> ""
             }
@@ -1026,11 +1027,12 @@ class AnnualPlanPanel(
                 setOnClickListener {
                     val prev = bType
                     bType = t
-                    if (prev != t && t == BooksGoalType.PER_MONTH && (bInput.text.toString().toIntOrNull() ?: 0) > 12) {
-                        bInput.setText(((bInput.text.toString().toInt() + 11) / 12).coerceAtLeast(1).toString())
+                    val cur = (bInput.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 10000)
+                    if (prev != t && t == BooksGoalType.PER_MONTH && cur > 12) {
+                        bInput.setText(((cur + 11) / 12).coerceIn(1, 500).toString())
                     } else if (prev == BooksGoalType.PER_MONTH && t == BooksGoalType.PER_YEAR) {
-                        val cur = bInput.text.toString().toIntOrNull() ?: 2
-                        bInput.setText((cur * 12).toString())
+                        val base = if (cur > 0) cur else 2
+                        bInput.setText((base.toLong() * 12L).coerceIn(1L, 10000L).toString())
                     }
                     refreshBooksUi()
                 }
@@ -1055,6 +1057,7 @@ class AnnualPlanPanel(
         val pInput = EditText(activity).apply {
             isSingleLine = true
             inputType = InputType.TYPE_CLASS_NUMBER
+            filters = arrayOf(android.text.InputFilter.LengthFilter(6))
             setTextColor(ui.text)
             setHintTextColor(ui.muted)
             background = ui.outlined(ui.activeSurface, ui.lineColor, 0)
@@ -1305,12 +1308,20 @@ class AnnualPlanPanel(
 
     private fun movePendingFromPrevious(plan: AnnualReadingPlan, fromMonth: Int, toMonth: Int) {
         val booksById = repo.books().associateBy { it.id }
+        val existingInDest = plan.entries
+            .filter { it.month == toMonth && it.bookId.isNotBlank() }
+            .mapTo(HashSet()) { it.bookId to it.reread }
         var nextPos = (plan.entries.filter { it.month == toMonth }.maxOfOrNull { it.position } ?: -1) + 1
-        val updated = plan.entries.map { e ->
+        val updated = plan.entries.mapNotNull { e ->
             if (e.month == fromMonth && e.kind == PlanEntryKind.SHELF_BOOK) {
                 val resolved = AnnualPlanCalculator.resolveItem(e, booksById)
                 if (resolved.status != PlanItemStatus.COMPLETED) {
-                    e.copy(month = toMonth, position = nextPos++)
+                    val key = e.bookId to e.reread
+                    if (e.bookId.isNotBlank() && !existingInDest.add(key)) {
+                        null // already planned in destination month; drop duplicate
+                    } else {
+                        e.copy(month = toMonth, position = nextPos++)
+                    }
                 } else e
             } else e
         }

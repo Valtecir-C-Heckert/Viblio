@@ -27,11 +27,11 @@ arquivos privados/capas, de `.env` e do código antes de reconstruir o serviço.
 Se enviou pelo Nextcloud, localize primeiro o pacote:
 
 ```bash
-sudo find /home/valtecir /DATA/AppData/nextcloud/var/www/html/data/valtecir/files -type f -name 'viblio-api-0.4.2.zip' 2>/dev/null
+sudo find /home/<usuario> /DATA/AppData/nextcloud/var/www/html/data/<usuario>/files -type f -name 'viblio-api-0.4.2.zip' 2>/dev/null
 ```
 
 Copie o caminho encontrado para `/tmp/viblio-api-0.4.2.zip`, ajuste o dono para
-`valtecir:valtecir` e use esse caminho em `--zip`. O script deve permanecer em
+`<usuario>:<usuario>` e use esse caminho em `--zip`. O script deve permanecer em
 `~/atualizar-viblio.py`, fora de `/opt/viblio/api`.
 
 ## Conferir

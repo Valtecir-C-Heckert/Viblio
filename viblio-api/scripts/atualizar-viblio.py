@@ -99,29 +99,60 @@ def unpack(package, destination):
         required = {'app/main.py', 'Dockerfile', 'compose.api.yaml', 'requirements.lock'}
         if not required <= {i.filename for i in entries if not i.is_dir()}:
             raise UpdateError('ZIP não tem a estrutura completa da API.')
-        # ZipFile.open validates each CRC while copying; set permissions ourselves.
+        # ZipFile.open validates each CRC while copying; track real expanded bytes to defeat forged headers.
+        dest_root = destination.resolve()
+        total_written = 0
         for item in entries:
             target = destination / item.filename
+            resolved_target = target.resolve()
+            if not resolved_target.is_relative_to(dest_root):
+                raise UpdateError('ZIP tenta extrair fora da pasta temporária.')
             if item.is_dir():
                 target.mkdir(parents=True, exist_ok=True)
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(item) as source, target.open('xb') as output:
-                    shutil.copyfileobj(source, output)
+                    while True:
+                        chunk = source.read(65536)
+                        if not chunk:
+                            break
+                        total_written += len(chunk)
+                        if total_written > MAX_EXPANDED:
+                            raise UpdateError('ZIP acima do limite real de tamanho expandido.')
+                        output.write(chunk)
                 target.chmod(0o700 if item.filename.startswith('scripts/') else 0o600)
     return sorted((destination / 'migrations').glob('*.sql'), key=lambda p: (int(p.name.split('_')[0]), p.name))
+
+
+def _default_nextcloud_dir():
+    env_dir = os.environ.get('VIBLIO_NEXTCLOUD_DIR')
+    if env_dir:
+        return Path(env_dir)
+    user = os.environ.get('USER') or Path.home().name or 'usuario'
+    return Path(f'/DATA/AppData/nextcloud/var/www/html/data/{user}/files')
 
 
 @dataclass
 class Config:
     api: Path = Path('/opt/viblio/api')
     backups: Path = Path('/opt/viblio/backups')
-    nextcloud: Path = Path('/DATA/AppData/nextcloud/var/www/html/data/valtecir/files')
+    nextcloud: Path = None
     project: str = 'viblio-catalog-api'
     postgres: str = 'viblio-postgres'
     database: str = 'viblio'
     db_user: str = 'viblio'
     health_seconds: int = 180
+
+    def __post_init__(self):
+        if self.nextcloud is None:
+            self.nextcloud = _default_nextcloud_dir()
+
+
+class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.lower().startswith('https://'):
+            raise UpdateError('Redirecionamento inseguro bloqueado ao baixar checksums.')
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 class Updater:
@@ -156,10 +187,12 @@ class Updater:
             command += ['-f', override]
         return self.run(command + list(args))
 
-    def sql(self, text):
-        return self.run(['docker', 'exec', '-i', self.c.postgres, 'psql', '-X',
-                         '-v', 'ON_ERROR_STOP=1', '-U', self.c.db_user, '-d', self.c.database,
-                         '-At'], data=text.encode())
+    def sql(self, text, *, variables=None):
+        cmd = ['docker', 'exec', '-i', self.c.postgres, 'psql', '-X',
+               '-v', 'ON_ERROR_STOP=1', '-U', self.c.db_user, '-d', self.c.database, '-At']
+        for key, value in (variables or {}).items():
+            cmd += ['-v', f'{key}={value}']
+        return self.run(cmd, data=text.encode())
 
     def discover(self, wanted=None):
         try:
@@ -185,7 +218,7 @@ class Updater:
             raise UpdateError('Há cópias da mesma versão em pastas diferentes. Use --zip CAMINHO.')
         return choices[0]
 
-    def copy_package(self, source, target):
+    def copy_package(self, source, target, *, allow_sudo=False):
         def bounded_copy(src, dst):
             size = 0
             while True:
@@ -197,9 +230,27 @@ class Updater:
                     raise UpdateError('ZIP maior que 256 MiB.')
                 dst.write(block)
         try:
-            with source.open('rb') as src, target.open('xb') as dst:
-                bounded_copy(src, dst)
-        except PermissionError:
+            flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+            fd = os.open(source, flags)
+            try:
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode):
+                    raise UpdateError('O pacote precisa ser um arquivo regular.')
+                if st.st_size > MAX_ZIP:
+                    raise UpdateError('ZIP maior que 256 MiB.')
+                with os.fdopen(fd, 'rb') as src, target.open('xb') as dst:
+                    fd = -1
+                    bounded_copy(src, dst)
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+        except OSError as exc:
+            if exc.errno == getattr(os, 'ELOOP', 40):
+                raise UpdateError('Link simbólico não permitido para o pacote ZIP.') from None
+            if not isinstance(exc, PermissionError) or not allow_sudo:
+                raise UpdateError('Sem permissão para ler o pacote ZIP.') from None
+            if source.is_symlink() or not source.is_relative_to(self.c.nextcloud):
+                raise UpdateError('Leitura elevada permitida apenas para arquivos regulares dentro do Nextcloud.') from None
             target.unlink(missing_ok=True)
             with target.open('xb') as dst:
                 process = subprocess.Popen(['sudo', 'cat', '--', str(source)], stdout=subprocess.PIPE)
@@ -309,7 +360,10 @@ class Updater:
         self.old_image = self.run(['docker', 'inspect', '--format', '{{.Image}}', container])
         # Build before downtime, from the staged sources and the existing env file.
         print('Construindo a imagem nova; a API atual continua ligada…')
+        if self.c.backups.is_symlink():
+            raise UpdateError('A pasta de backups não pode ser um link simbólico.')
         self.c.backups.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.c.backups, 0o700)
         self.backup = self.c.backups / ('before-' + release + '-' + stamp)
         self.backup.mkdir(mode=0o700)
         self.log = (self.backup / 'update.log').open('ab')
@@ -321,8 +375,10 @@ class Updater:
             self.compose('config', '--quiet', directory=staged)
             self.compose('build', 'viblio-api', directory=staged)
             print('Salvando banco, capas, acervos privados, configuração e código anterior…')
-            shutil.copy2(api / '.env', self.backup / 'api.env')
-            (self.backup / 'api.env').chmod(0o600)
+            env_dst = self.backup / 'api.env'
+            env_fd = os.open(env_dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(env_fd, 'wb') as out, (api / '.env').open('rb') as src:
+                shutil.copyfileobj(src, out)
             shutil.copytree(api, self.backup / 'source', symlinks=True,
                             ignore=shutil.ignore_patterns('.env', '.venv', '.git', '__pycache__',
                                                          '.pytest_cache', '*.dump', '.update.lock'))
@@ -348,12 +404,14 @@ class Updater:
             for migration in migrations:
                 # Confirm the promoted file exists and still matches the checked package.
                 path = api / 'migrations' / migration.name
-                if not path.is_file():
-                    raise UpdateError('Migração ausente: ' + migration.name)
+                if not path.is_file() or not MIGRATION.fullmatch(path.name):
+                    raise UpdateError('Migração ausente ou inválida: ' + migration.name)
                 print('Aplicando', path.name)
                 self.sql(path.read_text())
-                self.sql("INSERT INTO public.viblio_schema_migrations(name,sha256) VALUES ('" +
-                         path.name + "','" + sha(path) + "');")
+                self.sql(
+                    "INSERT INTO public.viblio_schema_migrations(name,sha256) VALUES (:'mig_name', :'mig_sha');",
+                    variables={'mig_name': path.name, 'mig_sha': sha(path)},
+                )
             self.compose('up', '-d', '--no-build', '--force-recreate', 'viblio-api')
             print('Aguardando a API ficar healthy…')
             new_container = self.wait_healthy()
@@ -386,7 +444,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     os.umask(0o077)
     if os.geteuid() == 0:
-        raise UpdateError('Execute como valtecir, sem sudo. O script usa sudo só para ler o Nextcloud, se necessário.')
+        raise UpdateError('Execute como seu usuário normal, sem sudo. O script usa sudo só para ler o Nextcloud, se necessário.')
     config = Config()
     if config.api.is_symlink() or not config.api.is_dir() or config.api.stat().st_uid != os.geteuid():
         raise UpdateError('A pasta /opt/viblio/api precisa existir e pertencer ao seu usuário.')
@@ -404,6 +462,7 @@ def main(argv=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise UpdateError('Já existe outra atualização em andamento.') from None
+        from_nextcloud = args.zip is None
         source = (args.zip.absolute() if args.zip else updater.discover(args.version))
         match = PACKAGE.fullmatch(source.name)
         if not match or args.version and match[1] != args.version:
@@ -416,7 +475,8 @@ def main(argv=None):
                 raise UpdateError('SHA-256 inválido.')
         else:
             try:
-                with urllib.request.urlopen(CHECKSUMS, timeout=20) as response:
+                opener = urllib.request.build_opener(_HttpsOnlyRedirectHandler)
+                with opener.open(CHECKSUMS, timeout=20) as response:
                     raw = response.read(1024**2 + 1)
                 if len(raw) > 1024**2:
                     raise UpdateError('Lista de checksums acima do limite.')
@@ -425,7 +485,7 @@ def main(argv=None):
                 raise UpdateError('Não foi possível conferir o SHA-256 publicado. Use --sha256 com o valor recebido de fonte confiável.') from error
         with tempfile.TemporaryDirectory(prefix='viblio-package-') as folder:
             package = Path(folder) / source.name
-            updater.copy_package(source, package)
+            updater.copy_package(source, package, allow_sudo=from_nextcloud)
             digest = sha(package)
             if digest != expected:
                 raise UpdateError('SHA-256 diferente do publicado. O ZIP não será instalado.')

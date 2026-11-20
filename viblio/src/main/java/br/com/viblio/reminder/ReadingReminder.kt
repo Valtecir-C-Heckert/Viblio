@@ -23,7 +23,8 @@ import java.util.Locale
 class ReadingReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         val appCtx = context.applicationContext
-        if (intent?.action == Intent.ACTION_BOOT_COMPLETED) {
+        val action = intent?.action
+        if (action == Intent.ACTION_BOOT_COMPLETED || action == Intent.ACTION_MY_PACKAGE_REPLACED) {
             if (ReadingReminder.isEnabled(appCtx)) {
                 ReadingReminder.scheduleNext(appCtx)
             }
@@ -33,18 +34,27 @@ class ReadingReminderReceiver : BroadcastReceiver() {
         // Re-schedule next day's reminder first.
         ReadingReminder.scheduleNext(appCtx)
 
-        val repo = LibraryRepository(appCtx)
-        val (alreadyReadToday, currentTitle) = try {
-            val books = repo.books()
-            val sessions = repo.sessions()
-            val dates = repo.dates()
-            ReadingHeatmap.hasReadToday(books, sessions, dates) to repo.current()?.title
-        } finally {
-            runCatching { repo.close() }
+        val pending = goAsync()
+        reminderExecutor.execute {
+            try {
+                val today = br.com.centralcasa.books.ReadingDays.at(System.currentTimeMillis())
+                val repo = LibraryRepository(appCtx)
+                val (alreadyReadToday, currentTitle) = try {
+                    repo.hasReadOnDay(today) to repo.current()?.title
+                } finally {
+                    runCatching { repo.close() }
+                }
+                if (!alreadyReadToday) {
+                    ReadingReminder.notifyUser(appCtx, currentTitle)
+                }
+            } finally {
+                pending.finish()
+            }
         }
-        if (alreadyReadToday) return
+    }
 
-        ReadingReminder.notifyUser(appCtx, currentTitle)
+    private companion object {
+        val reminderExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     }
 }
 

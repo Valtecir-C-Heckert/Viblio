@@ -11,12 +11,15 @@ root=Path(__file__).resolve().parent.parent
 path=root/'.env'
 if path.exists():
     raise SystemExit('.env já existe. Edite-o localmente para preservar sua chave e configuração.')
-address=input('Endereço da API acessível pelo celular (ex.: http://192.168.1.6:8088): ').strip().rstrip('/')
+address=input('Endereço da API acessível pelo celular (ex.: http://192.168.0.10:8088): ').strip().rstrip('/')
+if any(ord(c) < 32 or ord(c) == 127 or c in ("'", '"', ' ', '\t', '\r', '\n') for c in address):
+    raise SystemExit('Endereço inválido.')
 parsed=urlparse(address)
 if parsed.scheme not in ('http','https') or not parsed.hostname or parsed.username or parsed.query or parsed.fragment:
     raise SystemExit('Endereço inválido.')
 password=getpass.getpass('Senha do usuário viblio no PostgreSQL (não será exibida): ')
-if not password: raise SystemExit('A senha é necessária para conectar a API ao banco.')
+if not password or any(c in password for c in ('\r', '\n', '\x00')):
+    raise SystemExit('A senha é necessária e não pode conter quebras de linha.')
 # Quote values for Compose interpolation; literal dollar signs are escaped.
 def env(value): return "'"+value.replace("'","\\'").replace('$','$$')+"'"
 content='DATABASE_URL='+env('postgresql://viblio:'+quote(password,safe='')+'@postgres:5432/viblio')+'\n'

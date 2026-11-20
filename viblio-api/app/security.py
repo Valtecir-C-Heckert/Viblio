@@ -3,6 +3,8 @@
 Only direct socket peers and authenticated account IDs form buckets. Never trust
 arbitrary forwarding headers or raw bearer strings supplied by callers.
 """
+import ipaddress
+import os
 import re
 import hashlib
 import threading
@@ -11,7 +13,26 @@ from collections import OrderedDict
 from fastapi import HTTPException
 
 def is_discussion_stream(path, method):
-    return method=='GET' and re.fullmatch(r'/v1/clubs/[a-fA-F0-9-]{36}/stages/[a-fA-F0-9-]{36}/events',path) is not None
+    return method=='GET' and re.fullmatch(r'/v1/clubs/[a-fA-F0-9-]{32,36}/stages/[a-fA-F0-9-]{32,36}/events',path) is not None
+
+def client_peer(peer, headers=None):
+    """Use direct socket peer by default; only honor CF-Connecting-IP when explicitly enabled on loopback."""
+    host = peer or 'local'
+    if os.environ.get('VIBLIO_TRUST_CF_IP') == '1' and host in ('127.0.0.1', '::1') and headers is not None:
+        raw = None
+        if isinstance(headers, dict):
+            raw = headers.get('cf-connecting-ip') or headers.get('CF-Connecting-IP')
+        else:
+            for k, v in headers:
+                if k.lower() == b'cf-connecting-ip':
+                    raw = v.decode('latin-1', errors='ignore')
+                    break
+        if raw and len(raw) <= 64:
+            try:
+                return str(ipaddress.ip_address(raw.strip()))
+            except ValueError:
+                pass
+    return host
 
 class RateLimits:
     def __init__(self, maximum=8192, clock=time.monotonic):
@@ -39,7 +60,8 @@ class SecurityGate:
         self.auth=threading.BoundedSemaphore(4)
     async def __call__(self, scope, receive, send):
         if scope['type']!='http':return await self.app(scope,receive,send)
-        path=scope.get('path','');peer=(scope.get('client') or ('local',0))[0]
+        path=scope.get('path','');raw_peer=(scope.get('client') or ('local',0))[0]
+        peer=client_peer(raw_peer, scope.get('headers', []))
         stream=is_discussion_stream(path,scope['method'])
         group,limit=('live',120) if stream else ('auth',120) if path.startswith('/v1/auth/') else ('bulk',120) if path.startswith(('/v1/friends','/v1/clubs')) else ('bulk',60) if path.endswith('/library/sync') or (path=='/v1/books' and scope['method']=='POST') else ('read',600)
         key=hashlib.sha256(peer.encode()).hexdigest()
@@ -60,7 +82,7 @@ class SecurityGate:
                 if message['type']=='http.response.start':
                     values=list(message.get('headers',[]))
                     # Includes errors and gzip snapshots. Private responses never enter caches.
-                    if not path.startswith('/covers/'):
+                    if not path.startswith(('/covers/','/v1/covers/')):
                         values=[(k,v) for k,v in values if k.lower()!=b'cache-control']
                         values.extend([(b'cache-control',b'no-store'),(b'pragma',b'no-cache')])
                     values.extend([(b'x-content-type-options',b'nosniff'),(b'referrer-policy',b'no-referrer')])

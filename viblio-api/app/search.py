@@ -95,6 +95,7 @@ def unified_search(db, columns: str, query: str, kind: str, limit: int, offset: 
             FROM public.valteca
             WHERE {k_sql}
               AND {' AND '.join(token_clauses)}
+            ORDER BY id
             LIMIT %s""",
         [*params, pool_limit],
     ).fetchall()
@@ -116,6 +117,7 @@ def unified_search(db, columns: str, query: str, kind: str, limit: int, offset: 
                       OR public.viblio_normalize(autor) %% public.viblio_normalize(%s)
                       OR public.viblio_normalize(saga) %% public.viblio_normalize(%s)
                   )
+                ORDER BY _sim DESC, id
                 LIMIT 100""",
             (query, query, query, query, query, query),
         ).fetchall()

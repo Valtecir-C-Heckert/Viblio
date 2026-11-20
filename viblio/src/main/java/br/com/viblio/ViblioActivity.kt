@@ -191,11 +191,13 @@ class ViblioActivity : Activity() {
     private fun openIncomingReading(incoming:Intent?) {
         if(incoming?.action!=Intent.ACTION_VIEW || incoming.data?.scheme!="viblio" || incoming.data?.host!="current") return
         if(needsLogin())return
+        // Consume deep link so configuration changes (rotation) never replay it.
+        if(intent===incoming) setIntent(Intent(this, ViblioActivity::class.java))
         val open={ switchTab("shelf");library.openCurrent();scroll.post { scroll.scrollTo(0,0) } }
         if(library.isEditor) AlertDialog.Builder(this).setTitle("Abrir livro atual?")
             .setMessage("Há um formulário em edição. Abrir a leitura descarta as alterações ainda não salvas.")
             .setPositiveButton("Abrir leitura") { _,_->open() }.setNegativeButton("Continuar editando",null).show()
-        else open()
+        else if(library.canReplaceLibrary) open()
     }
     private fun switchTab(destination:String) {
         if(tab==destination) return
@@ -374,5 +376,13 @@ class ViblioActivity : Activity() {
             return
         }
         library.onActivityResult(requestCode, resultCode, data)
+    }
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 935) {
+            val granted = grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED
+            statistics?.onReminderPermissionResult(granted)
+            library.onReminderPermissionResult(granted)
+        }
     }
 }

@@ -172,7 +172,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     init { repository.recover(); settings.migrateGenreColors() }
     fun onStart() { visible = true; handler.removeCallbacks(tick); handler.post(tick) }
     fun onStop() { stopManualScroll();captureEditor(); captureCollectionEditor(); visible = false; handler.removeCallbacks(tick); repository.checkpoint() }
-    fun onDestroy() { datesEditor.close();goalsPanel?.close();goalsPanel=null;annualPlanPanel?.close();annualPlanPanel=null;retrospectiveDialog?.close();retrospectiveDialog=null;progressDialog?.dismiss();progressDialog=null;destroyed = true;refreshSpines=null; if(useAsyncShelfImages || useSpineLayout) shelfThumbnails.close(); handler.removeCallbacksAndMessages(null); worker.execute { repository.close() }; worker.shutdown() }
+    fun onDestroy() { datesEditor.close();goalsPanel?.close();goalsPanel=null;annualPlanPanel?.close();annualPlanPanel=null;retrospectiveDialog?.destroy();retrospectiveDialog=null;progressDialog?.dismiss();progressDialog=null;destroyed = true;refreshSpines=null; if(useAsyncShelfImages || useSpineLayout) shelfThumbnails.close(); handler.removeCallbacksAndMessages(null); worker.execute { repository.close() }; worker.shutdown() }
     fun saveState(out: Bundle) {
         out.putBoolean("books.manualView",manualView)
         manualDraft?.let { out.putStringArrayList("books.manualDraft",ArrayList(it)) }
@@ -2409,13 +2409,18 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
             }.also {hmTop.addView(it,LinearLayout.LayoutParams(-2,-2).apply {marginStart=ui.dp(6)})}
 
             val hmSummary=ReadingHeatmap.forYear(heatmapYear,books,sessions,repository.dates())
+            val isCurrentYear=heatmapYear==java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
             val streakRow=row(hmBox)
             (streakRow.layoutParams as LinearLayout.LayoutParams).bottomMargin=ui.dp(10)
-            listOf(
+            val metrics=if(isCurrentYear) listOf(
                 format.format(hmSummary.totalActiveDays) to "dias em $heatmapYear",
                 format.format(hmSummary.currentStreak) to "sequência atual",
                 format.format(hmSummary.bestStreak) to "melhor sequência",
-            ).forEachIndexed { i,(v,cap)->
+            ) else listOf(
+                format.format(hmSummary.totalActiveDays) to "dias em $heatmapYear",
+                format.format(hmSummary.bestStreak) to "melhor sequência",
+            )
+            metrics.forEachIndexed { i,(v,cap)->
                 val cCol=ui.column();streakRow.addView(cCol,LinearLayout.LayoutParams(0,-2,1f))
                 heading(cCol,v,22).apply {if(i==0)setTextColor(mint);(layoutParams as LinearLayout.LayoutParams).bottomMargin=0}
                 label(cCol,cap,10,ui.muted).apply {(layoutParams as LinearLayout.LayoutParams).bottomMargin=0}
@@ -2470,19 +2475,34 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
             ui.label(legendRow,"+",9,ui.muted).apply {layoutParams=LinearLayout.LayoutParams(-2,-2).apply {marginStart=ui.dp(2)}}
         }
     }
-    private fun openReadingReminderDialog(){
-        val enabled=br.com.viblio.reminder.ReadingReminder.isEnabled(activity)
+    private var pendingReminderPicker=false
+    fun onReminderPermissionResult(granted:Boolean) {
+        if(!pendingReminderPicker || destroyed || activity.isFinishing || activity.isDestroyed) return
+        pendingReminderPicker=false
+        if(!granted) {
+            toast("Ative as notificações nas configurações do aparelho para receber o lembrete.")
+            return
+        }
+        showReminderTimePicker()
+    }
+    private fun showReminderTimePicker() {
         val curH=br.com.viblio.reminder.ReadingReminder.hour(activity)
         val curM=br.com.viblio.reminder.ReadingReminder.minute(activity)
+        android.app.TimePickerDialog(activity,{ _,h,m->
+            br.com.viblio.reminder.ReadingReminder.enable(activity,h,m)
+            toast("Lembrete diário ativado para ${br.com.viblio.reminder.ReadingReminder.label(activity)}.")
+            changed()
+        },curH,curM,true).show()
+    }
+    private fun openReadingReminderDialog(){
+        val enabled=br.com.viblio.reminder.ReadingReminder.isEnabled(activity)
         fun pickTime(){
             if(android.os.Build.VERSION.SDK_INT>=33 && activity.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED){
+                pendingReminderPicker=true
                 activity.requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),935)
+                return
             }
-            android.app.TimePickerDialog(activity,{ _,h,m->
-                br.com.viblio.reminder.ReadingReminder.enable(activity,h,m)
-                toast("Lembrete diário ativado para ${br.com.viblio.reminder.ReadingReminder.label(activity)}.")
-                changed()
-            },curH,curM,true).show()
+            showReminderTimePicker()
         }
         val msg=if(enabled) "Ativo às ${br.com.viblio.reminder.ReadingReminder.label(activity)}. Só avisa nos dias em que você ainda não leu." else "Receba um aviso diário discreto apenas nos dias em que ainda não registrou leitura."
         val b=AlertDialog.Builder(activity)

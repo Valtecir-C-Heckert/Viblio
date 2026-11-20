@@ -21,8 +21,9 @@ open class AccountConnection {
 }
 class DiscussionConnection:AccountConnection()
 class AccountFailure(val code:Int,val response:JsonObject,message:String):java.io.IOException(message)
-class AccountApi internal constructor(private val address:String,private val token:String,private val client:OkHttpClient) {
-    constructor(address:String,token:String=""):this(address,token,OkHttpClient.Builder().connectTimeout(6,TimeUnit.SECONDS).readTimeout(90,TimeUnit.SECONDS).callTimeout(120,TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build())
+class AccountApi internal constructor(private val address:String,private val token:String,private val client:OkHttpClient,private val ownsClient:Boolean) {
+    internal constructor(address:String,token:String,client:OkHttpClient):this(address,token,client,ownsClient=true)
+    constructor(address:String,token:String=""):this(address,token,br.com.centralcasa.books.catalog.ViblioHttp.account,ownsClient=false)
     init {require(CatalogApi.validAddress(address)) {"Use HTTPS ou o endereço privado/Tailscale do servidor."}}
     @Volatile private var closed=false
     private val activeCalls:MutableSet<okhttp3.Call> = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<okhttp3.Call,Boolean>())
@@ -43,12 +44,19 @@ class AccountApi internal constructor(private val address:String,private val tok
             val stream=requireNotNull(response.body).byteStream()
             val input=if(response.header("Content-Type").orEmpty().startsWith("application/gzip"))GZIPInputStream(stream) else stream
             val out=ByteArrayOutputStream();input.use {source->val buffer=ByteArray(8192);while(true){val n=source.read(buffer);if(n<0)break;require(out.size()+n<=responseLimit){"Resposta do servidor muito grande."};out.write(buffer,0,n)}}
-            val parsed=runCatching {JsonParser.parseString(out.toString("UTF-8")).asJsonObject}.getOrDefault(JsonObject())
+            val text=out.toString("UTF-8")
+            val parsed=runCatching {JsonParser.parseString(text).asJsonObject}.getOrNull()
             if(!response.isSuccessful){
-                if(response.code==404 && path.startsWith("/v1/auth/"))throw AccountFailure(404,parsed,"Atualize a API do servidor para habilitar contas.")
-                val detail=parsed.get("detail");val message=when {detail==null->"Servidor recusou a operação (HTTP ${response.code}).";detail.isJsonPrimitive->detail.asString;detail.isJsonObject->detail.asJsonObject.get("message")?.asString ?: "Confira os dados da conta.";else->"Confira os dados informados."}
-                throw AccountFailure(response.code,parsed,message)
-            };parsed
+                val errorBody=parsed ?: JsonObject()
+                if(response.code==404 && path.startsWith("/v1/auth/"))throw AccountFailure(404,errorBody,"Atualize a API do servidor para habilitar contas.")
+                val detail=errorBody.get("detail");val message=when {detail==null->"Servidor recusou a operação (HTTP ${response.code}).";detail.isJsonPrimitive->detail.asString;detail.isJsonObject->detail.asJsonObject.get("message")?.asString ?: "Confira os dados da conta.";else->"Confira os dados informados."}
+                throw AccountFailure(response.code,errorBody,message)
+            }
+            if(parsed==null){
+                if(text.isBlank() && response.code==204) return@execute JsonObject()
+                throw java.io.IOException("Resposta inválida do servidor. Tente novamente.")
+            }
+            parsed
         }}finally {connection?.detach()}
     }
     /** One authenticated SSE stream, independently cancellable from writes and cover loads. */
@@ -100,7 +108,7 @@ class AccountApi internal constructor(private val address:String,private val tok
         try {check(!closed){"Conexão encerrada."};return call.execute().use(read)}
         finally {activeCalls.remove(call)}
     }
-    fun cancel(){activeCalls.forEach {it.cancel()};client.dispatcher.cancelAll()}
+    fun cancel(){activeCalls.toList().forEach {it.cancel()};if(ownsClient)client.dispatcher.cancelAll()}
     fun cancel(tag:Any){
         if(tag is AccountConnection)tag.cancel()
         activeCalls.filter {it.request().tag()===tag}.forEach {it.cancel()}
@@ -108,6 +116,11 @@ class AccountApi internal constructor(private val address:String,private val tok
     @Synchronized fun close(){
         if(closed)return
         closed=true
+        if(!ownsClient){
+            val calls=activeCalls.toList()
+            if(calls.isNotEmpty()) client.dispatcher.executorService.execute { calls.forEach { it.cancel() } }
+            return
+        }
         // Closing an idle TLS socket writes close_notify. It must never run on the UI thread.
         client.dispatcher.executorService.execute {
             try {cancel();client.connectionPool.evictAll()}

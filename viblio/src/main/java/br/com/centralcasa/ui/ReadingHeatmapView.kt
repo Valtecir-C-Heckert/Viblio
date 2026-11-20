@@ -86,8 +86,9 @@ class ReadingHeatmapView(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (event.action == MotionEvent.ACTION_UP) {
-            val col = ((event.x - padX) / stepPx).toInt()
-            val row = ((event.y - headerH) / stepPx).toInt()
+            if (event.x < padX || event.y < headerH) return false
+            val col = kotlin.math.floor((event.x - padX) / stepPx).toInt()
+            val row = kotlin.math.floor((event.y - headerH) / stepPx).toInt()
             if (col in summary.weeks.indices && row in 0..6) {
                 val day = summary.weeks[col][row]
                 if (day != null) {

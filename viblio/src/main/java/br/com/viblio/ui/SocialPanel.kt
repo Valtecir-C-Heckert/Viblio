@@ -104,7 +104,6 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     }
     private fun clearBackdrop(){
         backdropPath="";backdropRequest=""
-        backdropBitmap?.let {if(!it.isRecycled)it.recycle()}
         backdropBitmap=null
     }
     private fun ensureBackdrop(){
@@ -125,9 +124,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 handler.post {
                     if(backdropRequest==path)backdropRequest=""
                     if(active && !closed && identity==profile && who()==profile && club==selectedClub && stage==selectedStage && themeCover==path && rendered!=null){
-                        val previous=backdropBitmap
                         backdropBitmap=rendered;backdropPath=path
-                        if(previous!=null && previous!==rendered && !previous.isRecycled)previous.recycle()
                         onBackdrop()
                     }else rendered?.recycle()
                 }
@@ -200,12 +197,13 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             }else {loaded=false;load()}
         }
     }
+    private fun enc(v:String)=java.net.URLEncoder.encode(v,"UTF-8")
     private fun load(more:Boolean=false,poll:Boolean=false){
         if(tab=="friends" && !people)return
         if(club!=null && !people && stage!=null && data.s("id").isBlank()){
-            request("/v1/clubs/$club"+(round?.let {"?round_id=$it"} ?: "")){response->data=response;stageInfo=data.list("stages",20).firstOrNull {it.s("id")==stage} ?: JsonObject();load()};return
+            request("/v1/clubs/$club"+(round?.let {"?round_id=${enc(it)}"} ?: "")){response->data=response;stageInfo=data.list("stages",20).firstOrNull {it.s("id")==stage} ?: JsonObject();load()};return
         }
-        val path=when {people->"/v1/friends/people"+(if(more && cursor!=null)"?cursor=$cursor" else "");tab=="feed"->"/v1/friends/feed"+(if(more && cursor!=null)"?cursor=$cursor" else "");club==null->"/v1/clubs";clubPage=="books"->"/v1/clubs/$club/books?q=${java.net.URLEncoder.encode(booksQuery,"UTF-8")}"+(if(more && cursor!=null)"&cursor=$cursor" else "");stage!=null->"/v1/clubs/$club/stages/$stage/messages"+(messageBefore?.let {"?before=$it"} ?: "");else->"/v1/clubs/$club"+(round?.let {"?round_id=$it"} ?: "")}
+        val path=when {people->"/v1/friends/people"+(if(more && cursor!=null)"?cursor=${enc(cursor!!)}" else "");tab=="feed"->"/v1/friends/feed"+(if(more && cursor!=null)"?cursor=${enc(cursor!!)}" else "");club==null->"/v1/clubs";clubPage=="books"->"/v1/clubs/$club/books?q=${enc(booksQuery)}"+(if(more && cursor!=null)"&cursor=${enc(cursor!!)}" else "");stage!=null->"/v1/clubs/$club/stages/$stage/messages"+(messageBefore?.let {"?before=${enc(it)}"} ?: "");else->"/v1/clubs/$club"+(round?.let {"?round_id=${enc(it)}"} ?: "")}
         request(path){response->
             val scroll=activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll);val position=scroll?.scrollY ?: 0
             if(tab=="feed" && !people){
@@ -225,7 +223,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         val client=api ?: return
         val epoch=++clubFeedEpoch;val profile=identity
         val connection=AccountConnection();clubFeedConnection?.cancel();clubFeedConnection=connection;clubFeedBusy=true
-        val path="/v1/clubs/$currentClub/feed?round_id=$roundId"+(if(more && clubFeedCursor!=null)"&cursor=$clubFeedCursor" else "")
+        val path="/v1/clubs/$currentClub/feed?round_id=${enc(roundId)}"+(if(more && clubFeedCursor!=null)"&cursor=${enc(clubFeedCursor!!)}" else "")
         clubFeedWorker.execute {
             val result=runCatching {SocialRequests.call(client,path,"GET",null,connection)}
             handler.post {
@@ -1044,7 +1042,8 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         var at=old?.s("discuss_at")?.let(::instant) ?: System.currentTimeMillis()+86400000
         val button=Button(activity).apply {text=date(at);setOnClickListener {pickDate(at){at=it;text=date(at)}}};body.addView(button)
         val open=CheckBox(activity).apply {text="Liberar comentários agora";isChecked=old?.y("is_open")==true;setTextColor(ui.text)};body.addView(open)
-        tracked(AlertDialog.Builder(activity).setTitle(if(old==null)"Nova etapa" else "Ajustar etapa").setView(body).setPositiveButton("Salvar"){_,_->mutate("/v1/clubs/$club/stages"+(old?.let {"/${it.s("id")}"} ?: ""),if(old==null)"POST" else "PATCH",JsonObject().apply {addProperty("page_limit",page.text.toString().toIntOrNull() ?: 0);addProperty("discuss_at",iso(at));addProperty("is_open",open.isChecked)})}.setNegativeButton("Cancelar",null).create())
+        val oldId=old?.let { id(it.s("id")) ?: return }
+        tracked(AlertDialog.Builder(activity).setTitle(if(old==null)"Nova etapa" else "Ajustar etapa").setView(body).setPositiveButton("Salvar"){_,_->mutate("/v1/clubs/$club/stages"+(oldId?.let {"/$it"} ?: ""),if(old==null)"POST" else "PATCH",JsonObject().apply {addProperty("page_limit",page.text.toString().toIntOrNull() ?: 0);addProperty("discuss_at",iso(at));addProperty("is_open",open.isChecked)})}.setNegativeButton("Cancelar",null).create())
     }
     private var composer:EditText?=null
     private var sendComment:TextView?=null

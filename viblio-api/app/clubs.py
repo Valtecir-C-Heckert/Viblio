@@ -75,7 +75,8 @@ def sync_club_progress(db,owner,snapshot):
         JOIN public.viblio_club_rounds r ON r.id=p.round_id AND r.state='reading'
         JOIN public.viblio_club_members m ON m.club_id=r.club_id AND m.user_id=p.user_id AND m.status='active'
         JOIN public.viblio_club_proposals b ON b.id=r.selected_id WHERE p.user_id=%s""",(owner,)).fetchall()
-    books={b['id']:b for b in snapshot['library'].get('books',[]) if not b.get('archived',False)}
+    archived_colls={c['id'] for c in snapshot['library'].get('collections',[]) if isinstance(c,dict) and c.get('archived',False) and 'id' in c}
+    books={b['id']:b for b in snapshot['library'].get('books',[]) if not b.get('archived',False) and b.get('collectionId','') not in archived_colls}
     for r in rows:
         b=books.get(r['book_id'])
         if b and b.get('pagesKnown',True) and b['totalPages']==r['pages'] and (not r['catalog_id'] or catalog(b)==r['catalog_id']):
@@ -192,7 +193,7 @@ def mount_clubs(app,connect,storage,current):
         c=uuid.uuid4()
         with connect() as db:
             db.execute('SELECT id FROM public.viblio_users WHERE id=%s FOR UPDATE',(user['id'],))
-            if db.execute('SELECT count(*) n FROM public.viblio_club_members WHERE user_id=%s',(user['id'],)).fetchone()['n']>=50:raise HTTPException(409,'Limite de 50 clubes.')
+            if db.execute("SELECT count(*) n FROM public.viblio_club_members WHERE user_id=%s AND status='active'",(user['id'],)).fetchone()['n']>=50:raise HTTPException(409,'Limite de 50 clubes.')
             db.execute('INSERT INTO public.viblio_clubs(id,name) VALUES (%s,%s)',(c,body.name));db.execute("INSERT INTO public.viblio_club_members(club_id,user_id,role,status) VALUES (%s,%s,'admin','active')",(c,user['id']));db.execute('INSERT INTO public.viblio_club_rounds(id,club_id) VALUES (%s,%s)',(uuid.uuid4(),c))
         return dict(id=str(c))
     @app.get('/v1/clubs/{c}')
@@ -204,12 +205,34 @@ def mount_clubs(app,connect,storage,current):
             access(db,c,user['id'],True)
             if not db.execute('SELECT id FROM public.viblio_users WHERE id=%s AND username IS NOT NULL FOR UPDATE',(body.user_id,)).fetchone():raise HTTPException(404,'Pessoa não encontrada.')
             if db.execute('SELECT count(*) n FROM public.viblio_club_members WHERE club_id=%s',(c,)).fetchone()['n']>=100:raise HTTPException(409,'Limite de 100 participantes.')
-            if db.execute('SELECT count(*) n FROM public.viblio_club_members WHERE user_id=%s',(body.user_id,)).fetchone()['n']>=50:raise HTTPException(409,'Essa pessoa atingiu o limite de clubes.')
+            if db.execute("SELECT count(*) n FROM public.viblio_club_members WHERE user_id=%s AND status='active'",(body.user_id,)).fetchone()['n']>=50:raise HTTPException(409,'Essa pessoa atingiu o limite de clubes.')
+            if db.execute("SELECT count(*) n FROM public.viblio_club_members WHERE user_id=%s AND status='invited'",(body.user_id,)).fetchone()['n']>=50:raise HTTPException(409,'Essa pessoa tem muitos convites pendentes.')
             db.execute("INSERT INTO public.viblio_club_members(club_id,user_id,role,status,invited_by) VALUES (%s,%s,'member','invited',%s) ON CONFLICT DO NOTHING",(c,body.user_id,user['id']))
         return dict(ok=True)
     @app.post('/v1/clubs/{c}/join')
     def join(c:uuid.UUID,user=Depends(current)):
-        with connect() as db:access(db,c,user['id'],invited=True);db.execute("UPDATE public.viblio_club_members SET status='active',joined_at=now() WHERE club_id=%s AND user_id=%s",(c,user['id']))
+        with connect() as db:
+            m=access(db,c,user['id'],invited=True)
+            if m['status']!='active':
+                db.execute('SELECT id FROM public.viblio_users WHERE id=%s FOR UPDATE',(user['id'],))
+                if db.execute("SELECT count(*) n FROM public.viblio_club_members WHERE user_id=%s AND status='active'",(user['id'],)).fetchone()['n']>=50:raise HTTPException(409,'Limite de 50 clubes.')
+                db.execute("UPDATE public.viblio_club_members SET status='active',joined_at=now() WHERE club_id=%s AND user_id=%s",(c,user['id']))
+                cur_round=db.execute("SELECT id,selected_id FROM public.viblio_club_rounds WHERE club_id=%s AND state='reading' ORDER BY created_at DESC LIMIT 1",(c,)).fetchone()
+                if cur_round and cur_round['selected_id']:
+                    db.execute("""INSERT INTO public.viblio_club_progress(round_id,user_id,page,book_id)
+                        SELECT %s,%s,coalesce((b.book->>'currentPage')::int,0),b.book->>'id'
+                        FROM public.viblio_club_proposals chosen
+                        LEFT JOIN LATERAL (
+                            SELECT (
+                                SELECT e FROM jsonb_array_elements(coalesce(s.snapshot->'library'->'books','[]'::jsonb)) e
+                                WHERE (%s=coalesce(chosen.source_user_id,chosen.proposed_by) AND e->>'id'=chosen.book_id OR chosen.catalog_id IS NOT NULL AND concat(e->>'catalogSource',':',e->>'catalogId')=chosen.catalog_id)
+                                AND (e->>'totalPages')::int=chosen.pages AND coalesce(e->>'archived','false')='false'
+                                AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(s.snapshot->'library'->'collections','[]'::jsonb)) parent WHERE parent->>'id'=e->>'collectionId' AND coalesce(parent->>'archived','false')='true')
+                                LIMIT 1
+                            ) book FROM public.viblio_library_bases s WHERE s.user_id=%s ORDER BY revision DESC LIMIT 1
+                        ) b ON true
+                        WHERE chosen.id=%s
+                        ON CONFLICT (round_id,user_id) DO NOTHING""",(cur_round['id'],user['id'],user['id'],user['id'],cur_round['selected_id']))
         return dict(ok=True)
     @app.patch('/v1/clubs/{c}/members/{other}')
     def role(c:uuid.UUID,other:uuid.UUID,body:Role,user=Depends(current)):
@@ -286,9 +309,11 @@ def mount_clubs(app,connect,storage,current):
             db.execute("UPDATE public.viblio_club_rounds SET state='reading',selected_id=%s,due_at=%s,started_at=now() WHERE id=%s",(body.proposal_id,body.due_at,r['id']))
             db.execute("""INSERT INTO public.viblio_club_progress(round_id,user_id,page,book_id)
                 SELECT %s,m.user_id,coalesce((b.book->>'currentPage')::int,0),b.book->>'id' FROM public.viblio_club_members m JOIN public.viblio_club_proposals chosen ON chosen.id=%s
-                LEFT JOIN LATERAL (SELECT (SELECT e FROM jsonb_array_elements(s.snapshot->'library'->'books') e
+                LEFT JOIN LATERAL (SELECT (SELECT e FROM jsonb_array_elements(coalesce(s.snapshot->'library'->'books','[]'::jsonb)) e
                     WHERE (m.user_id=coalesce(chosen.source_user_id,chosen.proposed_by) AND e->>'id'=chosen.book_id OR chosen.catalog_id IS NOT NULL AND concat(e->>'catalogSource',':',e->>'catalogId')=chosen.catalog_id)
-                    AND (e->>'totalPages')::int=chosen.pages AND coalesce(e->>'archived','false')='false' LIMIT 1) book FROM public.viblio_library_bases s WHERE s.user_id=m.user_id ORDER BY revision DESC LIMIT 1) b ON true
+                    AND (e->>'totalPages')::int=chosen.pages AND coalesce(e->>'archived','false')='false'
+                    AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(s.snapshot->'library'->'collections','[]'::jsonb)) parent WHERE parent->>'id'=e->>'collectionId' AND coalesce(parent->>'archived','false')='true')
+                    LIMIT 1) book FROM public.viblio_library_bases s WHERE s.user_id=m.user_id ORDER BY revision DESC LIMIT 1) b ON true
                 WHERE m.club_id=%s AND m.status='active'""",(r['id'],body.proposal_id,c))
             club_event(db,r['id'],user['id'],'started',dict(title=chosen['title']))
             db.execute('UPDATE public.viblio_club_proposals SET cover=NULL WHERE round_id=%s AND id<>%s',(r['id'],body.proposal_id))
@@ -338,8 +363,9 @@ def mount_clubs(app,connect,storage,current):
     def edit_stage(c:uuid.UUID,identifier:uuid.UUID,body:Stage,user=Depends(current)):
         with connect() as db:
             access(db,c,user['id'],True)
-            r=db.execute('SELECT s.*,r.due_at FROM public.viblio_club_stages s JOIN public.viblio_club_rounds r ON r.id=s.round_id WHERE s.id=%s AND r.club_id=%s',(identifier,c)).fetchone()
+            r=db.execute('SELECT s.*,r.due_at,r.state FROM public.viblio_club_stages s JOIN public.viblio_club_rounds r ON r.id=s.round_id WHERE s.id=%s AND r.club_id=%s',(identifier,c)).fetchone()
             if not r:raise HTTPException(404,'Etapa não encontrada.')
+            if r['state']!='reading':raise HTTPException(409,'Não é possível editar etapas de uma leitura encerrada.')
             if body.page_limit!=r['page_limit'] or body.discuss_at>r['due_at']:raise HTTPException(422,'Mantenha a página da etapa e uma data dentro do prazo do livro.')
             db.execute('UPDATE public.viblio_club_stages SET discuss_at=%s,is_open=%s WHERE id=%s',(body.discuss_at,body.is_open,identifier))
         events.publish(c,identifier)
@@ -381,7 +407,7 @@ def mount_clubs(app,connect,storage,current):
             finally:events.unsubscribe(key)
         return StreamingResponse(stream(),media_type='text/event-stream',headers={'Cache-Control':'no-store','X-Accel-Buffering':'no'},background=BackgroundTask(events.unsubscribe,key))
     @app.get('/v1/clubs/{c}/stages/{identifier}/messages')
-    def messages(c:uuid.UUID,identifier:uuid.UUID,before:int|None=Query(None,ge=1),user=Depends(current)):
+    def messages(c:uuid.UUID,identifier:uuid.UUID,before:int|None=Query(None,ge=1,le=2**63-1),user=Depends(current)):
         with connect() as db:
             r,role=discussion(db,c,identifier,user['id'],lock=False)
             if not r['opened']:raise HTTPException(403,'A discussão ainda não abriu.')
@@ -408,6 +434,7 @@ def mount_clubs(app,connect,storage,current):
         return dict(ok=True,id=created['id'])
     @app.delete('/v1/clubs/{c}/stages/{identifier}/messages/{message}')
     def delete_message(c:uuid.UUID,identifier:uuid.UUID,message:int,user=Depends(current)):
+        if not 1<=message<2**63:raise HTTPException(422,'Mensagem inválida.')
         with connect() as db:
             _,role=discussion(db,c,identifier,user['id']);r=db.execute('SELECT user_id FROM public.viblio_club_messages WHERE id=%s AND stage_id=%s',(message,identifier)).fetchone()
             if not r or r['user_id']!=user['id'] and role['role']!='admin':raise HTTPException(403,'Você não pode apagar esta mensagem.')
@@ -428,10 +455,12 @@ def mount_clubs(app,connect,storage,current):
             rows=db.execute("""SELECT m.user_id,u.username,s.revision,e.book FROM public.viblio_club_members m
                 JOIN public.viblio_users u ON u.id=m.user_id
                 JOIN LATERAL (SELECT revision,snapshot FROM public.viblio_library_bases WHERE user_id=m.user_id ORDER BY revision DESC LIMIT 1) s ON true
-                CROSS JOIN LATERAL jsonb_array_elements(s.snapshot->'library'->'books') e(book)
+                JOIN LATERAL (SELECT coalesce(array_agg(parent->>'id') FILTER (WHERE coalesce(parent->>'archived','false')='true'), ARRAY[]::text[]) archived_colls
+                    FROM jsonb_array_elements(coalesce(s.snapshot->'library'->'collections','[]'::jsonb)) parent) ac ON true
+                CROSS JOIN LATERAL jsonb_array_elements(coalesce(s.snapshot->'library'->'books','[]'::jsonb)) e(book)
                 WHERE m.club_id=%s AND m.status='active' AND coalesce(e.book->>'archived','false')='false'
                 AND coalesce(e.book->>'pagesKnown','true')='true'
-                AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(s.snapshot->'library'->'collections') parent WHERE parent->>'id'=e.book->>'collectionId' AND coalesce(parent->>'archived','false')='true')
+                AND NOT (coalesce(e.book->>'collectionId','') = ANY(ac.archived_colls))
                 AND strpos(lower(concat(e.book->>'title',' ',e.book->>'author')),lower(%s))>0
                 AND (%s::uuid IS NULL OR (m.user_id,e.book->>'id')>(%s::uuid,%s::text))
                 ORDER BY m.user_id,e.book->>'id' LIMIT 41""",(c,q,after_owner,after_owner,after_book)).fetchall()
@@ -441,7 +470,7 @@ def mount_clubs(app,connect,storage,current):
         next_cursor=base64.urlsafe_b64encode(json.dumps([str(rows[39]['user_id']),rows[39]['book']['id']]).encode()).decode().rstrip('=') if len(rows)>40 else None
         return dict(items=[project(r) for r in rows[:40]],next_cursor=next_cursor)
     @app.get('/v1/clubs/{c}/library-cover')
-    def library_cover(c:uuid.UUID,owner_id:uuid.UUID,book_id:str=Query(...,min_length=1,max_length=200),revision:int=Query(...,ge=1),user=Depends(current)):
+    def library_cover(c:uuid.UUID,owner_id:uuid.UUID,book_id:str=Query(...,min_length=1,max_length=200),revision:int=Query(...,ge=1,le=2**63-1),user=Depends(current)):
         with connect() as db:
             access(db,c,user['id'],lock=False)
             if not db.execute("SELECT 1 FROM public.viblio_club_members WHERE club_id=%s AND user_id=%s AND status='active'",(c,owner_id)).fetchone():raise HTTPException(404,'Estante indisponível.')
@@ -462,10 +491,12 @@ def mount_clubs(app,connect,storage,current):
         with connect() as db:
             access(db,c,user['id'],lock=False);r=latest(db,c,round_id)
             rows=db.execute("""WITH round_act AS MATERIALIZED (
-                SELECT a.id,a.occurred_at,a.user_id,a.book_id,a.kind,a.data
+                SELECT a.id,a.occurred_at,a.user_id,a.book_id,a.kind,
+                       (a.data - ARRAY['rating','duration_ms','total_duration_ms']) AS data
                 FROM public.viblio_activity a
                 JOIN public.viblio_club_members eligible ON eligible.club_id=%s AND eligible.user_id=a.user_id AND eligible.status='active'
-                WHERE a.occurred_at>=%s AND (%s::timestamptz IS NULL OR a.occurred_at<=%s)),
+                WHERE a.kind IN ('started','read','finished')
+                  AND a.occurred_at>=%s AND (%s::timestamptz IS NULL OR a.occurred_at<=%s)),
                 act_users AS MATERIALIZED (SELECT DISTINCT user_id FROM round_act),
                 act_bases AS MATERIALIZED (
                     SELECT DISTINCT ON (s.user_id) s.user_id,s.snapshot
@@ -474,10 +505,12 @@ def mount_clubs(app,connect,storage,current):
                 matched_books AS MATERIALIZED (
                     SELECT ab.user_id,e->>'id' book_id
                     FROM act_bases ab
+                    JOIN LATERAL (SELECT coalesce(array_agg(parent->>'id') FILTER (WHERE coalesce(parent->>'archived','false')='true'), ARRAY[]::text[]) archived_colls
+                        FROM jsonb_array_elements(coalesce(ab.snapshot->'library'->'collections','[]'::jsonb)) parent) ac ON true
                     JOIN public.viblio_club_proposals selected ON selected.id=%s
-                    CROSS JOIN LATERAL jsonb_array_elements(ab.snapshot->'library'->'books') e
+                    CROSS JOIN LATERAL jsonb_array_elements(coalesce(ab.snapshot->'library'->'books','[]'::jsonb)) e
                     WHERE coalesce(e->>'archived','false')='false'
-                    AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(ab.snapshot->'library'->'collections') parent WHERE parent->>'id'=e->>'collectionId' AND coalesce(parent->>'archived','false')='true')
+                    AND NOT (coalesce(e->>'collectionId','') = ANY(ac.archived_colls))
                     AND (ab.user_id=coalesce(selected.source_user_id,selected.proposed_by) AND e->>'id'=selected.book_id
                         OR selected.catalog_id IS NOT NULL AND concat(e->>'catalogSource',':',e->>'catalogId')=selected.catalog_id AND (e->>'totalPages')::int=selected.pages)),
                 timeline AS (
