@@ -83,7 +83,7 @@ def _extract_profile(library: dict | None):
         if nt:
             owned_keys.add((nt, na))
 
-    current_id = library.get('currentId')
+    current_id = library.get('currentBookId') or library.get('currentId')
     anchor = None
     anchor_kind = 'none'
     if current_id:

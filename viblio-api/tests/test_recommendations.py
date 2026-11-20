@@ -39,7 +39,7 @@ def test_recommendations_anchor_on_current_book_and_exclude_owned(api):
         totalPages=328,
         pagesKnown=True,
     )
-    snap['library']['currentId'] = 'cur-1984'
+    snap['library']['currentBookId'] = 'cur-1984'
     result(sync(api, a, snap))
 
     rec = get(api, a, '/v1/books/recommendations?kind=book')
