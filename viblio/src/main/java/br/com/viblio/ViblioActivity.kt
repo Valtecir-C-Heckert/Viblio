@@ -166,7 +166,11 @@ class ViblioActivity : Activity() {
         composerDock=this@ViblioActivity.composerDock
         onBackdrop={if(tab=="friends" && !needsLogin())applyBackground(displayTheme)}
     }
-    private fun makeLibrary()=BooksPanel(this,ui,{homeAssistant.changed();accounts.localChanged();if(tab=="shelf")render()}).apply {
+    private fun refreshWidgetsAsync() {
+        val ctx = applicationContext
+        navigationCovers.execute { runCatching { br.com.viblio.widget.BaseViblioReadingWidget.refreshAll(ctx) } }
+    }
+    private fun makeLibrary()=BooksPanel(this,ui,{homeAssistant.changed();accounts.localChanged();refreshWidgetsAsync();if(tab=="shelf")render()}).apply {
         onAccount={switchTab("account")}
         jsonAllowed={accounts.signedIn && accounts.admin};useGroupedReadingHistory=true;useContrastCoverBorders=true;useSpineLayout=true;useCollectionInventory=true;useAsyncShelfImages=true;useCoverProgressColor=true;useManualShelfOrder=true;usePersonalArchive=true;separateShelfStatistics=true;pinchStep=1.4
     }
@@ -175,9 +179,10 @@ class ViblioActivity : Activity() {
         if(!accounts.signedIn)offline=false
         library.onStop();library.onDestroy();statistics?.onDestroy();statistics=null
         search.close();catalog.close();friends.close();friends=makeFriends()
-        catalog=br.com.viblio.catalog.ViblioCatalog(this,changed={force->accounts.localChanged();if(force || tab=="shelf" && !library.isEditor)render()},personalToken=accounts::catalogToken,personalMode=accounts::personalMode,scanner={launchIsbnScanner("editor")})
+        catalog=br.com.viblio.catalog.ViblioCatalog(this,changed={force->accounts.localChanged();refreshWidgetsAsync();if(force || tab=="shelf" && !library.isEditor)render()},personalToken=accounts::catalogToken,personalMode=accounts::personalMode,scanner={launchIsbnScanner("editor")})
         search=makeSearch();homeAssistant.close();homeAssistant=br.com.viblio.homeassistant.HomeAssistantBridge(this)
         library=makeLibrary().apply {catalog=this@ViblioActivity.catalog}
+        refreshWidgetsAsync()
         if(started){homeAssistant.start();if(tab=="shelf" && !needsLogin())library.onStart()};render()
     }
     public override fun onNewIntent(intent:Intent) {
@@ -338,8 +343,8 @@ class ViblioActivity : Activity() {
             .setPositiveButton("Abrir cadastro") { _,_->open() }.setNegativeButton("Continuar editando") { _,_->switchTab("shelf") }.show()
         else open()
     }
-    override fun onStart() { super.onStart();stopped=false;accounts.start();homeAssistant.start();started=true;if(tab=="shelf" && !needsLogin()) library.onStart();catalog.retry();if(needsRender)render() }
-    override fun onStop() { stopped=true;accounts.stop();homeAssistant.stop();started=false;library.onStop();if(tab=="search") search.hide();if(tab=="friends")friends.hide();super.onStop() }
+    override fun onStart() { super.onStart();stopped=false;accounts.start();homeAssistant.start();started=true;if(tab=="shelf" && !needsLogin()) library.onStart();catalog.retry();if(br.com.viblio.reminder.ReadingReminder.isEnabled(this)) br.com.viblio.reminder.ReadingReminder.scheduleNext(this);if(needsRender)render() }
+    override fun onStop() { stopped=true;accounts.stop();homeAssistant.stop();started=false;library.onStop();if(tab=="search") search.hide();if(tab=="friends")friends.hide();refreshWidgetsAsync();super.onStop() }
     override fun onResume() { super.onResume();if(tab=="search" || tab=="friends") render() }
     override fun onDestroy() { introView?.cancel();introView=null;navigationCovers.shutdownNow();accounts.close();homeAssistant.close();search.close();catalog.close();friends.close();statistics?.onDestroy();library.onDestroy();super.onDestroy() }
     override fun onSaveInstanceState(outState:Bundle) {

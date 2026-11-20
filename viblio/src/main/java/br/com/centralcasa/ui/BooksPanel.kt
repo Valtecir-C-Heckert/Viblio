@@ -79,6 +79,9 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     private val statisticsExpanded=mutableSetOf<String>()
     private var goalsPanel:ReadingGoalsPanel?=null
     private var annualPlanPanel:AnnualPlanPanel?=null
+    private var retrospectiveDialog:RetrospectiveDialog?=null
+    private var heatmapYear=java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+    private var heatmapSelectedDay:String?=null
     private var progressDialog:AlertDialog?=null
     private var manualScrollDirection=0
     private val manualAutoScroll=object:Runnable {
@@ -169,7 +172,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     init { repository.recover(); settings.migrateGenreColors() }
     fun onStart() { visible = true; handler.removeCallbacks(tick); handler.post(tick) }
     fun onStop() { stopManualScroll();captureEditor(); captureCollectionEditor(); visible = false; handler.removeCallbacks(tick); repository.checkpoint() }
-    fun onDestroy() { datesEditor.close();goalsPanel?.close();goalsPanel=null;annualPlanPanel?.close();annualPlanPanel=null;progressDialog?.dismiss();progressDialog=null;destroyed = true;refreshSpines=null; if(useAsyncShelfImages || useSpineLayout) shelfThumbnails.close(); handler.removeCallbacksAndMessages(null); worker.execute { repository.close() }; worker.shutdown() }
+    fun onDestroy() { datesEditor.close();goalsPanel?.close();goalsPanel=null;annualPlanPanel?.close();annualPlanPanel=null;retrospectiveDialog?.close();retrospectiveDialog=null;progressDialog?.dismiss();progressDialog=null;destroyed = true;refreshSpines=null; if(useAsyncShelfImages || useSpineLayout) shelfThumbnails.close(); handler.removeCallbacksAndMessages(null); worker.execute { repository.close() }; worker.shutdown() }
     fun saveState(out: Bundle) {
         out.putBoolean("books.manualView",manualView)
         manualDraft?.let { out.putStringArrayList("books.manualDraft",ArrayList(it)) }
@@ -2123,6 +2126,17 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
             background=null;setTextColor(mint);gravity=Gravity.CENTER;minHeight=ui.dp(44);textSize=11f
             layoutParams=LinearLayout.LayoutParams(-1,-2);setPadding(0,ui.dp(6),0,ui.dp(6))
         }
+        if(ui.rectilinear && (readingPeriodUnit==ReadingPeriodUnit.MONTH || readingPeriodUnit==ReadingPeriodUnit.YEAR)){
+            ui.action(controls,"Gerar retrospectiva"){
+                val dlg=retrospectiveDialog ?: RetrospectiveDialog(activity,ui,repository).also {retrospectiveDialog=it}
+                val title=if(readingPeriodUnit==ReadingPeriodUnit.YEAR)"Meu ano em livros" else "Meu mês em livros"
+                val slug="viblio_${range.start.replace("-","")}_${readingPeriodUnit.name.lowercase(Locale.US)}"
+                dlg.showRange(range,title,slug)
+            }.apply {
+                minHeight=ui.dp(38);textSize=11f
+                layoutParams=LinearLayout.LayoutParams(-1,ui.dp(38)).apply {bottomMargin=ui.dp(4)}
+            }
+        }
         fun card(title:String)=ui.column().apply {
             setPadding(ui.dp(20),ui.dp(16),ui.dp(20),ui.dp(16));parent.addView(this,LinearLayout.LayoutParams(-1,-2))
             ui.label(this,title,22).typeface=Typeface.create("serif",Typeface.NORMAL)
@@ -2323,6 +2337,165 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
         }
         distribution("Gêneros","stats",BookClassificationStats.genres(books))
         distribution("Subgêneros","classification-tag",BookClassificationStats.subgenres(books))
+
+        if(ui.rectilinear){
+            // 1) Retrospectiva (logo acima de Dias lidos, no final de Resumo)
+            val retroWrap=ui.column().apply {setPadding(ui.dp(20),ui.dp(10),ui.dp(20),ui.dp(8))}
+            parent.addView(retroWrap,LinearLayout.LayoutParams(-1,-2))
+            val retroCard=row(retroWrap).apply {
+                tag="statistics-retrospective-card"
+                gravity=Gravity.CENTER_VERTICAL
+                setPadding(ui.dp(12),ui.dp(10),ui.dp(12),ui.dp(10))
+                background=ui.outlined(ui.surface,ui.lineColor,0)
+                isFocusable=true
+                setOnClickListener {
+                    val dlg=retrospectiveDialog ?: RetrospectiveDialog(activity,ui,repository).also {retrospectiveDialog=it}
+                    dlg.showYear(heatmapYear)
+                }
+            }
+            val retroLeft=ui.column()
+            retroCard.addView(retroLeft,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(10)})
+            ui.label(retroLeft,"RETROSPECTIVA $heatmapYear",10,mint,true).apply {
+                letterSpacing=0.08f
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin=ui.dp(2)
+            }
+            ui.label(retroLeft,"Gerar cartão visual para salvar ou compartilhar",11,ui.muted).apply {
+                maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin=0
+            }
+            TextView(activity).apply {
+                text="Abrir ›"
+                textSize=11f
+                setTextColor(ui.background)
+                typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                background=ui.shape(mint,0)
+                setPadding(ui.dp(10),ui.dp(6),ui.dp(10),ui.dp(6))
+            }.also {retroCard.addView(it,LinearLayout.LayoutParams(-2,-2))}
+
+            // 2) Mapa de Dias Lidos (Heatmap anual + sequência + lembrete diário opcional) por último em Resumo
+            val hmSection=ui.column().apply {tag="statistics-heatmap";setPadding(ui.dp(20),ui.dp(10),ui.dp(20),ui.dp(16))}
+            parent.addView(hmSection,LinearLayout.LayoutParams(-1,-2))
+            val hmBox=ui.column().apply {
+                setPadding(ui.dp(12),ui.dp(12),ui.dp(12),ui.dp(12))
+                background=ui.outlined(ui.surface,ui.lineColor,0)
+            }
+            hmSection.addView(hmBox,LinearLayout.LayoutParams(-1,-2))
+
+            val hmTop=row(hmBox).apply {gravity=Gravity.CENTER_VERTICAL}
+            (hmTop.layoutParams as LinearLayout.LayoutParams).bottomMargin=ui.dp(8)
+            heading(hmTop,"Dias lidos · $heatmapYear",18).apply {
+                layoutParams=LinearLayout.LayoutParams(0,-2,1f)
+            }
+            val prevYearBtn=TextView(activity).apply {
+                text="‹";textSize=17f;setTextColor(mint);setPadding(ui.dp(7),ui.dp(2),ui.dp(7),ui.dp(2))
+                setOnClickListener {heatmapYear=(heatmapYear-1).coerceAtLeast(2020);heatmapSelectedDay=null;changed()}
+            }
+            val nextYearBtn=TextView(activity).apply {
+                text="›";textSize=17f;setTextColor(mint);setPadding(ui.dp(7),ui.dp(2),ui.dp(7),ui.dp(2))
+                setOnClickListener {heatmapYear=(heatmapYear+1).coerceAtMost(2100);heatmapSelectedDay=null;changed()}
+            }
+            hmTop.addView(prevYearBtn)
+            hmTop.addView(nextYearBtn)
+
+            val remOn=br.com.viblio.reminder.ReadingReminder.isEnabled(activity)
+            TextView(activity).apply {
+                tag="reading-reminder-btn"
+                text=if(remOn) "Lembrete ${br.com.viblio.reminder.ReadingReminder.label(activity)}" else "Lembrete"
+                textSize=10f
+                setTextColor(if(remOn) mint else ui.muted)
+                background=ui.outlined(if(remOn) ui.activeSurface else ui.surface, if(remOn) mint else ui.lineColor, 0)
+                setPadding(ui.dp(7),ui.dp(4),ui.dp(7),ui.dp(4))
+                setOnClickListener { openReadingReminderDialog() }
+            }.also {hmTop.addView(it,LinearLayout.LayoutParams(-2,-2).apply {marginStart=ui.dp(6)})}
+
+            val hmSummary=ReadingHeatmap.forYear(heatmapYear,books,sessions,repository.dates())
+            val streakRow=row(hmBox)
+            (streakRow.layoutParams as LinearLayout.LayoutParams).bottomMargin=ui.dp(10)
+            listOf(
+                format.format(hmSummary.totalActiveDays) to "dias em $heatmapYear",
+                format.format(hmSummary.currentStreak) to "sequência atual",
+                format.format(hmSummary.bestStreak) to "melhor sequência",
+            ).forEachIndexed { i,(v,cap)->
+                val cCol=ui.column();streakRow.addView(cCol,LinearLayout.LayoutParams(0,-2,1f))
+                heading(cCol,v,22).apply {if(i==0)setTextColor(mint);(layoutParams as LinearLayout.LayoutParams).bottomMargin=0}
+                label(cCol,cap,10,ui.muted).apply {(layoutParams as LinearLayout.LayoutParams).bottomMargin=0}
+            }
+
+            val dayDetailLabel=TextView(activity).apply {
+                textSize=10.5f
+                setTextColor(ui.muted)
+                maxLines=2
+                ellipsize=android.text.TextUtils.TruncateAt.END
+            }
+            fun describeDay(day:String?):String {
+                if(day==null) return "Toque em um dia para ver detalhes"
+                val act=hmSummary.daysByDate[day]
+                val pretty=runCatching {ReadingDays.label(day)}.getOrDefault(day)
+                if(act==null) return "$pretty · Sem leitura registrada"
+                val parts=mutableListOf(pretty)
+                if(act.pages>0) parts.add("${format.format(act.pages)} págs.")
+                if(act.durationMs>0L) parts.add(compactReadingTime(act.durationMs))
+                if(act.bookTitles.isNotEmpty()) parts.add(act.bookTitles.take(2).joinToString(", "))
+                return parts.joinToString(" · ")
+            }
+            dayDetailLabel.text=describeDay(heatmapSelectedDay)
+
+            val hmScroll=HorizontalScrollView(activity).apply {isHorizontalScrollBarEnabled=false}
+            val hmView=ReadingHeatmapView(activity,ui,hmSummary,mint,heatmapSelectedDay){ pickedDay->
+                heatmapSelectedDay=pickedDay
+                dayDetailLabel.text=describeDay(pickedDay)
+            }
+            hmScroll.addView(hmView)
+            hmBox.addView(hmScroll,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(8)})
+            val curCal=java.util.Calendar.getInstance()
+            val focusMonth=if(heatmapYear==curCal.get(java.util.Calendar.YEAR)) curCal.get(java.util.Calendar.MONTH)+1 else 12
+            hmScroll.post {
+                val targetX=(hmView.xForMonth(focusMonth)-ui.dp(120)).coerceAtLeast(0)
+                hmScroll.scrollTo(targetX,0)
+            }
+
+            val footRow=row(hmBox).apply {gravity=Gravity.CENTER_VERTICAL}
+            footRow.addView(dayDetailLabel,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)})
+            val legendRow=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+            footRow.addView(legendRow,LinearLayout.LayoutParams(-2,-2))
+            ui.label(legendRow,"-",9,ui.muted).apply {layoutParams=LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(3)}}
+            listOf(
+                0xFF202020.toInt(),
+                Color.argb(82,Color.red(mint),Color.green(mint),Color.blue(mint)),
+                Color.argb(165,Color.red(mint),Color.green(mint),Color.blue(mint)),
+                mint,
+            ).forEach { col->
+                legendRow.addView(View(activity).apply {setBackgroundColor(col)},LinearLayout.LayoutParams(ui.dp(8),ui.dp(8)).apply {marginEnd=ui.dp(2)})
+            }
+            ui.label(legendRow,"+",9,ui.muted).apply {layoutParams=LinearLayout.LayoutParams(-2,-2).apply {marginStart=ui.dp(2)}}
+        }
+    }
+    private fun openReadingReminderDialog(){
+        val enabled=br.com.viblio.reminder.ReadingReminder.isEnabled(activity)
+        val curH=br.com.viblio.reminder.ReadingReminder.hour(activity)
+        val curM=br.com.viblio.reminder.ReadingReminder.minute(activity)
+        fun pickTime(){
+            if(android.os.Build.VERSION.SDK_INT>=33 && activity.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED){
+                activity.requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),935)
+            }
+            android.app.TimePickerDialog(activity,{ _,h,m->
+                br.com.viblio.reminder.ReadingReminder.enable(activity,h,m)
+                toast("Lembrete diário ativado para ${br.com.viblio.reminder.ReadingReminder.label(activity)}.")
+                changed()
+            },curH,curM,true).show()
+        }
+        val msg=if(enabled) "Ativo às ${br.com.viblio.reminder.ReadingReminder.label(activity)}. Só avisa nos dias em que você ainda não leu." else "Receba um aviso diário discreto apenas nos dias em que ainda não registrou leitura."
+        val b=AlertDialog.Builder(activity)
+            .setTitle("Lembrete diário de leitura")
+            .setMessage(msg)
+            .setPositiveButton(if(enabled)"Mudar horário" else "Escolher horário"){_,_->pickTime()}
+            .setNegativeButton("Fechar",null)
+        if(enabled) b.setNeutralButton("Desativar"){_,_->
+            br.com.viblio.reminder.ReadingReminder.disable(activity)
+            toast("Lembrete desativado.")
+            changed()
+        }
+        b.show()
     }
     private fun compactReadingTime(ms:Long):String {
         val seconds=ms.coerceAtLeast(0)/1000;val hours=seconds/3600;val minutes=seconds/60%60
