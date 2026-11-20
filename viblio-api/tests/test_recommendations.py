@@ -32,9 +32,9 @@ def _seed_catalog_books():
             )
 
 
-def test_recommendations_anchor_on_current_book_and_exclude_owned(api):
+def test_recommendations_anchor_isolation_editions_and_wishlist(api):
     _seed_catalog_books()
-    a, _, _ = setup(api)
+    a, b, _ = setup(api)
     snap = snapshot()
     snap['library']['books'][0].update(
         id='cur-1984',
@@ -60,26 +60,20 @@ def test_recommendations_anchor_on_current_book_and_exclude_owned(api):
     assert 'genre' in by_key
 
     all_ids = {item['id'] for s in rec['sections'] for item in s['items']}
-    # Owned book (1984) must never be recommended; manga must be excluded when kind=book.
     assert '770001' not in all_ids
     assert '770005' not in all_ids
     assert '770002' in {item['id'] for item in by_key['author']['items']}
     assert '770003' in {item['id'] for item in by_key['subgenre']['items']}
 
-    # Filtering by manga surfaces Akira Vol. 1.
     manga_rec = get(api, a, '/v1/books/recommendations?kind=manga')
     manga_ids = {item['id'] for s in manga_rec['sections'] for item in s['items']}
     assert '770005' in manga_ids
 
-
-def test_recommendations_strict_author_isolation_and_edition_exclusion(api):
-    _seed_catalog_books()
-    a, _, _ = setup(api)
-    snap = snapshot()
-    # User owns Alerta Vermelho (current) AND Vagabond Vol. 1 (other author in shelf).
-    snap['library']['books'] = [
+    # Martha Wells & Vagabond strict author isolation + edition/work_key exclusion on user B.
+    snap_b = snapshot()
+    snap_b['library']['books'] = [
         {
-            **snap['library']['books'][0],
+            **snap_b['library']['books'][0],
             'id': 'cur-martha',
             'catalogId': '770010',
             'title': 'Alerta Vermelho',
@@ -92,7 +86,7 @@ def test_recommendations_strict_author_isolation_and_edition_exclusion(api):
             'pagesKnown': True,
         },
         {
-            **snap['library']['books'][0],
+            **snap_b['library']['books'][0],
             'id': 'owned-vaga-1',
             'catalogId': '770014',
             'title': 'Vagabond Vol. 1',
@@ -107,34 +101,60 @@ def test_recommendations_strict_author_isolation_and_edition_exclusion(api):
             'pagesKnown': True,
         },
     ]
-    snap['library']['currentBookId'] = 'cur-martha'
-    result(sync(api, a, snap))
+    snap_b['library']['currentBookId'] = 'cur-martha'
+    result(sync(api, b, snap_b))
 
-    rec = get(api, a, '/v1/books/recommendations?kind=all')
-    by_key = {s['key']: s for s in rec['sections']}
-    assert 'author' in by_key
-    assert 'Martha Wells' in by_key['author']['title']
+    rec_b = get(api, b, '/v1/books/recommendations?kind=all')
+    by_key_b = {s['key']: s for s in rec_b['sections']}
+    assert 'author' in by_key_b and 'Martha Wells' in by_key_b['author']['title']
 
-    author_ids = {item['id'] for item in by_key['author']['items']}
-    all_ids = {item['id'] for s in rec['sections'] for item in s['items']}
-
-    # Both Martha Wells' other books ('Wells, Martha' and 'Martha Wells (Autor)') must appear!
+    author_ids = {item['id'] for item in by_key_b['author']['items']}
+    all_ids_b = {item['id'] for s in rec_b['sections'] for item in s['items']}
     assert {'770012', '770013'} == author_ids
-    # NEVER mix Takehiko Inoue (Vagabond) or H.G. Wells under Martha Wells!
     assert '770014' not in author_ids and '770015' not in author_ids and '770016' not in author_ids
-    # Neither the owned edition (770010) nor the alternate subtitle/work_key edition (770011) may appear anywhere!
-    assert '770010' not in all_ids and '770011' not in all_ids
-    # Owned Vagabond Vol. 1 must never appear anywhere.
-    assert '770014' not in all_ids
+    assert '770010' not in all_ids_b and '770011' not in all_ids_b and '770014' not in all_ids_b
 
-    # Live anchor hint for Vagabond Vol. 1 must recommend Vol. 2 (not hide Vol. 2 because Vol. 1 is owned!).
     vaga_rec = get(
         api,
-        a,
+        b,
         '/v1/books/recommendations?kind=manga&anchor_title=Vagabond+Vol.+1&anchor_author=Takehiko+Inoue&anchor_genre=A%C3%A7%C3%A3o&anchor_subgenre=Samurai',
     )
     vaga_author = {item['id'] for s in vaga_rec['sections'] if s['key'] == 'author' for item in s['items']}
     assert vaga_author == {'770015'}
+
+    # Wishlist CRUD, isolation & health checks reusing users A and B.
+    assert get(api, a, '/v1/me/wishlist')['items'] == []
+    bad = api.post(
+        '/v1/me/wishlist',
+        headers=headers(a),
+        json={'catalog_id': '770002', 'title': 'A Revolução dos Bichos', 'cover_url': 'javascript:alert(1)'},
+    )
+    assert bad.status_code == 422
+
+    created = api.post(
+        '/v1/me/wishlist',
+        headers=headers(a),
+        json={
+            'catalog_id': '770002',
+            'title': 'A Revolução dos Bichos',
+            'author': 'George Orwell',
+            'genre': 'Ficção Científica',
+            'subgenre': 'Sátira',
+            'pages': 152,
+            'cover_url': 'https://example.org/bichos.jpg',
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()['item']['id'] == '770002'
+    assert len(get(api, a, '/v1/me/wishlist')['items']) == 1
+    assert get(api, b, '/v1/me/wishlist')['items'] == []
+    assert api.delete('/v1/me/wishlist/770002', headers=headers(a)).status_code == 200
+    assert get(api, a, '/v1/me/wishlist')['items'] == []
+
+    health = get(api, a, '/v1/health')
+    assert health['api_version'] == 11
+    assert health['recommendations_api'] == 1
+    assert health['wishlist_api'] == 1
 
 
 def test_feed_records_added_book_but_skips_initial_sync_and_bulk_import(api):
@@ -178,48 +198,3 @@ def test_feed_records_added_book_but_skips_initial_sync_and_bulk_import(api):
     feed_after = get(api, a, '/v1/friends/feed')['items']
     assert len(feed_after) == 1
     assert feed_after[0]['book']['title'] == 'Condição Artificial'
-
-
-def test_wishlist_crud_isolation_and_validation(api):
-    a, b, _ = setup(api)
-    assert get(api, a, '/v1/me/wishlist')['items'] == []
-
-    # Invalid cover URL with credentials or javascript scheme must be rejected.
-    bad = api.post(
-        '/v1/me/wishlist',
-        headers=headers(a),
-        json={'catalog_id': '770002', 'title': 'A Revolução dos Bichos', 'cover_url': 'javascript:alert(1)'},
-    )
-    assert bad.status_code == 422
-
-    # Valid add + idempotent upsert.
-    created = api.post(
-        '/v1/me/wishlist',
-        headers=headers(a),
-        json={
-            'catalog_id': '770002',
-            'title': 'A Revolução dos Bichos',
-            'author': 'George Orwell',
-            'genre': 'Ficção Científica',
-            'subgenre': 'Sátira',
-            'pages': 152,
-            'cover_url': 'https://example.org/bichos.jpg',
-        },
-    )
-    assert created.status_code == 201
-    assert created.json()['item']['id'] == '770002'
-
-    # Isolated per user: user B cannot see user A's wishlist.
-    assert len(get(api, a, '/v1/me/wishlist')['items']) == 1
-    assert get(api, b, '/v1/me/wishlist')['items'] == []
-
-    # Delete removes item cleanly.
-    deleted = api.delete('/v1/me/wishlist/770002', headers=headers(a))
-    assert deleted.status_code == 200
-    assert get(api, a, '/v1/me/wishlist')['items'] == []
-
-    # Health advertises recommendations and wishlist APIs.
-    health = get(api, a, '/v1/health')
-    assert health['api_version'] == 11
-    assert health['recommendations_api'] == 1
-    assert health['wishlist_api'] == 1
