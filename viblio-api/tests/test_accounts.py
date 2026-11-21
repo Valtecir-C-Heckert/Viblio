@@ -251,3 +251,74 @@ def test_compact_spine_bases_merge_without_image_loss():
     base=compact(original);assert base['library']['books'][0]['spineData'].keys()=={'_cover_hash'}
     merged,conflicts=merge_snapshot(base,local,server)
     assert not conflicts and merged['library']['books'][0]['spineData'].endswith(',new') and merged['library']['books'][0]['currentPage']==40
+
+def _jpeg_bytes(size=(40,60),color=(90,40,120)):
+    import io
+    from PIL import Image
+    buf=io.BytesIO();Image.new('RGB',size,color).save(buf,'JPEG',quality=90)
+    return buf.getvalue()
+
+def test_media_endpoints_sync_isolation_and_backwards_compatibility(api):
+    import base64,hashlib
+    owner=admin(api);a=invited(api,owner);b=invited(api,owner)
+    assert api.get('/v1/me/library/status',headers=headers(a)).json()['media'] is True
+    cover_bytes=_jpeg_bytes((80,120),(180,40,40));cover_sha=hashlib.sha256(cover_bytes).hexdigest()
+    spine_bytes=_jpeg_bytes((24,140),(30,80,160));spine_sha=hashlib.sha256(spine_bytes).hexdigest()
+
+    # Check missing -> both missing
+    chk=api.post('/v1/me/media/check',headers=headers(a),json={'hashes':[cover_sha,spine_sha]})
+    assert chk.status_code==200 and chk.json()['missing']==[cover_sha,spine_sha]
+
+    # Syncing before uploading media -> 409 missing_media
+    data=snapshot()
+    data['library']['books'][0]['coverData']='media:'+cover_sha
+    data['library']['books'][0]['spineData']='media:'+spine_sha
+    media_headers={**headers(a),'X-Viblio-Media':'1'}
+    raw=gzip.compress(json.dumps(dict(request_id=str(uuid.uuid4()),base_revision=0,snapshot=data)).encode())
+    r_missing=api.post('/v1/me/library/sync',headers=media_headers,content=raw)
+    assert r_missing.status_code==409 and r_missing.json()['detail']['code']=='missing_media'
+
+    # Reject mismatched hash, non-JPEG and oversized image
+    assert api.put('/v1/me/media/'+cover_sha,headers=headers(a),content=spine_bytes).status_code==422
+    bad_png=b'\x89PNG\r\n\x1a\nxxxx';bad_sha=hashlib.sha256(bad_png).hexdigest()
+    assert api.put('/v1/me/media/'+bad_sha,headers=headers(a),content=bad_png).status_code==422
+    huge=_jpeg_bytes((2049,20));huge_sha=hashlib.sha256(huge).hexdigest()
+    assert api.put('/v1/me/media/'+huge_sha,headers=headers(a),content=huge).status_code==422
+
+    # Upload cover & spine cleanly, verify check returns empty and isolation against user b
+    assert api.put('/v1/me/media/'+cover_sha,headers=headers(a),content=cover_bytes).status_code==200
+    assert api.put('/v1/me/media/'+spine_sha,headers=headers(a),content=spine_bytes).status_code==200
+    assert api.post('/v1/me/media/check',headers=headers(a),json={'hashes':[cover_sha,spine_sha]}).json()['missing']==[]
+    dl=api.get('/v1/me/media/'+cover_sha,headers=headers(a))
+    assert dl.status_code==200 and dl.content==cover_bytes and 'immutable' in dl.headers.get('cache-control','')
+    assert api.get('/v1/me/media/'+cover_sha,headers=headers(b)).status_code==404
+
+    # Sync with X-Viblio-Media: 1 keeps compact media:<sha256> refs
+    raw2=gzip.compress(json.dumps(dict(request_id=str(uuid.uuid4()),base_revision=0,snapshot=data)).encode())
+    synced=result(api.post('/v1/me/library/sync',headers=media_headers,content=raw2))
+    assert synced['revision']==1
+    assert synced['snapshot']['library']['books'][0]['coverData']=='media:'+cover_sha
+    assert synced['snapshot']['library']['books'][0]['spineData']=='media:'+spine_sha
+
+    # Compact download for 0.8.0+ clients vs hydrated Base64 download for legacy <= 0.7.4 clients
+    compact_dl=json.loads(gzip.decompress(api.get('/v1/me/library',headers=media_headers).content))
+    assert compact_dl['library']['books'][0]['coverData']=='media:'+cover_sha
+    legacy_dl=json.loads(gzip.decompress(api.get('/v1/me/library',headers=headers(a)).content))
+    expected_cover_uri='data:image/jpeg;base64,'+base64.b64encode(cover_bytes).decode('ascii')
+    assert legacy_dl['library']['books'][0]['coverData']==expected_cover_uri
+
+def test_legacy_cover_hash_merges_with_media_ref_without_false_conflict(tmp_path):
+    import base64,hashlib
+    from app.personal_library import store_media_bytes
+    mdir=tmp_path/'media';mdir.mkdir()
+    jpeg=_jpeg_bytes((40,60),(10,120,40))
+    sha=store_media_bytes(mdir,jpeg)
+    uri='data:image/jpeg;base64,'+base64.b64encode(jpeg).decode('ascii')
+    original=snapshot();original['library']['books'][0]['coverData']=uri
+    base=compact(original)
+    local=copy.deepcopy(original);local['library']['books'][0]['coverData']='media:'+sha;local['library']['books'][0]['currentPage']=33
+    server=copy.deepcopy(original);server['library']['books'][0]['coverData']='media:'+sha;server['library']['books'][0]['rating']=4.5
+    merged,conflicts=merge_snapshot(base,local,server,media_dir=mdir)
+    assert not conflicts
+    assert merged['library']['books'][0]['coverData']=='media:'+sha
+    assert merged['library']['books'][0]['currentPage']==33 and merged['library']['books'][0]['rating']==4.5

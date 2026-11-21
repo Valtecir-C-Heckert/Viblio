@@ -184,4 +184,34 @@ class Viblio070FeaturesTest {
         val (fx, _) = br.com.viblio.camera.TouchStabilizer.dampenDelta(30f, 0f, fineThresholdPx = 10f)
         assertEquals(30f, fx, 0.01f)
     }
+
+    @Test
+    fun mediaRefCollectionExtractsValidDistinctHashesAndIgnoresLegacyOrInvalidValues() {
+        val h1 = "a".repeat(64)
+        val h2 = "b".repeat(64)
+        val h3 = "0123456789abcdef".repeat(4)
+        val snapshot = com.google.gson.JsonParser.parseString(
+            """
+            {
+              "library": {
+                "books": [
+                  { "id": "b1", "coverData": "media:$h1", "spineData": "media:$h2" },
+                  { "id": "b2", "coverData": "media:$h1", "spineData": "data:image/jpeg;base64,/9j/4AAQ" },
+                  { "id": "b3", "coverData": "media:../escape", "spineData": "media:${"A".repeat(64)}" }
+                ],
+                "collections": [
+                  { "id": "c1", "coverData": "media:$h3" },
+                  { "id": "c2", "coverData": "" }
+                ]
+              }
+            }
+            """.trimIndent()
+        ).asJsonObject
+        val hashes = br.com.viblio.account.AccountLibrary.collectMediaHashes(snapshot)
+        assertEquals(listOf(h1, h2, h3), hashes)
+        assertTrue(LibraryJson.MEDIA_REF_RE.matches("media:$h1"))
+        assertFalse(LibraryJson.MEDIA_REF_RE.matches("media:short"))
+        assertFalse(LibraryJson.MEDIA_REF_RE.matches("media:${"A".repeat(64)}"))
+        assertFalse(LibraryJson.MEDIA_REF_RE.matches("data:image/jpeg;base64,abc"))
+    }
 }

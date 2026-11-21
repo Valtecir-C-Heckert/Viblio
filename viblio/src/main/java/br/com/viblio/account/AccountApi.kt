@@ -28,7 +28,7 @@ class AccountApi internal constructor(private val address:String,private val tok
     @Volatile private var closed=false
     private val activeCalls:MutableSet<okhttp3.Call> = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<okhttp3.Call,Boolean>())
     private val picturesClient by lazy {client.newBuilder().readTimeout(10,TimeUnit.SECONDS).callTimeout(15,TimeUnit.SECONDS).build()}
-    fun call(path:String,method:String="GET",body:JsonObject?=null,gzip:Boolean=false,responseLimit:Int=34*1024*1024,timeoutSeconds:Long=0,tag:Any?=null,connection:AccountConnection?=null):JsonObject {
+    fun call(path:String,method:String="GET",body:JsonObject?=null,gzip:Boolean=false,responseLimit:Int=34*1024*1024,timeoutSeconds:Long=0,tag:Any?=null,connection:AccountConnection?=null,extraHeaders:Map<String,String> = emptyMap()):JsonObject {
         check(!closed){"Conexão encerrada."}
         val content=body?.toString()?.toByteArray()
         require(!gzip || content==null || content.size<=32*1024*1024) {"O backup excede 32 MB. Sua Estante local foi preservada."}
@@ -36,6 +36,7 @@ class AccountApi internal constructor(private val address:String,private val tok
         require(timeoutSeconds in 0..120){"Prazo da requisição inválido."}
         val request=Request.Builder().url(address.trimEnd('/')+path).tag(tag)
         if(token.isNotBlank())request.header("Authorization","Bearer $token")
+        extraHeaders.forEach {(k,v)->request.header(k,v)}
         if(method!="GET")request.method(method,(bytes ?: ByteArray(0)).toRequestBody((if(gzip)"application/gzip" else "application/json").toMediaType()))
         val call=client.newCall(request.build())
         if(timeoutSeconds>0)call.timeout().timeout(timeoutSeconds,TimeUnit.SECONDS)
@@ -97,9 +98,80 @@ class AccountApi internal constructor(private val address:String,private val tok
             check(response.isSuccessful && response.header("Content-Type").orEmpty().startsWith("image/jpeg")){"Capa indisponível."}
             val output=ByteArrayOutputStream();requireNotNull(response.body).byteStream().use {input->
                 val buffer=ByteArray(8192)
-                while(true){val count=input.read(buffer);if(count<0)break;require(output.size()+count<=96*1024){"Capa acima do limite."};output.write(buffer,0,count)}
+                while(true){val count=input.read(buffer);if(count<0)break;require(output.size()+count<=256*1024){"Capa acima do limite."};output.write(buffer,0,count)}
             };output.toByteArray()
         }
+    }
+    fun checkMedia(hashes:List<String>):List<String> {
+        check(!closed){"Conexão encerrada."}
+        val clean=hashes.distinct().onEach {require(it.matches(SHA_HEX_RE)){"Identificador de mídia inválido."}}
+        if(clean.isEmpty())return emptyList()
+        val missing=mutableListOf<String>()
+        for(batch in clean.chunked(500)){
+            val payload=JsonObject().apply {add("hashes",JsonArray().apply {batch.forEach(::add)})}
+            val resp=call("/v1/me/media/check","POST",payload,responseLimit=512*1024,timeoutSeconds=30)
+            resp.getAsJsonArray("missing")?.forEach {el->
+                val sha=el.asString
+                require(sha.matches(SHA_HEX_RE)){"Resposta de mídia inválida."}
+                missing.add(sha)
+            }
+        }
+        return missing
+    }
+    fun uploadMedia(sha256:String,jpegBytes:ByteArray) {
+        check(!closed){"Conexão encerrada."}
+        require(sha256.matches(SHA_HEX_RE)){"Identificador de mídia inválido."}
+        require(jpegBytes.size in 3..MAX_MEDIA_BYTES){"Imagem acima do limite permitido (12 MB)."}
+        val request=Request.Builder().url(address.trimEnd('/')+"/v1/me/media/$sha256")
+            .header("Authorization","Bearer $token")
+            .put(jpegBytes.toRequestBody("image/jpeg".toMediaType()))
+            .build()
+        val call=client.newCall(request)
+        call.timeout().timeout(60,TimeUnit.SECONDS)
+        execute(call) {response->
+            if(!response.isSuccessful){
+                val text=runCatching {response.body?.string().orEmpty()}.getOrDefault("")
+                val parsed=runCatching {JsonParser.parseString(text).asJsonObject}.getOrNull() ?: JsonObject()
+                val detail=parsed.get("detail")
+                val message=when {
+                    detail==null->"Não foi possível enviar a imagem (HTTP ${response.code})."
+                    detail.isJsonPrimitive->detail.asString
+                    detail.isJsonObject->detail.asJsonObject.get("message")?.asString ?: "Não foi possível enviar a imagem."
+                    else->"Não foi possível enviar a imagem."
+                }
+                throw AccountFailure(response.code,parsed,message)
+            }
+        }
+    }
+    fun downloadMedia(sha256:String):ByteArray {
+        check(!closed){"Conexão encerrada."}
+        require(sha256.matches(SHA_HEX_RE)){"Identificador de mídia inválido."}
+        val request=Request.Builder().url(address.trimEnd('/')+"/v1/me/media/$sha256")
+            .header("Authorization","Bearer $token")
+            .build()
+        val call=client.newCall(request)
+        call.timeout().timeout(60,TimeUnit.SECONDS)
+        return execute(call) {response->
+            if(!response.isSuccessful){
+                throw AccountFailure(response.code,JsonObject(),"Imagem indisponível no servidor (HTTP ${response.code}).")
+            }
+            check(response.header("Content-Type").orEmpty().startsWith("image/jpeg")){"Formato de imagem inválido."}
+            val output=ByteArrayOutputStream()
+            requireNotNull(response.body).byteStream().use {input->
+                val buffer=ByteArray(8192)
+                while(true){
+                    val count=input.read(buffer)
+                    if(count<0)break
+                    require(output.size()+count<=MAX_MEDIA_BYTES){"Imagem acima do limite permitido."}
+                    output.write(buffer,0,count)
+                }
+            }
+            output.toByteArray()
+        }
+    }
+    private companion object {
+        val SHA_HEX_RE=Regex("[a-f0-9]{64}")
+        const val MAX_MEDIA_BYTES=12*1024*1024
     }
     private fun <T> execute(call:okhttp3.Call,read:(okhttp3.Response)->T):T {
         // Dispatcher stops tracking synchronous calls when headers arrive. Keep them

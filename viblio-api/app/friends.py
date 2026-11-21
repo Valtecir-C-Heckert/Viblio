@@ -11,7 +11,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from PIL import Image
 from .accounts import normalize_username
-from .personal_library import MAX_PACKED, unpack
+from .personal_library import MAX_PACKED, read_image_bytes, unpack
 
 class FriendRequest(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -146,15 +146,14 @@ def mount_friends(app,connect,storage,current):
     @lru_cache(maxsize=256)
     def thumbnail(owner,filename,book_id):
         art=cover_sources(owner,filename).get(book_id,'')
-        if not isinstance(art,str) or not art.startswith('data:image/jpeg;base64,'):raise HTTPException(404,'Capa indisponível.')
+        data=read_image_bytes(root,owner,art)
+        if not data:raise HTTPException(404,'Capa indisponível.')
         try:
-            data=base64.b64decode(art.split(',',1)[1],validate=True)
-            if len(data)>12*1024*1024:raise ValueError()
             with Image.open(io.BytesIO(data)) as image:
                 if image.format!='JPEG' or max(image.size)>2048:raise ValueError()
-                image.thumbnail((160,240));out=io.BytesIO();image.convert('RGB').save(out,'JPEG',quality=80)
+                image.thumbnail((360,540));out=io.BytesIO();image.convert('RGB').save(out,'JPEG',quality=86)
             result=out.getvalue()
-            if len(result)>96*1024:raise ValueError()
+            if len(result)>256*1024:raise ValueError()
             return result
         except (ValueError,OSError,Image.DecompressionBombError):raise HTTPException(404,'Capa indisponível.') from None
     @app.get('/v1/friends/{other}/cover')

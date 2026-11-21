@@ -94,7 +94,7 @@ class SearchCoverLoader(context:Context) {
             }
             val dimensions=BitmapFactory.Options().apply { inJustDecodeBounds=true };BitmapFactory.decodeByteArray(bytes,0,bytes.size,dimensions)
             require(dimensions.outWidth>0 && dimensions.outHeight>0 && dimensions.outWidth.toLong()*dimensions.outHeight<=20_000_000)
-            val opts=BitmapFactory.Options().apply { inSampleSize=1 };while(dimensions.outWidth/opts.inSampleSize>256 || dimensions.outHeight/opts.inSampleSize>384) opts.inSampleSize*=2
+            val opts=BitmapFactory.Options().apply { inSampleSize=1 };while(dimensions.outWidth/(opts.inSampleSize*2)>=480 && dimensions.outHeight/(opts.inSampleSize*2)>=720) opts.inSampleSize*=2
             BitmapFactory.decodeByteArray(bytes,0,bytes.size,opts)
         } ?: return null
         runCatching {
@@ -105,7 +105,7 @@ class SearchCoverLoader(context:Context) {
                 finally { temporary.delete() }
                 val cached=directory.listFiles()?.filter { it.extension=="jpg" }?.sortedByDescending { it.lastModified() }.orEmpty()
                 var bytes=0L
-                cached.forEachIndexed { index,item->bytes+=item.length();if(index>=80 || bytes>12*1024*1024) item.delete() }
+                cached.forEachIndexed { index,item->bytes+=item.length();if(index>=80 || bytes>24*1024*1024) item.delete() }
             }
         }
         return decoded

@@ -47,7 +47,20 @@ class RateLimits:
             return count<limit
     def account(self, user, request):
         path=request.url.path
-        group,limit=('club-live',12) if is_discussion_stream(path,request.method) else ('club-write',30) if path.startswith('/v1/clubs') and request.method!='GET' else ('clubs',60) if path.startswith('/v1/clubs') else ('friend-write',20) if path.startswith('/v1/friends') and request.method!='GET' else ('friend-cover',90) if path.startswith('/v1/friends/') and path.endswith('/cover') else ('friends',60) if path.startswith('/v1/friends') else ('sync',20) if path.endswith('/library/sync') else ('library',60) if '/library' in path else ('catalog',120) if path.startswith('/v1/books') else ('account',60)
+        group,limit=(
+            ('club-live',12) if is_discussion_stream(path,request.method)
+            else ('club-write',30) if path.startswith('/v1/clubs') and request.method!='GET'
+            else ('clubs',60) if path.startswith('/v1/clubs')
+            else ('friend-write',20) if path.startswith('/v1/friends') and request.method!='GET'
+            else ('friend-cover',90) if path.startswith('/v1/friends/') and path.endswith('/cover')
+            else ('friends',60) if path.startswith('/v1/friends')
+            else ('media-write',180) if path.startswith('/v1/me/media') and request.method!='GET'
+            else ('media-read',300) if path.startswith('/v1/me/media')
+            else ('sync',20) if path.endswith('/library/sync')
+            else ('library',60) if '/library' in path
+            else ('catalog',120) if path.startswith('/v1/books')
+            else ('account',60)
+        )
         if not self.allow(('user',str(user['id']),group),limit):
             raise HTTPException(429,'Muitas requisições. Aguarde um minuto.',headers={'Retry-After':'60'})
 
@@ -81,8 +94,10 @@ class SecurityGate:
             async def headers(message):
                 if message['type']=='http.response.start':
                     values=list(message.get('headers',[]))
-                    # Includes errors and gzip snapshots. Private responses never enter caches.
-                    if not path.startswith(('/covers/','/v1/covers/')):
+                    # Includes errors and gzip snapshots. Private responses never enter shared caches;
+                    # content-addressed /v1/me/media/ GET keeps its own private immutable header.
+                    is_private_media_get = scope['method']=='GET' and path.startswith('/v1/me/media/') and message.get('status')==200
+                    if not path.startswith(('/covers/','/v1/covers/')) and not is_private_media_get:
                         values=[(k,v) for k,v in values if k.lower()!=b'cache-control']
                         values.extend([(b'cache-control',b'no-store'),(b'pragma',b'no-cache')])
                     values.extend([(b'x-content-type-options',b'nosniff'),(b'referrer-policy',b'no-referrer')])

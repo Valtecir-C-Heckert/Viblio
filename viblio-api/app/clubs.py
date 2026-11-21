@@ -12,7 +12,7 @@ from .live import DiscussionEvents
 from .accounts import digest
 from pydantic import BaseModel,ConfigDict,Field,field_validator
 from PIL import Image
-from .personal_library import unpack,MAX_PACKED
+from .personal_library import unpack,MAX_PACKED,read_image_bytes
 DISCUSSION_HEARTBEAT=15
 
 class Input(BaseModel):model_config=ConfigDict(extra='forbid')
@@ -115,13 +115,13 @@ def mount_clubs(app,connect,storage,current):
             with (root/str(u)/row['filename']).open('rb') as f:raw=f.read(MAX_PACKED+1)
             if len(raw)>MAX_PACKED:return None
             b=next((b for b in unpack(raw)['library']['books'] if b['id']==identifier),None);art=b.get('coverData','') if b else ''
-            if not isinstance(art,str) or not art.startswith('data:image/jpeg;base64,'):return None
-            data=base64.b64decode(art.split(',',1)[1],validate=True)
+            data=read_image_bytes(root,u,art)
+            if not data:return None
             with Image.open(io.BytesIO(data)) as im:
                 if im.format!='JPEG' or max(im.size)>2048:return None
-                im.thumbnail((160,240));out=io.BytesIO();im.convert('RGB').save(out,'JPEG',quality=80);data=out.getvalue()
-            return data if len(data)<=96*1024 else None
-        except (OSError,ValueError):return None
+                im.thumbnail((360,540));out=io.BytesIO();im.convert('RGB').save(out,'JPEG',quality=86);data=out.getvalue()
+            return data if len(data)<=256*1024 else None
+        except (OSError,ValueError,Image.DecompressionBombError):return None
     def info(db,c,u,r=None,lock=False):
         role=access(db,c,u,lock=lock);round=latest(db,c,r)
         members=db.execute("""SELECT m.user_id id,u.username,m.role,m.status,

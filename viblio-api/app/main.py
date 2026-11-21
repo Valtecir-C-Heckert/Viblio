@@ -102,10 +102,13 @@ class BodyLimit:
         try: declared = int(headers.get(b'content-length', b'0'))
         except ValueError: declared = MAX_BODY + 1
         path = scope.get('path', '')
+        method = scope.get('method', '')
         is_sync = path == '/v1/me/library/sync'
-        is_upload = path == '/v1/books' and scope.get('method') == 'POST'
-        limit = 24*1024*1024 if is_sync else MAX_BODY if is_upload else 16*1024
-        if (is_sync or is_upload) and not headers.get(b'authorization', b'').startswith(b'Bearer '):
+        is_media_put = method == 'PUT' and re.fullmatch(r'/v1/me/media/[a-f0-9]{64}', path) is not None
+        is_media_check = method == 'POST' and path == '/v1/me/media/check'
+        is_upload = (path == '/v1/books' and method == 'POST') or is_media_put
+        limit = 24*1024*1024 if is_sync else MAX_UPLOAD if is_media_put else 64*1024 if is_media_check else MAX_BODY if is_upload else 16*1024
+        if (is_sync or is_upload or is_media_check) and not headers.get(b'authorization', b'').startswith(b'Bearer '):
             await send({'type': 'http.response.start', 'status': 401, 'headers': [(b'content-type', b'application/json'), (b'www-authenticate', b'Bearer')]})
             return await send({'type': 'http.response.body', 'body': b'{"detail":"Autenticacao obrigatoria."}'})
         if declared < 0 or declared > limit:

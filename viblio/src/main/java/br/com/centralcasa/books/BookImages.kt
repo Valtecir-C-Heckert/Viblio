@@ -28,8 +28,53 @@ class BookImages(private val context: Context, private val profileSuffix:String=
         for (y in 0 until bitmap.height step step) for (x in 0 until bitmap.width step step) pixels.add(bitmap.getPixel(x, y))
         return CoverColors.dominant(pixels.toIntArray()).also { colors[name] = it }
     }
+    private val shaByName = object : LinkedHashMap<String, String>(64, .75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > 4096
+    }
+    private val nameBySha = object : LinkedHashMap<String, String>(64, .75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > 4096
+    }
     private val directory get() = File(context.filesDir, "book-covers"+profileSuffix).apply { mkdirs() }
     fun file(name: String): File? = if (name.matches(Regex("[a-zA-Z0-9-]+\\.jpg"))) File(directory, name).takeIf { it.isFile } else null
+    @Synchronized fun sha256(name: String): String? {
+        if (name.isBlank()) return null
+        if (name.matches(SHA_FILE_RE)) return name.removeSuffix(".jpg").takeIf { file(name) != null }
+        shaByName[name]?.let { if (file(name) != null) return it }
+        val f = file(name) ?: return null
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        f.inputStream().use { input ->
+            val buf = ByteArray(16 * 1024); var n: Int
+            while (input.read(buf).also { n = it } != -1) digest.update(buf, 0, n)
+        }
+        val hex = digest.digest().joinToString("") { "%02x".format(it) }
+        shaByName[name] = hex
+        nameBySha[hex] = name
+        return hex
+    }
+    @Synchronized fun fileBySha256(sha: String): File? {
+        if (!sha.matches(SHA_HEX_RE)) return null
+        file("$sha.jpg")?.let { return it }
+        nameBySha[sha]?.let { file(it)?.let { f -> return f } }
+        val legacy = directory.listFiles() ?: return null
+        for (item in legacy) {
+            val n = item.name
+            if (!item.isFile || !n.endsWith(".jpg") || n.matches(SHA_FILE_RE) || shaByName.containsKey(n)) continue
+            if (sha256(n) == sha) return item
+        }
+        return null
+    }
+    @Synchronized fun ensureCanonicalBySha256(sha: String): String? {
+        if (!sha.matches(SHA_HEX_RE)) return null
+        if (file("$sha.jpg") != null) return "$sha.jpg"
+        val legacy = fileBySha256(sha) ?: return null
+        return saveStoredJpeg(legacy.readBytes())
+    }
+    fun saveVerifiedMedia(expectedSha: String, bytes: ByteArray): String {
+        require(expectedSha.matches(SHA_HEX_RE)) { "Identificador de imagem inválido." }
+        val actual = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        require(actual == expectedSha) { "Imagem corrompida durante o download." }
+        return saveStoredJpeg(bytes)
+    }
     private fun writeAtomically(target: File, writer: (java.io.OutputStream) -> Unit) {
         val dir = directory
         val tmp = File.createTempFile("cover-", ".tmp", dir)
@@ -75,21 +120,22 @@ class BookImages(private val context: Context, private val profileSuffix:String=
         val f = file(name) ?: return null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeFile(f.path, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-        var sample = 1; while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 480) sample *= 2
+        // Only halve when the halved image stays >= 560px, avoiding 1000px -> 250px blur on high-DPI shelves.
+        var sample = 1; while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 560) sample *= 2
         val bitmap = BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
         cache[name] = bitmap; return bitmap
     }
     private val details = object : LinkedHashMap<String, Bitmap>(4, .75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?) = size > 4
     }
-    /** Crisp cover decode for large book detail screens without bloating the shelf cache. */
+    /** Native-sharp cover decode (up to 1600px) for large book detail screens. */
     @Synchronized fun detailCover(name: String): Bitmap? {
         if (name.isBlank()) return null
         details[name]?.let { return it }
         val f = file(name) ?: return null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeFile(f.path, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-        var sample = 1; while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1080) sample *= 2
+        var sample = 1; while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 1200) sample *= 2
         val bitmap = BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
         details[name] = bitmap; return bitmap
     }
@@ -106,6 +152,10 @@ class BookImages(private val context: Context, private val profileSuffix:String=
         var sample = 1; while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1440) sample *= 2
         val bitmap = BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
         spines[name] = bitmap; return bitmap
+    }
+    private companion object {
+        val SHA_HEX_RE = Regex("[a-f0-9]{64}")
+        val SHA_FILE_RE = Regex("[a-f0-9]{64}\\.jpg")
     }
     @Synchronized fun background(book: LibraryBook): Drawable {
         val color = when (book.background) {

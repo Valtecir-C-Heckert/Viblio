@@ -14,6 +14,29 @@ class LibraryJson(private val images: BookImages, private val preserveStoredCove
         if(!preserveStoredCovers) createdCovers.add(name)
         return name
     }
+    private fun decodeArt(raw: String, label: String, createdCovers: MutableList<String>): String {
+        if (raw.isBlank()) return ""
+        val media = MEDIA_REF_RE.matchEntire(raw)
+        if (media != null) {
+            val sha = media.groupValues[1]
+            return requireNotNull(images.ensureCanonicalBySha256(sha)) { "$label não encontrada localmente. Tente sincronizar novamente." }
+        }
+        if (raw.startsWith("data:image/")) {
+            val body = raw.substringAfter(",", "")
+            require(raw.substringBefore(",").endsWith(";base64")) { "$label precisa usar data:image/...;base64." }
+            return loadImage(Base64.decode(body, Base64.DEFAULT), createdCovers)
+        }
+        throw IllegalArgumentException("$label: use imagem embutida base64; caminhos locais e URLs não são portáveis.")
+    }
+    private fun encodeArt(name: String, useMediaRefs: Boolean): String {
+        if (name.isBlank()) return ""
+        if (useMediaRefs) {
+            val sha = images.sha256(name) ?: return ""
+            return "media:$sha"
+        }
+        val file = images.file(name) ?: return ""
+        return "data:image/jpeg;base64," + Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
+    }
     data class Snapshot(val books: List<LibraryBook>, val sessions: List<ReadingSession>, val currentId: String?, val dates: List<ReadingDate> = emptyList(), val collections: List<CollectionTitle> = emptyList())
     fun read(input: InputStream): Snapshot {
         val bytes = input.use { stream ->
@@ -45,15 +68,9 @@ class LibraryJson(private val images: BookImages, private val preserveStoredCove
                 val page = integer("currentPage", "current_page", "paginaAtual", "pagina_atual", "paginasLidas", "paginas_lidas", "readPages", "read") ?: 0
                 val id = string("id").ifBlank { "legacy-" + MessageDigest.getInstance("SHA-256").digest("$title\u0000$author".toByteArray()).take(16).joinToString("") { "%02x".format(it) } }
                 val coverValue = string("coverData", "cover", "capa", "coverImage")
-                val cover = if (coverValue.startsWith("data:image/")) {
-                    val body = coverValue.substringAfter(",", ""); require(coverValue.substringBefore(",").endsWith(";base64")) { "Capa precisa usar data:image/...;base64." }
-                    loadImage(Base64.decode(body, Base64.DEFAULT), createdCovers)
-                } else if (coverValue.isBlank()) "" else throw IllegalArgumentException("Capa do livro ${index + 1}: use imagem embutida base64; caminhos locais e URLs não são portáveis.")
+                val cover = decodeArt(coverValue, "Capa do livro ${index + 1}", createdCovers)
                 val spineValue = if (o.isNull("spineData")) "" else o.optString("spineData")
-                val spine = if (spineValue.isBlank()) "" else {
-                    require(spineValue.startsWith("data:image/") && spineValue.substringBefore(",").endsWith(";base64")) { "Lombada do livro ${index + 1}: use imagem embutida base64." }
-                    loadImage(Base64.decode(spineValue.substringAfter(","), Base64.DEFAULT), createdCovers)
-                }
+                val spine = decodeArt(spineValue, "Lombada do livro ${index + 1}", createdCovers)
                 val tagsKey = listOf("subgenres", "subgeneros", "subgêneros").firstOrNull { o.has(it) && !o.isNull(it) }
                 val tagsArray = tagsKey?.let { requireNotNull(o.optJSONArray(it)) { "Livro ${index + 1}: subgêneros precisam ser uma lista." } }
                 val tags = tagsArray?.let { list -> (0 until list.length()).map { list.getString(it) } }
@@ -65,10 +82,7 @@ class LibraryJson(private val images: BookImages, private val preserveStoredCove
             val collections = (0 until collectionArray.length()).map { index ->
                 val o = collectionArray.getJSONObject(index)
                 val image = o.optString("coverData")
-                val cover = if (image.isBlank()) "" else {
-                    require(image.startsWith("data:image/") && image.substringBefore(',').endsWith(";base64")) { "Capa do título precisa ser embutida." }
-                    loadImage(Base64.decode(image.substringAfter(','), Base64.DEFAULT), createdCovers)
-                }
+                val cover = decodeArt(image, "Capa do título", createdCovers)
                 CollectionTitle(o.getString("id"), o.getString("kind"), o.getString("title"), o.optString("author"), o.optString("genre"), o.optString("publisher"),
                     if (o.isNull("missingVolumes")) null else o.getInt("missingVolumes"), o.optInt("sourceReadCount", 0),
                     if (o.isNull("sourceRating")) null else o.getDouble("sourceRating"), if (o.isNull("rating")) null else o.getDouble("rating"), cover, o.optLong("updatedAt", System.currentTimeMillis()), o.optJSONArray("subgenres")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: listOf(o.optString("subgenre")).filter(String::isNotBlank), o.optBoolean("archived",false), if(o.has("expectedVolumes")) {if(o.isNull("expectedVolumes"))null else o.getInt("expectedVolumes")} else if(!o.isNull("totalVolumes")) o.getInt("totalVolumes").takeIf {it>0} else null).let {c->c.copy(expectedVolumes=CollectionInventory.expected(c,books))}.validated()
@@ -93,6 +107,7 @@ class LibraryJson(private val images: BookImages, private val preserveStoredCove
     }
     companion object {
         internal const val MAX_JSON_DEPTH = 12
+        internal val MEDIA_REF_RE = Regex("media:([a-f0-9]{64})")
         internal fun withinMaxDepth(raw: String, maxDepth: Int = MAX_JSON_DEPTH): Boolean {
             var depth = 0
             var inString = false
@@ -123,14 +138,13 @@ class LibraryJson(private val images: BookImages, private val preserveStoredCove
             return true
         }
     }
-    fun write(books: List<LibraryBook>, sessions: List<ReadingSession>, currentId: String?, dates: List<ReadingDate> = emptyList(), collections: List<CollectionTitle> = emptyList()): String {
+    fun write(books: List<LibraryBook>, sessions: List<ReadingSession>, currentId: String?, dates: List<ReadingDate> = emptyList(), collections: List<CollectionTitle> = emptyList(), useMediaRefs: Boolean = false): String {
         val root = JSONObject().put("schemaVersion", 6).put("currentBookId", currentId ?: JSONObject.NULL)
         root.put("books", JSONArray().apply { books.forEach { b -> put(JSONObject().apply {
             put("subgenres", JSONArray(b.selectedSubgenres)); put("subgenre", b.selectedSubgenres.firstOrNull().orEmpty()); put("saga", b.saga); put("sequenceNumber", b.sequenceNumber ?: JSONObject.NULL); put("id", b.id); put("title", b.title); put("author", b.author); put("genre", b.genre); put("totalPages", if (b.pagesKnown) b.totalPages else JSONObject.NULL); put("currentPage", b.currentPage)
-            val file = images.file(b.cover)
-            put("coverData", if (file == null) "" else "data:image/jpeg;base64," + Base64.encodeToString(file.readBytes(), Base64.NO_WRAP))
-            val spineFile = images.file(b.spineImage)
-            if (spineFile != null) put("spineData", "data:image/jpeg;base64," + Base64.encodeToString(spineFile.readBytes(), Base64.NO_WRAP))
+            put("coverData", encodeArt(b.cover, useMediaRefs))
+            val spineEncoded = encodeArt(b.spineImage, useMediaRefs)
+            if (spineEncoded.isNotEmpty()) put("spineData", spineEncoded)
             put("archived",b.archived); put("kind", b.kind); put("collectionId", b.collectionId); put("publisher", b.publisher); put("rating", b.rating ?: JSONObject.NULL)
             put("pagesKnown", b.pagesKnown); put("readFinished", b.readFinished)
             put("background", b.background); put("updatedAt", b.updatedAt)
@@ -141,8 +155,7 @@ class LibraryJson(private val images: BookImages, private val preserveStoredCove
             put("expectedVolumes", CollectionInventory.expected(c,books) ?: JSONObject.NULL); put("obtainedVolumes", books.count { it.collectionId == c.id && !it.archived }); put("totalVolumes", CollectionInventory.expected(c,books) ?: JSONObject.NULL); put("readVolumes", books.count { it.collectionId == c.id && !it.archived && it.complete }); put("mangaka", if (c.kind == "manga") c.author else JSONObject.NULL)
             put("missingVolumes", CollectionInventory.of(c,books).missing ?: JSONObject.NULL); put("sourceReadCount", c.sourceReadCount)
             put("archived",c.archived); put("sourceRating", c.sourceRating ?: JSONObject.NULL); put("rating", c.rating ?: JSONObject.NULL); put("updatedAt", c.updatedAt)
-            val file = images.file(c.cover)
-            put("coverData", if (file == null) "" else "data:image/jpeg;base64," + Base64.encodeToString(file.readBytes(), Base64.NO_WRAP))
+            put("coverData", encodeArt(c.cover, useMediaRefs))
         }) } })
         root.put("sessions", JSONArray().apply { sessions.forEach { s -> put(JSONObject().apply {
             put("id", s.id); put("bookId", s.bookId); put("startedAt", s.startedAt); put("finishedAt", s.finishedAt); put("durationMs", s.durationMs); put("startPage", s.startPage); put("endPage", s.endPage); put("readingDay", s.readingDay ?: JSONObject.NULL)

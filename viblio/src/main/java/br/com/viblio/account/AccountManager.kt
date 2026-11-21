@@ -141,8 +141,25 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
         val repo=LibraryRepository(activity);val draft=repo.draft();repo.close()
         if(draft!=null){toast("Pause e salve a página da sessão antes de sincronizar.");return false};return true
     }
-    private fun sendLibrary(client:AccountApi,snapshot:JsonObject,base:Long,resolutions:JsonObject?=null,against:Long?=null)=
-        LibrarySyncPolicy.submit(snapshot,base,resolutions=resolutions,against=against){client.call("/v1/me/library/sync","POST",it,gzip=true)}
+    private data class AutoSyncResult(val response:JsonObject,val uploadedHash:String,val conflict:Boolean,val useMedia:Boolean)
+    private val mediaHeaders=mapOf("X-Viblio-Media" to "1")
+    private fun sendLibrary(client:AccountApi,io:AccountLibrary,snapshot:JsonObject,base:Long,useMedia:Boolean,resolutions:JsonObject?=null,against:Long?=null):JsonObject {
+        if(!useMedia)return LibrarySyncPolicy.submit(snapshot,base,resolutions=resolutions,against=against){client.call("/v1/me/library/sync","POST",it,gzip=true)}
+        io.syncMediaUp(client,snapshot)
+        return try {
+            LibrarySyncPolicy.submit(snapshot,base,resolutions=resolutions,against=against){client.call("/v1/me/library/sync","POST",it,gzip=true,extraHeaders=mediaHeaders)}
+        }catch(e:AccountFailure){
+            val detail=if(e.code==409)e.response.get("detail")?.takeIf {it.isJsonObject}?.asJsonObject else null
+            if(detail?.get("code")?.takeIf {it.isJsonPrimitive}?.asString=="missing_media"){
+                val missing=detail.getAsJsonArray("missing")?.mapNotNull {it.takeIf {el->el.isJsonPrimitive}?.asString}.orEmpty()
+                if(missing.isNotEmpty()){
+                    io.syncMediaUp(client,snapshot,onlyHashes=missing)
+                    return LibrarySyncPolicy.submit(snapshot,base,resolutions=resolutions,against=against){client.call("/v1/me/library/sync","POST",it,gzip=true,extraHeaders=mediaHeaders)}
+                }
+            }
+            throw e
+        }
+    }
     private fun automatic() {
         if(!running || closed || !linked)return
         if(busy){automaticPending=true;return}
@@ -156,20 +173,23 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
         val expected=owner;val client=api();val io=AccountLibrary(activity)
         val base=prefs.getLong("revision",0)
         work("Sincronizando…",modal=false,action={
-            val remote=client.call("/v1/me/library/status").get("revision").asLong
-            val local=io.capture();val hash=io.hash(local)
+            val remoteInfo=client.call("/v1/me/library/status")
+            val remote=remoteInfo.get("revision").asLong
+            val useMedia=remoteInfo.get("media")?.asBoolean==true
+            val local=io.capture(useMedia);val hash=io.hash(local)
             if(remote==base && hash==prefs.getString("local_hash",""))return@work null
             try {
                 val response=if(hash==prefs.getString("local_hash","") && remote!=base)JsonObject().apply {
-                    addProperty("revision",remote);add("snapshot",client.call("/v1/me/library?revision=$remote"))
-                }else sendLibrary(client,local,base)
+                    addProperty("revision",remote)
+                    add("snapshot",client.call("/v1/me/library?revision=$remote",extraHeaders=if(useMedia)mediaHeaders else emptyMap()))
+                }else sendLibrary(client,io,local,base,useMedia)
                 response.addProperty("_matches_local",io.hash(response.getAsJsonObject("snapshot"))==hash)
-                Triple(response,hash,false)
-            }catch(e:AccountFailure){if(e.code==409)Triple(e.response,hash,true) else throw e}
+                AutoSyncResult(response,hash,false,useMedia)
+            }catch(e:AccountFailure){if(e.code==409)AutoSyncResult(e.response,hash,true,useMedia) else throw e}
         }) {result->
             if(expected!=owner)return@work
             if(result==null){conflictProfile=null;prefs.edit().putBoolean("remote_changed",false).commit();status=if(automaticPending)"Alterações aguardando envio." else "Estante sincronizada. Backup salvo na conta.";changed();return@work}
-            val (response,uploadedHash,conflict)=result
+            val (response,uploadedHash,conflict,useMedia)=result
             if(conflict){
                 conflictProfile=if(response.get("detail")?.takeIf {it.isJsonObject}?.asJsonObject?.get("code")?.takeIf {it.isJsonPrimitive}?.asString=="changed_again")null else LibraryProfiles.database(activity)
                 prefs.edit().putBoolean("remote_changed",true).commit()
@@ -184,10 +204,13 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
             if(!running || !canReplace()){localChanged();return@work}
             val repo=LibraryRepository(activity);val draft=repo.draft();repo.close();if(draft!=null)return@work
             work("Atualizando sua Estante…",action={
-                if(io.hash(io.capture())!=uploadedHash)return@work false
+                if(io.hash(io.capture(useMedia))!=uploadedHash)return@work false
                 val merged=response.getAsJsonObject("snapshot")
-                if(io.hash(merged)!=uploadedHash)io.apply(merged)
-                prefs.edit().putLong("revision",response.get("revision").asLong).putString("local_hash",io.hash(io.capture())).putBoolean("remote_changed",false).putLong("synced_at",System.currentTimeMillis()).commit()
+                if(io.hash(merged)!=uploadedHash){
+                    if(useMedia)io.syncMediaDown(client,merged)
+                    io.apply(merged)
+                }
+                prefs.edit().putLong("revision",response.get("revision").asLong).putString("local_hash",io.hash(io.capture(useMedia))).putBoolean("remote_changed",false).putLong("synced_at",System.currentTimeMillis()).commit()
                 true
             }) {applied->
                 if(applied){conflictProfile=null;status="Estante sincronizada. Backup salvo na conta.";reloaded();changed()}
@@ -200,45 +223,50 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
         if(!ready())return
         work("Conferindo o acervo da conta…",action={api().call("/v1/me/library/status")}) {remote->
             val base=preferences().getLong("revision",-1);val revision=remote.get("revision").asLong
+            val useMedia=remote.get("media")?.asBoolean==true
             if(base<0 && revision>0){
                 val repo=LibraryRepository(activity);val empty=repo.books(true).isEmpty() && repo.collections(true).isEmpty();repo.close()
-                if(empty){restore(revision);return@work}
+                if(empty){restore(revision,useMedia=useMedia);return@work}
                 val builder=AlertDialog.Builder(activity).setTitle("Esta conta já tem uma Estante").setMessage("Você pode baixar a Estante do servidor ou combinar os acervos, escolhendo eventuais conflitos. Uma cópia local será guardada antes das substituições.")
-                    .setPositiveButton("Baixar do servidor") {_,_->restore(revision)}.setNegativeButton("Cancelar",null)
-                if(!empty)builder.setNeutralButton("Combinar acervos") {_,_->performSync(0)}
+                    .setPositiveButton("Baixar do servidor") {_,_->restore(revision,useMedia=useMedia)}.setNegativeButton("Cancelar",null)
+                if(!empty)builder.setNeutralButton("Combinar acervos") {_,_->performSync(0,useMedia=useMedia)}
                 builder.show()
             }else if(base==revision && preferences().getString("local_hash",null)!=null && !preferences().getBoolean("restore_pending",false)){
                 val io=AccountLibrary(activity)
-                work("Conferindo alterações…",modal=false,action={io.hash(io.capture())==preferences().getString("local_hash",null)}) {same->
-                    if(same){conflictProfile=null;preferences().edit().putBoolean("remote_changed",false).commit();status="Estante sincronizada. Backup salvo na conta.";changed()}else performSync(base)
+                work("Conferindo alterações…",modal=false,action={io.hash(io.capture(useMedia))==preferences().getString("local_hash",null)}) {same->
+                    if(same){conflictProfile=null;preferences().edit().putBoolean("remote_changed",false).commit();status="Estante sincronizada. Backup salvo na conta.";changed()}else performSync(base,useMedia=useMedia)
                 }
-            }else performSync(if(base<0)0 else base)
+            }else performSync(if(base<0)0 else base,useMedia=useMedia)
         }
     }
-    private fun performSync(base:Long,snapshot:JsonObject?=null,resolutions:JsonObject?=null,against:Long?=null) {
+    private fun performSync(base:Long,snapshot:JsonObject?=null,resolutions:JsonObject?=null,against:Long?=null,useMedia:Boolean=false) {
         if(!ready())return
         val io=AccountLibrary(activity);val prefs=preferences();val client=api()
         work("Combinando sua Estante…",action={
-            val local=snapshot ?: io.capture()
-            val response=try {sendLibrary(client,local,base,resolutions,against)}catch(e:AccountFailure){if(e.code==409)return@work Triple(local,e.response.getAsJsonObject("detail"),false);throw e}
-            val merged=response.getAsJsonObject("snapshot");if(io.hash(merged)!=io.hash(local))io.apply(merged)
-            prefs.edit().putLong("revision",response.get("revision").asLong).putString("local_hash",io.hash(io.capture())).putBoolean("remote_changed",false).putBoolean("restore_pending",false).putLong("synced_at",System.currentTimeMillis()).commit()
+            val local=snapshot ?: io.capture(useMedia)
+            val response=try {sendLibrary(client,io,local,base,useMedia,resolutions,against)}catch(e:AccountFailure){if(e.code==409)return@work Triple(local,e.response.get("detail")?.takeIf {it.isJsonObject}?.asJsonObject ?: JsonObject(),false);throw e}
+            val merged=response.getAsJsonObject("snapshot")
+            if(io.hash(merged)!=io.hash(local)){
+                if(useMedia)io.syncMediaDown(client,merged)
+                io.apply(merged)
+            }
+            prefs.edit().putLong("revision",response.get("revision").asLong).putString("local_hash",io.hash(io.capture(useMedia))).putBoolean("remote_changed",false).putBoolean("restore_pending",false).putLong("synced_at",System.currentTimeMillis()).commit()
             Triple(local,response,true)
         }) {(local,response,success)->
             if(success){conflictProfile=null;status="Estante sincronizada. Backup salvo na conta.";reloaded();changed()}
             else if(response.get("code")?.asString=="conflicts"){
-                conflictProfile=LibraryProfiles.database(activity);preferences().edit().putBoolean("remote_changed",true).commit();resolve(base,local,response)
+                conflictProfile=LibraryProfiles.database(activity);preferences().edit().putBoolean("remote_changed",true).commit();resolve(base,local,response,useMedia)
             }
-            else if(response.get("code")?.asString=="base_expired")AlertDialog.Builder(activity).setTitle("Este aparelho ficou muito tempo offline").setMessage("A base antiga expirou. Podemos combinar como uma nova importação e pedir escolhas nos conflitos. Revise itens excluídos definitivamente, que podem existir no servidor.").setPositiveButton("Revisar e combinar") {_,_->performSync(0,local)}.setNegativeButton("Cancelar",null).show()
+            else if(response.get("code")?.asString=="base_expired")AlertDialog.Builder(activity).setTitle("Este aparelho ficou muito tempo offline").setMessage("A base antiga expirou. Podemos combinar como uma nova importação e pedir escolhas nos conflitos. Revise itens excluídos definitivamente, que podem existir no servidor.").setPositiveButton("Revisar e combinar") {_,_->performSync(0,local,useMedia=useMedia)}.setNegativeButton("Cancelar",null).show()
             else {status=response.get("message")?.asString ?: "Revise os dados antes de sincronizar.";toast(status);changed()}
         }
     }
-    private fun resolve(base:Long,local:JsonObject,detail:JsonObject) {
+    private fun resolve(base:Long,local:JsonObject,detail:JsonObject,useMedia:Boolean) {
         val all=detail.getAsJsonArray("conflicts");val choices=JsonObject()
         all.filter {LibrarySyncPolicy.localConflict(it.asJsonObject.get("path").asString)}.forEach {choices.addProperty(it.asJsonObject.get("path").asString,"local")}
         val conflicts=all.filterNot {LibrarySyncPolicy.localConflict(it.asJsonObject.get("path").asString)}
         fun choose(index:Int) {
-            if(index>=conflicts.size){performSync(base,local,choices,detail.get("revision").asLong);return}
+            if(index>=conflicts.size){performSync(base,local,choices,detail.get("revision").asLong,useMedia=useMedia);return}
             val row=conflicts[index].asJsonObject;val path=row.get("path").asString
             AlertDialog.Builder(activity).setTitle("Conflito ${index+1} de ${conflicts.size}").setMessage("$path\n\nNeste aparelho: ${row.get("local").asString}\n\nServidor: ${row.get("server").asString}\n\nEscolha qual manter. Nenhuma mudança foi gravada ainda.")
                 .setPositiveButton("Usar aparelho") {_,_->choices.addProperty(path,"local");choose(index+1)}.setNeutralButton("Usar servidor") {_,_->choices.addProperty(path,"server");choose(index+1)}.setNegativeButton("Cancelar",null).show()
@@ -247,19 +275,24 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
     fun backups() {
         if(!ready())return
         work("Carregando backups…",action={api().call("/v1/me/library/status")}) {info->
+            val useMedia=info.get("media")?.asBoolean==true
             val rows=info.getAsJsonArray("versions");if(rows.size()==0){toast("Nenhum backup nesta conta ainda.");return@work}
             AlertDialog.Builder(activity).setTitle("Backups da sua conta").setItems(rows.map {r->r.asJsonObject.let {"Versão ${it.get("revision").asLong} · ${it.get("created_at").asString}"}}.toTypedArray()) {_,index->
                 val revision=rows[index].asJsonObject.get("revision").asLong
-                AlertDialog.Builder(activity).setTitle("Restaurar versão $revision?").setMessage("A Estante deste perfil será substituída. Um backup local será guardado antes. Outras contas e o catálogo não mudam.").setPositiveButton("Restaurar") {_,_->restore(revision,true)}.setNegativeButton("Cancelar",null).show()
+                AlertDialog.Builder(activity).setTitle("Restaurar versão $revision?").setMessage("A Estante deste perfil será substituída. Um backup local será guardado antes. Outras contas e o catálogo não mudam.").setPositiveButton("Restaurar") {_,_->restore(revision,true,useMedia)}.setNegativeButton("Cancelar",null).show()
             }.setNegativeButton("Fechar",null).show()
         }
     }
-    private fun restore(revision:Long,historical:Boolean=false) {
+    private fun restore(revision:Long,historical:Boolean=false,useMedia:Boolean?=null) {
         if(!ready())return
         val io=AccountLibrary(activity);val prefs=preferences();val client=api()
         work("Restaurando sua Estante…",action={
-            val snapshot=client.call("/v1/me/library?revision=$revision");val baseline=if(historical)client.call("/v1/me/library/status").get("revision").asLong else revision
-            io.apply(snapshot);prefs.edit().putBoolean("restore_pending",historical).putLong("revision",baseline).putString("local_hash",io.hash(io.capture())).putBoolean("remote_changed",false).commit()
+            val statusObj=if(historical || useMedia==null)client.call("/v1/me/library/status") else null
+            val mediaMode=useMedia ?: (statusObj?.get("media")?.asBoolean==true)
+            val snapshot=client.call("/v1/me/library?revision=$revision",extraHeaders=if(mediaMode)mediaHeaders else emptyMap())
+            val baseline=if(historical)requireNotNull(statusObj).get("revision").asLong else revision
+            if(mediaMode)io.syncMediaDown(client,snapshot)
+            io.apply(snapshot);prefs.edit().putBoolean("restore_pending",historical).putLong("revision",baseline).putString("local_hash",io.hash(io.capture(mediaMode))).putBoolean("remote_changed",false).commit()
         }) {conflictProfile=null;status="Backup restaurado neste perfil. Sincronize para publicar novas alterações.";reloaded();changed()}
     }
     private fun copySensitive(label:String,text:String) {
