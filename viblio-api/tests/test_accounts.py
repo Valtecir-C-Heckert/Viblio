@@ -8,12 +8,17 @@ from test_api import DSN,TOKEN,AUTH
 def api(tmp_path):
     with TestClient(create_app(DSN,TOKEN,tmp_path,'http://localhost:8088')) as client:yield client
 def headers(user):return {'Authorization':'Bearer '+user['token']}
+_ADMIN_SESSION=None
 def admin(api):
+    global _ADMIN_SESSION
+    if _ADMIN_SESSION is not None and api.get('/v1/me',headers=headers(_ADMIN_SESSION)).status_code==200:
+        return _ADMIN_SESSION
     body=dict(email='admin@example.test',password='test-password-123456')
     r=api.post('/v1/auth/bootstrap',headers=AUTH,json=body)
     if r.status_code==409:r=api.post('/v1/auth/login',json=body)
     assert r.status_code==200,r.text
-    return r.json()
+    _ADMIN_SESSION=r.json()
+    return _ADMIN_SESSION
 def invited(api,owner):
     code=api.post('/v1/admin/invitations',headers=headers(owner),json={}).json()['code']
     r=api.post('/v1/auth/register',json=dict(email=uuid.uuid4().hex+'@example.test',password='guest-password-123456',invitation=code))
