@@ -789,14 +789,25 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
             settings.set("SHELF_SPINE_VIEW:$shelfType",(!spineMode()).toString());shelfScroll=0;changed()
         }.apply {tag="shelf-view-toggle";isSelected=spineMode()}
         ui.icon(header, "more", "Biblioteca e backup", 36) {
-            val options=arrayOf("Livro atual", if(jsonAllowed())"Backup / importar" else "Catálogo do servidor", "Capas por linha · ${CollectionKinds.labels[shelfType]}", "Cores por gênero") + (if(useManualShelfOrder) arrayOf("Organizar estante", "Minha ordem · limpar filtros") else emptyArray()) + (if(onAccount!=null)arrayOf("Conta") else emptyArray())
-            AlertDialog.Builder(activity).setTitle("Estante").setItems(options) { _, index ->
-                if(options[index]=="Conta"){onAccount?.invoke();return@setItems}
-                when (index) {
-                    0 -> openCurrent(); 1 -> backupMenu(); 3 -> customizeGenreColors()
-                    4 -> beginManualOrder(all)
-                    5 -> { shelfFilters=ShelfFilters();manualView=true;shelfScroll=0;persistShelfFilters();changed() }
-                    2 -> AlertDialog.Builder(activity).setTitle("Capas por linha · ${CollectionKinds.labels[shelfType]}").setSingleChoiceItems((1..6).map { "$it" }.toTypedArray(), settings.shelfColumns(shelfType) - 1) { dialog, which -> settings.setShelfColumns(shelfType, which + 1); dialog.dismiss(); changed() }.setNegativeButton("Cancelar", null).show()
+            val options = mutableListOf(
+                "Livro atual",
+                if (jsonAllowed()) "Backup / importar" else "Catálogo do servidor",
+                "Capas por linha · ${CollectionKinds.labels[shelfType]}",
+                "Cores por gênero"
+            )
+            if (useSpineLayout) options.add("Aparência da estante")
+            if (useManualShelfOrder) options.addAll(listOf("Organizar estante", "Minha ordem · limpar filtros"))
+            if (onAccount != null) options.add("Conta")
+            AlertDialog.Builder(activity).setTitle("Estante").setItems(options.toTypedArray()) { _, index ->
+                when (options[index]) {
+                    "Livro atual" -> openCurrent()
+                    "Backup / importar", "Catálogo do servidor" -> backupMenu()
+                    "Cores por gênero" -> customizeGenreColors()
+                    "Aparência da estante" -> shelfAppearanceDialog()
+                    "Organizar estante" -> beginManualOrder(all)
+                    "Minha ordem · limpar filtros" -> { shelfFilters = ShelfFilters(); manualView = true; shelfScroll = 0; persistShelfFilters(); changed() }
+                    "Conta" -> onAccount?.invoke()
+                    else -> AlertDialog.Builder(activity).setTitle("Capas por linha · ${CollectionKinds.labels[shelfType]}").setSingleChoiceItems((1..6).map { "$it" }.toTypedArray(), settings.shelfColumns(shelfType) - 1) { dialog, which -> settings.setShelfColumns(shelfType, which + 1); dialog.dismiss(); changed() }.setNegativeButton("Cancelar", null).show()
                 }
             }.show()
         }
@@ -953,15 +964,78 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
         refresh()
         grid.post { activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll).scrollTo(0, shelfScroll) }
     }
+    private fun shelfAppearanceDialog() {
+        var wood = settings.shelfWoodStyle()
+        var design = settings.shelfSpineDesign()
+        val body = ui.column().apply { setPadding(ui.dp(18), ui.dp(10), ui.dp(18), ui.dp(4)) }
+        fun radioGroup(title: String, items: List<Pair<String, String>>, selectedKey: () -> String, onPick: (String) -> Unit) {
+            ui.label(body, title, 12, ui.muted, bold = true).apply {
+                (layoutParams as LinearLayout.LayoutParams).topMargin = ui.dp(8)
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(6)
+            }
+            val group = android.widget.RadioGroup(activity)
+            items.forEachIndexed { idx, (key, label) ->
+                val rb = android.widget.RadioButton(activity).apply {
+                    id = idx + 1
+                    text = label
+                    setTextColor(ui.text)
+                    textSize = 14f
+                    setPadding(ui.dp(6), ui.dp(8), ui.dp(6), ui.dp(8))
+                    isChecked = selectedKey() == key
+                    setOnClickListener { onPick(key) }
+                }
+                group.addView(rb)
+            }
+            body.addView(group)
+        }
+        radioGroup(
+            "Estante",
+            listOf(
+                ShelfWoodStyle.EDITORIAL.key to "Editorial Moderna",
+                ShelfWoodStyle.COLLECTOR.key to "Colecionador Iluminada"
+            ),
+            { wood.key },
+            { wood = ShelfWoodStyle.of(it) }
+        )
+        radioGroup(
+            "Lombadas",
+            listOf(
+                SpineDesignMode.STANDARD.key to "Lombada padrão",
+                SpineDesignMode.BY_GENRE.key to "Lombadas por gênero"
+            ),
+            { design.key },
+            { design = SpineDesignMode.of(it) }
+        )
+        AlertDialog.Builder(activity)
+            .setTitle("Aparência da estante")
+            .setView(body)
+            .setPositiveButton("Aplicar") { _, _ ->
+                settings.setShelfWoodStyle(wood)
+                settings.setShelfSpineDesign(design)
+                changed()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
     private fun renderSpines(grid:LinearLayout,books:List<LibraryBook>,collections:List<CollectionTitle>,volumes:List<LibraryBook>,available:Float,all:List<LibraryBook>){
         val counts=volumes.groupingBy {it.collectionId}.eachCount()
         val collectionIds=collections.map {it.id}.toSet()
+        val woodStyle=settings.shelfWoodStyle()
+        val spineDesign=settings.shelfSpineDesign()
+        val currentBookId=repository.currentId()
+        val baseRowHeightDp=(220*spineZoom).toInt()
+        val topPaddingDp=if(woodStyle==ShelfWoodStyle.COLLECTOR) (14*spineZoom).toInt().coerceAtLeast(8) else (8*spineZoom).toInt().coerceAtLeast(5)
         var width=0;var line:LinearLayout?=null
         fun nextRow():LinearLayout {
             val group=ui.column();grid.addView(group,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(18)})
-            val row=row(group).apply {gravity=Gravity.BOTTOM;tag="spine-row"}
-            row.layoutParams=LinearLayout.LayoutParams(-1,ui.dp((220*spineZoom).toInt())).apply {marginStart=ui.dp(5);marginEnd=ui.dp(5)}
-            group.addView(ShelfWoodView(activity,shelfMaterials).apply {tag="shelf-wood";importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO},LinearLayout.LayoutParams(-1,ui.dp((18*spineZoom).toInt())))
+            val cabinet=ui.column().apply {
+                background=ShelfRowBackdropDrawable(woodStyle,activity.resources.displayMetrics.density)
+                setPadding(0,ui.dp(topPaddingDp),0,0)
+            }
+            group.addView(cabinet,LinearLayout.LayoutParams(-1,-2))
+            val row=row(cabinet).apply {gravity=Gravity.BOTTOM;tag="spine-row"}
+            row.layoutParams=LinearLayout.LayoutParams(-1,ui.dp(baseRowHeightDp)).apply {marginStart=ui.dp(5);marginEnd=ui.dp(5)}
+            group.addView(ShelfWoodView(activity,shelfMaterials,woodStyle).apply {tag="shelf-wood";importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO},LinearLayout.LayoutParams(-1,ui.dp((18*spineZoom).toInt())))
             width=0;return row
         }
         books.forEachIndexed {index,book->
@@ -969,11 +1043,25 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
             val count=counts[book.id] ?: 0
             val dpWidth=(ShelfSpines.width(book.totalPages,book.pagesKnown,collection)*spineZoom).toInt().coerceIn(1,(available-10).toInt().coerceAtLeast(1))
             if(line==null || width+dpWidth>available-10)line=nextRow()
+            val heightTrimDp=if(woodStyle==ShelfWoodStyle.EDITORIAL) (SpineThemes.organicHeightOffsetDp(book.id,book.totalPages)*spineZoom).toInt() else 0
+            val cellHeightPx=ui.dp((baseRowHeightDp-heightTrimDp).coerceAtLeast(80))
             val cell=ui.column().apply {tag="shelf-cover:${book.id}";contentDescription=listOf(book.title,book.author).filter(String::isNotBlank).joinToString(", ")+(if(collection)", $count volumes" else "");isFocusable=true;setTag(br.com.centralcasa.R.id.shelf_cover_order,index)}
-            line!!.addView(cell,LinearLayout.LayoutParams(ui.dp(dpWidth),-1))
-            val spine=ShelfSpineView(activity,book.title,if(collection)"$count volumes" else "",author=book.author,materials=shelfMaterials).apply {tag="shelf-spine:${book.id}";importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO}
+            line!!.addView(cell,LinearLayout.LayoutParams(ui.dp(dpWidth),cellHeightPx))
+            val spine=ShelfSpineView(
+                activity,
+                book.title,
+                if(collection)"$count volumes" else "",
+                author=book.author,
+                materials=shelfMaterials,
+                bookId=book.id,
+                genre=book.genre,
+                kind=book.kind,
+                woodStyle=woodStyle,
+                spineDesign=spineDesign,
+                isCurrentReading=!collection && book.id==currentBookId
+            ).apply {tag="shelf-spine:${book.id}";importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO}
             cell.addView(spine,LinearLayout.LayoutParams(-1,-1))
-            if(!collection && book.spineImage.isNotBlank()) shelfThumbnails.bindSpine(spine,book.spineImage) else shelfThumbnails.bind(spine,book.cover)
+            shelfThumbnails.bind(spine,book.cover)
             cell.setOnClickListener {if(collection){selectedCollection=book.id;historyExpanded=false;shownSessions=4;show("collection")}else {selectedCollection=null;open(book.id)}}
             if(useManualShelfOrder)cell.setOnLongClickListener {beginManualOrder(all);true}
             width+=dpWidth
@@ -1624,7 +1712,6 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     private fun bookMenu(b: LibraryBook) {
         val options = mutableListOf("Editar livro", "Adicionar datas de leitura").apply { if (b.pagesKnown) add(1, "Informar página exata") }
         options.add("Trocar capa")
-        if(b.collectionId.isBlank())options.add("Foto da lombada")
         if (repository.currentId() != b.id) options.add("Tornar livro atual")
         if (repository.draft()?.bookId == b.id) options.addAll(listOf("Pausar leitura e salvar", "Descartar tempo da leitura"))
         if(usePersonalArchive)options.add("Remover da Estante")
@@ -1634,7 +1721,6 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
                 "Conta" -> onAccount?.invoke()
                 "Remover da Estante" -> AlertDialog.Builder(activity).setTitle("Remover da Estante?").setMessage("Nota e histórico serão guardados em Conta → Removidos da Estante.").setPositiveButton("Remover") {_,_->attempt {repository.archive(b.id);selected=null;show("library")}}.setNegativeButton("Cancelar",null).show()
                 "Trocar capa" -> personalCover(b)
-                "Foto da lombada" -> spinePhoto(b)
                 "Editar livro" -> { fields.clear(); editor = repository.book(b.id); newBook = false; show("editor") }
                 "Informar página exata" -> updatePage(requireNotNull(repository.book(b.id)))
                 "Pausar leitura e salvar" -> pauseAndSaveReading(b)
@@ -1883,20 +1969,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
             .putExtra(br.com.viblio.camera.BookPhotoCropActivity.EXTRA_SOURCE,source)
             .putExtra(br.com.viblio.camera.BookPhotoCropActivity.EXTRA_BOOK_ID,book.id)
             .putExtra(br.com.viblio.camera.BookPhotoCropActivity.EXTRA_PROFILE,LibraryProfiles.database(activity))
-        launchDocument(intent,if(mode=="spine")SPINE_PHOTO else COVER_PHOTO)
-    }
-    private fun spinePhoto(book:LibraryBook){
-        val options=mutableListOf("Tirar foto da lombada","Imagem do celular").apply { if(book.spineImage.isNotBlank())add("Usar lombada padrão") }
-        AlertDialog.Builder(activity).setTitle("Foto da lombada").setItems(options.toTypedArray()){_,option->
-            when(options[option]){
-                "Tirar foto da lombada"->launchPhoto(book,"spine",br.com.viblio.camera.BookPhotoCropActivity.SOURCE_CAMERA)
-                "Imagem do celular"->launchPhoto(book,"spine",br.com.viblio.camera.BookPhotoCropActivity.SOURCE_GALLERY)
-                else->attempt {
-                    val latest=repository.book(book.id)?.takeUnless {it.archived} ?: error("Livro não encontrado.")
-                    repository.save(latest.copy(spineImage=""));toast("Lombada padrão restaurada");changed()
-                }
-            }
-        }.setNegativeButton("Cancelar",null).show()
+        launchDocument(intent,COVER_PHOTO)
     }
     private fun personalCover(book:LibraryBook){
         val options=(if(catalog!=null)listOf("Capas do catálogo") else emptyList())+listOf("Tirar foto da capa","Imagem do celular")
@@ -2881,7 +2954,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     }
     private fun launchDocument(intent: Intent, code: Int) { try { if (code == WEB) activity.startActivity(intent) else activity.startActivityForResult(intent, code) } catch (_: ActivityNotFoundException) { toast("Nenhum aplicativo disponível para abrir esta opção.") } }
     fun onActivityResult(request: Int, result: Int, data: Intent?): Boolean {
-        if (request == COVER_PHOTO || request == SPINE_PHOTO) { acceptPhoto(request, result, data); return true }
+        if (request == COVER_PHOTO) { acceptPhoto(result, data); return true }
         if (request !in setOf(COVER, IMPORT, EXPORT, COLLECTION_COVER)) return false
         if(request in setOf(IMPORT,EXPORT) && !jsonAllowed()){toast("Arquivos JSON estão disponíveis apenas para administradores.");return true}
         val uri = data?.data
@@ -2924,27 +2997,21 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
         }
         return true
     }
-    /** Applies a cropped cover/spine photo only to the same profile and the same, still present book. */
-    private fun acceptPhoto(request: Int, result: Int, data: Intent?) {
+    /** Applies a cropped cover photo only to the same profile and the same, still present book. */
+    private fun acceptPhoto(result: Int, data: Intent?) {
         if (result != Activity.RESULT_OK || data == null) return
         val name = data.getStringExtra(br.com.viblio.camera.BookPhotoCropActivity.EXTRA_SAVED_IMAGE).orEmpty()
         val id = data.getStringExtra(br.com.viblio.camera.BookPhotoCropActivity.EXTRA_BOOK_ID).orEmpty()
         val profile = data.getStringExtra(br.com.viblio.camera.BookPhotoCropActivity.EXTRA_PROFILE)
         if (!name.matches(Regex("[a-f0-9]{64}\\.jpg")) || id.isBlank() || profile != LibraryProfiles.database(activity) || images.file(name) == null) { toast("A foto não pôde ser aplicada. Tente novamente."); return }
-        if (request == COVER_PHOTO && screen == "editor" && editor?.id == id) {
+        if (screen == "editor" && editor?.id == id) {
             attempt { captureEditor(); editor = editor?.copy(cover = name); fields.clear(); toast("Capa adicionada. Salve o livro para confirmar."); changed() }
             return
         }
         val latest = repository.book(id)?.takeUnless { it.archived } ?: run { toast("O livro mudou. Tire a foto novamente."); return }
         attempt {
-            if (request == COVER_PHOTO) {
-                val updated = latest.copy(cover = name, updatedAt = System.currentTimeMillis())
-                repository.save(updated); repository.book(id)?.let { catalog?.saved(it) }; toast("Capa atualizada")
-            } else {
-                repository.save(latest.copy(spineImage = name, updatedAt = System.currentTimeMillis()))
-                if (screen == "editor" && editor?.id == id) editor = editor?.copy(spineImage = name)
-                toast("Foto da lombada salva")
-            }
+            val updated = latest.copy(cover = name, updatedAt = System.currentTimeMillis())
+            repository.save(updated); repository.book(id)?.let { catalog?.saved(it) }; toast("Capa atualizada")
             changed()
         }
     }
@@ -2957,5 +3024,5 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
             }
         }
     }
-    companion object { private const val COLLECTION_COVER = 814; private const val COVER = 810; private const val IMPORT = 811; private const val EXPORT = 812; private const val WEB = 813; private const val COVER_PHOTO = 815; private const val SPINE_PHOTO = 816 }
+    companion object { private const val COLLECTION_COVER = 814; private const val COVER = 810; private const val IMPORT = 811; private const val EXPORT = 812; private const val WEB = 813; private const val COVER_PHOTO = 815 }
 }

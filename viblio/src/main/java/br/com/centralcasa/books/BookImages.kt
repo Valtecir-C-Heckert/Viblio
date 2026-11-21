@@ -139,20 +139,6 @@ class BookImages(private val context: Context, private val profileSuffix:String=
         val bitmap = BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
         details[name] = bitmap; return bitmap
     }
-    private val spines = object : LinkedHashMap<String, Bitmap>(8, .75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?) = size > 16
-    }
-    /** Full-sharpness spine photos for high-DPI shelves (never halved down to 360px). */
-    @Synchronized fun spineThumbnail(name: String): Bitmap? {
-        if (name.isBlank()) return null
-        spines[name]?.let { return it }
-        val f = file(name) ?: return null
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeFile(f.path, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-        var sample = 1; while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1440) sample *= 2
-        val bitmap = BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
-        spines[name] = bitmap; return bitmap
-    }
     private companion object {
         val SHA_HEX_RE = Regex("[a-f0-9]{64}")
         val SHA_FILE_RE = Regex("[a-f0-9]{64}\\.jpg")

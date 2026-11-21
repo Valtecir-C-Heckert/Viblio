@@ -46,6 +46,16 @@ class LocalSettings(context: Context) {
     fun setCollectionVolumesPerRow(collectionId: String, columns: Int) {
         prefs.edit().putInt("collection_columns:$collectionId", columns.coerceIn(1, 6)).apply()
     }
+    fun shelfWoodStyle(): br.com.centralcasa.books.ShelfWoodStyle =
+        br.com.centralcasa.books.ShelfWoodStyle.of(prefs.getString("SHELF_WOOD_STYLE", null))
+    fun setShelfWoodStyle(style: br.com.centralcasa.books.ShelfWoodStyle) {
+        prefs.edit().putString("SHELF_WOOD_STYLE", style.key).apply()
+    }
+    fun shelfSpineDesign(): br.com.centralcasa.books.SpineDesignMode =
+        br.com.centralcasa.books.SpineDesignMode.of(prefs.getString("SHELF_SPINE_DESIGN", null))
+    fun setShelfSpineDesign(mode: br.com.centralcasa.books.SpineDesignMode) {
+        prefs.edit().putString("SHELF_SPINE_DESIGN", mode.key).apply()
+    }
     fun lightFavorite(entityId: String, slot: Int): br.com.centralcasa.services.Rgb {
         require(slot in 0..5)
         val fallback = lightColorDefaults[slot].second

@@ -214,4 +214,51 @@ class Viblio070FeaturesTest {
         assertFalse(LibraryJson.MEDIA_REF_RE.matches("media:${"A".repeat(64)}"))
         assertFalse(LibraryJson.MEDIA_REF_RE.matches("data:image/jpeg;base64,abc"))
     }
+
+    @Test
+    fun spineThemesResolveGenresMixDeterministicallyAndPreserveContrast() {
+        assertEquals(SpineGenreTheme.FANTASIA, SpineThemes.resolveGenre("Fantasia Sombria"))
+        assertEquals(SpineGenreTheme.TERROR, SpineThemes.resolveGenre("Terror - Gótico"))
+        assertEquals(SpineGenreTheme.SCIFI, SpineThemes.resolveGenre("Ficção Científica"))
+        assertEquals(SpineGenreTheme.SCIFI, SpineThemes.resolveGenre("Sci-Fi"))
+        assertEquals(SpineGenreTheme.ROMANCE, SpineThemes.resolveGenre("Romance Histórico"))
+        assertEquals(SpineGenreTheme.SUSPENSE, SpineThemes.resolveGenre("Suspense / Mistério"))
+        assertEquals(SpineGenreTheme.NAO_FICCAO, SpineThemes.resolveGenre("Não-Ficção - História"))
+        assertEquals(SpineGenreTheme.AVENTURA, SpineThemes.resolveGenre("Aventura"))
+        assertEquals(SpineGenreTheme.DISTOPIA, SpineThemes.resolveGenre("Distopia"))
+        assertEquals(SpineGenreTheme.CLASSICOS, SpineThemes.resolveGenre("Clássicos"))
+        assertEquals(SpineGenreTheme.MANGA, SpineThemes.resolveGenre("", kind = "manga"))
+        assertEquals(SpineGenreTheme.MANGA, SpineThemes.resolveGenre("", kind = "comic"))
+        assertEquals(SpineGenreTheme.DEFAULT, SpineThemes.resolveGenre("Culinária"))
+        assertEquals(SpineGenreTheme.DEFAULT, SpineThemes.resolveGenre(""))
+
+        // Deterministic A/B/C variant: same ID is always stable; across IDs all 3 variants appear.
+        val v1 = SpineThemes.deterministicVariant("book-fixed-id-42")
+        assertEquals(v1, SpineThemes.deterministicVariant("book-fixed-id-42"))
+        assertTrue(v1 in 0..2)
+        val seen = (1..40).map { SpineThemes.deterministicVariant("book-$it") }.toSet()
+        assertEquals(setOf(0, 1, 2), seen)
+
+        // Asset names match shipped WebP files for all 10 genres and return null for DEFAULT.
+        val asset = requireNotNull(SpineThemes.assetName(SpineGenreTheme.FANTASIA, "book-fixed-id-42"))
+        assertTrue(asset.matches(Regex("spines/fantasia_[abc]\\.webp")))
+        assertNull(SpineThemes.assetName(SpineGenreTheme.DEFAULT, "book-fixed-id-42"))
+
+        // Foil contrast remains readable on both dark and light cover colors.
+        for (theme in SpineGenreTheme.entries) {
+            val darkCover = ShelfSpines.materialFace(0xFF1F2D24.toInt())
+            val lightCover = ShelfSpines.materialFace(0xFFF0E6D2.toInt())
+            assertTrue(CoverColors.contrast(darkCover, SpineThemes.foilColor(darkCover, theme)) >= 3.0)
+            assertTrue(CoverColors.contrast(lightCover, SpineThemes.foilColor(lightCover, theme)) >= 3.0)
+        }
+
+        // Organic editorial height variation stays bounded 0..12 dp and deterministic.
+        val off = SpineThemes.organicHeightOffsetDp("book-fixed-id-42", 240)
+        assertEquals(off, SpineThemes.organicHeightOffsetDp("book-fixed-id-42", 240))
+        assertTrue(off in 0..12)
+        assertEquals(ShelfWoodStyle.EDITORIAL, ShelfWoodStyle.of("editorial"))
+        assertEquals(ShelfWoodStyle.COLLECTOR, ShelfWoodStyle.of("unknown"))
+        assertEquals(SpineDesignMode.STANDARD, SpineDesignMode.of("standard"))
+        assertEquals(SpineDesignMode.BY_GENRE, SpineDesignMode.of(null))
+    }
 }

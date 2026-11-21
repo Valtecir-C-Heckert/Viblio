@@ -98,7 +98,7 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         ui = DisplayUi(this)
-        mode = PhotoCropMode.of(intent.getStringExtra(EXTRA_MODE))
+        mode = PhotoCropMode.COVER
         root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         setContentView(root)
         root.setOnApplyWindowInsetsListener { v, i ->
@@ -140,7 +140,7 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun fromGallery() = intent.getStringExtra(EXTRA_SOURCE) == SOURCE_GALLERY
-    private fun title() = if (mode == PhotoCropMode.COVER) "Capa" else "Lombada"
+    private fun title() = "Capa"
 
     private fun pillBg(fill: Int, stroke: Int = 0, radiusDp: Int = 20) = GradientDrawable().apply {
         setColor(fill)
