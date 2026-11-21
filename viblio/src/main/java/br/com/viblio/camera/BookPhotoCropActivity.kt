@@ -9,6 +9,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ImageFormat
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
@@ -22,6 +23,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.Surface
@@ -42,9 +44,10 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * Integrated fullscreen camera (tap-to-focus, zoom, flash, cover/spine guide) +
- * 4-corner/4-edge perspective cropper with circular loupe.
- * Camera lifetime is limited to this foreground screen; images stay in private storage.
+ * Integrated fullscreen document scanner (live white book highlight, auto-capture with manual toggle,
+ * tap-to-focus, zoom, flash) + 4-corner/4-edge perspective cropper with circular loupe.
+ * All vision processing runs 100% on-device on 160px grayscale frames (~5 FPS); camera lifetime is
+ * strictly limited to this foreground screen.
  */
 class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
     companion object {
@@ -61,6 +64,9 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
         private const val MAX_WORKING_EDGE = 2048
         private const val MAX_PICTURE_PIXELS = 12_000_000L
         private const val DETECT_EDGE = 320
+        private const val LIVE_ANALYZE_MS = 180L
+        private const val AUTO_HOLD_MS = 1200L
+        private const val STABILITY_THRESHOLD = 0.036f
         private const val ACCENT = 0xFF8B5CF6.toInt()
     }
 
@@ -69,24 +75,37 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var root: FrameLayout
     private var preview: SurfaceView? = null
     private var stage: FrameLayout? = null
+    private var liveOverlay: LiveDocumentOverlay? = null
     private var focusOverlay: FocusRingOverlay? = null
     private var status: TextView? = null
+    private var autoButton: TextView? = null
     private var flashButton: TextView? = null
     private var zoomBar: LinearLayout? = null
-    private var shutter: View? = null
+    private var shutterView: ShutterView? = null
     private var cropView: PerspectiveCropView? = null
     private var camera: Camera? = null
     private var cameraDisplayOrientation = 90
     private var cameraIsFront = false
+    private var previewBounds = RectF()
     private var resumed = false
     private var surfaceReady = false
     private var cropping = false
+    private var autoCapture = true
     private var flashMode = Camera.Parameters.FLASH_MODE_AUTO
     private var selectedZoomFactor = 1.0f
     private var working: Bitmap? = null
+    private var cameraEpoch = 0
+    private var lastLiveFrameMs = 0L
+    private var liveSmoothQuad: List<QuadPoint>? = null
+    private var stableAnchorQuad: List<QuadPoint>? = null
+    private var stableSinceMs = 0L
+    private var missedLiveFrames = 0
+    private var capturedNormQuad: List<QuadPoint>? = null
+    private val liveBusy = AtomicBoolean(false)
     private val capturing = AtomicBoolean(false)
     private val processing = AtomicBoolean(false)
     private val worker = Executors.newSingleThreadExecutor()
+    private val liveWorker = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
     private val sourceFile by lazy { File(File(cacheDir, "photo-crop").apply { mkdirs() }, "source.jpg") }
     private val restoreContinuousFocus = Runnable { restoreContinuous() }
@@ -122,8 +141,10 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
     override fun onDestroy() {
         releaseCamera()
         cropView?.clearImage()
-        working?.takeIf { !it.isRecycled }?.recycle()
+        // Never recycle while background warp() may still read the bitmap; GC frees it safely.
+        if (!processing.get()) working?.takeIf { !it.isRecycled }?.recycle()
         working = null
+        liveWorker.shutdownNow()
         worker.shutdownNow()
         handler.removeCallbacksAndMessages(null)
         if (isFinishing) runCatching { sourceFile.delete() }
@@ -144,13 +165,16 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
         if (stroke != 0) setStroke(ui.dp(1), stroke)
     }
 
-    // ---------- Camera stage (fullscreen + tap-to-focus + zoom) ----------
+    // ---------- Camera stage (fullscreen + live white highlight + auto-capture + tap-to-focus + zoom) ----------
 
     private fun showCamera() {
         cropping = false
+        surfaceReady = false
+        resetLiveTracking()
+        capturedNormQuad = null
         cropView?.clearImage()
         cropView = null
-        working?.takeIf { !it.isRecycled }?.recycle()
+        if (!processing.get()) working?.takeIf { !it.isRecycled }?.recycle()
         working = null
         root.removeAllViews()
 
@@ -163,7 +187,9 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
         frame.addView(surface, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
         surface.holder.addCallback(this)
 
-        frame.addView(GuideOverlay(), FrameLayout.LayoutParams(-1, -1))
+        val live = LiveDocumentOverlay()
+        liveOverlay = live
+        frame.addView(live, FrameLayout.LayoutParams(-1, -1))
 
         val ring = FocusRingOverlay()
         focusOverlay = ring
@@ -176,22 +202,32 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
             } else false
         }
 
-        // Top translucent bar
+        // Top translucent bar: back + title + Auto/Manual toggle + Flash
         val topBar = ui.row().apply {
             setBackgroundColor(0x99000000.toInt())
-            setPadding(ui.dp(6), ui.dp(6), ui.dp(12), ui.dp(6))
+            setPadding(ui.dp(6), ui.dp(6), ui.dp(10), ui.dp(6))
         }
         ui.icon(topBar, "back", "Voltar", 44) { setResult(RESULT_CANCELED); finish() }
         ui.label(topBar, title(), 18, Color.WHITE, bold = true).apply {
             layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(4) }
         }
+
+        autoButton = TextView(this).apply {
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setPadding(ui.dp(11), ui.dp(6), ui.dp(11), ui.dp(6))
+            setOnClickListener { toggleAutoCapture() }
+        }
+        updateAutoButton()
+        topBar.addView(autoButton, LinearLayout.LayoutParams(-2, ui.dp(34)).apply { marginEnd = ui.dp(6) })
+
         flashButton = TextView(this).apply {
             text = flashLabel()
             textSize = 12f
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            background = pillBg(0x44FFFFFF, 0x55FFFFFF, 16)
-            setPadding(ui.dp(12), ui.dp(6), ui.dp(12), ui.dp(6))
+            background = pillBg(0x33FFFFFF, 0x55FFFFFF, 16)
+            setPadding(ui.dp(11), ui.dp(6), ui.dp(11), ui.dp(6))
             visibility = View.GONE
             setOnClickListener { cycleFlash() }
         }
@@ -206,7 +242,7 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
         }
 
         status = TextView(this).apply {
-            text = if (mode == PhotoCropMode.COVER) "Enquadre a capa · toque para focar" else "Enquadre a lombada · toque para focar"
+            text = defaultHint()
             textSize = 12.5f
             setTextColor(0xFFD6D6D6.toInt())
             gravity = Gravity.CENTER
@@ -231,17 +267,18 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
             setPadding(ui.dp(16), ui.dp(10), ui.dp(16), ui.dp(10))
             setOnClickListener { pickFromGallery() }
         }
-        val leftSlot = FrameLayout(this).apply { addView(galleryBtn, FrameLayout.LayoutParams(-2, ui.dp(42), Gravity.CENTER_VERTICAL or Gravity.START)) }
+        val leftSlot = FrameLayout(this).apply {
+            addView(galleryBtn, FrameLayout.LayoutParams(-2, ui.dp(42), Gravity.CENTER_VERTICAL or Gravity.START))
+        }
         controls.addView(leftSlot, LinearLayout.LayoutParams(0, -2, 1f))
 
-        val button = View(this).apply {
-            background = ShutterDrawable()
+        val sView = ShutterView().apply {
             contentDescription = "Tirar foto"
             isFocusable = true
             setOnClickListener { capture() }
         }
-        shutter = button
-        controls.addView(button, LinearLayout.LayoutParams(ui.dp(74), ui.dp(74)))
+        shutterView = sView
+        controls.addView(sView, LinearLayout.LayoutParams(ui.dp(76), ui.dp(76)))
 
         controls.addView(View(this), LinearLayout.LayoutParams(0, ui.dp(42), 1f))
         bottomBox.addView(controls, LinearLayout.LayoutParams(-1, -2))
@@ -251,6 +288,39 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION)
         }
         openCamera()
+    }
+
+    private fun defaultHint(): String = when {
+        autoCapture && mode == PhotoCropMode.SPINE -> "Aponte para a lombada · captura automática ativa"
+        autoCapture -> "Aponte para a capa · captura automática ativa"
+        mode == PhotoCropMode.SPINE -> "Enquadre a lombada · toque para focar"
+        else -> "Enquadre a capa · toque para focar"
+    }
+
+    private fun toggleAutoCapture() {
+        autoCapture = !autoCapture
+        stableSinceMs = 0L
+        stableAnchorQuad = null
+        shutterView?.setProgress(0f)
+        liveOverlay?.update(liveSmoothQuad, 0f)
+        updateAutoButton()
+        status?.text = defaultHint()
+    }
+
+    private fun updateAutoButton() {
+        val btn = autoButton ?: return
+        btn.text = if (autoCapture) "Auto" else "Manual"
+        btn.setTextColor(if (autoCapture) Color.BLACK else Color.WHITE)
+        btn.background = pillBg(if (autoCapture) Color.WHITE else 0x33FFFFFF, if (autoCapture) 0 else 0x55FFFFFF, 16)
+    }
+
+    private fun resetLiveTracking() {
+        liveSmoothQuad = null
+        stableAnchorQuad = null
+        stableSinceMs = 0L
+        missedLiveFrames = 0
+        shutterView?.setProgress(0f)
+        liveOverlay?.update(null, 0f)
     }
 
     override fun onRequestPermissionsResult(code: Int, permissions: Array<out String>, results: IntArray) {
@@ -293,7 +363,8 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
                 .minByOrNull { abs(it.width.toFloat() / it.height - ratio) * 10_000 - it.width * it.height / 1000f }
                 ?: error("Preview unavailable")
             params.setPreviewSize(size.width, size.height)
-            params.pictureFormat = android.graphics.ImageFormat.JPEG
+            params.previewFormat = ImageFormat.NV21
+            params.pictureFormat = ImageFormat.JPEG
             params.jpegQuality = 92
             if (params.supportedFocusModes?.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE) == true) {
                 params.focusMode = Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE
@@ -320,16 +391,99 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
                 if (camera === device && frame.width > 0 && frame.height > 0) {
                     val w = if (orientation % 180 == 0) size.width else size.height
                     val h = if (orientation % 180 == 0) size.height else size.width
-                    // Fill screen cleanly (CENTER_CROP) so preview looks native and crisp.
                     val scale = maxOf(frame.width.toFloat() / w, frame.height.toFloat() / h)
-                    surface.layoutParams = FrameLayout.LayoutParams((w * scale).toInt(), (h * scale).toInt(), Gravity.CENTER)
+                    val pw = (w * scale).roundToInt()
+                    val ph = (h * scale).roundToInt()
+                    val left = (frame.width - pw) / 2f
+                    val top = (frame.height - ph) / 2f
+                    previewBounds.set(left, top, left + pw, top + ph)
+                    surface.layoutParams = FrameLayout.LayoutParams(pw, ph, Gravity.CENTER)
+                    liveOverlay?.invalidate()
                 }
             }
+
+            val gen = ++cameraEpoch
+            val prevW = size.width
+            val prevH = size.height
+            val bufSize = prevW * prevH * 3 / 2
+            device.setPreviewCallbackWithBuffer { data, owner ->
+                val now = SystemClock.elapsedRealtime()
+                if (data != null && resumed && !cropping && !capturing.get() && !liveWorker.isShutdown &&
+                    camera === owner && now - lastLiveFrameMs >= LIVE_ANALYZE_MS && liveBusy.compareAndSet(false, true)
+                ) {
+                    lastLiveFrameMs = now
+                    // Copy only the Y (luma) plane (1 byte/pixel) — tiny and fast.
+                    val yPlane = data.copyOf(prevW * prevH)
+                    val submitted = runCatching {
+                        liveWorker.execute {
+                            val detected = runCatching {
+                                val gray = PerspectiveGeometry.downsampleNv21Oriented(yPlane, prevW, prevH, orientation, cameraIsFront, maxEdge = 160)
+                                    ?: return@runCatching null
+                                val q = PerspectiveGeometry.detectQuad(gray.luma, gray.width, gray.height, mode) ?: return@runCatching null
+                                PerspectiveGeometry.normalizeQuad(q, gray.width, gray.height)
+                            }.getOrNull()
+                            liveBusy.set(false)
+                            handler.post {
+                                if (resumed && !cropping && !capturing.get() && gen == cameraEpoch) {
+                                    onLiveDetection(detected)
+                                }
+                            }
+                        }
+                    }.isSuccess
+                    if (!submitted) liveBusy.set(false)
+                }
+                if (camera === owner) runCatching { owner.addCallbackBuffer(data) }
+            }
+            repeat(2) { device.addCallbackBuffer(ByteArray(bufSize)) }
+
             device.setPreviewDisplay(surface.holder)
             device.startPreview()
         } catch (_: Exception) {
             releaseCamera()
             status?.text = "Não foi possível abrir a câmera. Escolha uma imagem da galeria."
+        }
+    }
+
+    /** Handles 5 FPS live quad updates, white book highlight, and 1.2s steady auto-capture. */
+    private fun onLiveDetection(normQuad: List<QuadPoint>?) {
+        if (normQuad == null) {
+            missedLiveFrames++
+            if (missedLiveFrames >= 3) {
+                resetLiveTracking()
+                status?.text = defaultHint()
+            }
+            return
+        }
+        missedLiveFrames = 0
+        val smoothed = PerspectiveGeometry.smoothQuad(liveSmoothQuad, normQuad, alpha = 0.38f)
+        liveSmoothQuad = smoothed
+
+        val now = SystemClock.elapsedRealtime()
+        val anchor = stableAnchorQuad
+        val progress: Float
+        if (anchor == null || PerspectiveGeometry.quadDelta(anchor, smoothed) > STABILITY_THRESHOLD) {
+            stableAnchorQuad = smoothed
+            stableSinceMs = now
+            progress = 0f
+        } else {
+            progress = ((now - stableSinceMs).toFloat() / AUTO_HOLD_MS).coerceIn(0f, 1f)
+        }
+
+        val showProgress = if (autoCapture) progress else 0f
+        liveOverlay?.update(smoothed, showProgress)
+        shutterView?.setProgress(showProgress)
+
+        if (autoCapture) {
+            status?.text = when {
+                progress >= 1f -> "Capturando…"
+                progress > 0.12f -> "Livro detectado — mantenha firme…"
+                else -> "Livro detectado · segure parado para foto automática"
+            }
+            if (progress >= 1f) {
+                capture()
+            }
+        } else {
+            status?.text = "Livro detectado · toque no botão para fotografar"
         }
     }
 
@@ -375,6 +529,7 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
     private fun setZoom(factor: Float) {
         val device = camera ?: return
         selectedZoomFactor = factor
+        resetLiveTracking()
         runCatching {
             val params = device.parameters
             applyZoomOnParams(params, factor)
@@ -461,17 +616,36 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
+    /** Captures either the live white-highlighted quad or the exact on-screen guide mapped to sensor coords. */
+    private fun snapshotNormalizedQuad(): List<QuadPoint>? {
+        liveSmoothQuad?.let { return it }
+        val guide = liveOverlay?.currentGuideRect() ?: return null
+        if (previewBounds.width() <= 1f || previewBounds.height() <= 1f) return null
+        fun toNorm(sx: Float, sy: Float) = QuadPoint(
+            ((sx - previewBounds.left) / previewBounds.width()).coerceIn(0.02f, 0.98f),
+            ((sy - previewBounds.top) / previewBounds.height()).coerceIn(0.02f, 0.98f),
+        )
+        return listOf(
+            toNorm(guide.left, guide.top),
+            toNorm(guide.right, guide.top),
+            toNorm(guide.right, guide.bottom),
+            toNorm(guide.left, guide.bottom),
+        )
+    }
+
     private fun capture() {
         val device = camera ?: run { status?.text = "Câmera indisponível. Escolha uma imagem da galeria."; return }
         if (!capturing.compareAndSet(false, true)) return
         handler.removeCallbacks(restoreContinuousFocus)
-        shutter?.isEnabled = false
-        shutter?.alpha = 0.55f
+        capturedNormQuad = snapshotNormalizedQuad()
+        shutterView?.isEnabled = false
+        shutterView?.alpha = 0.55f
         status?.text = "Capturando…"
         val fired = AtomicBoolean(false)
         val shoot = Runnable {
             if (!fired.compareAndSet(false, true) || camera !== device) return@Runnable
             try {
+                device.setPreviewCallbackWithBuffer(null)
                 device.takePicture(null, null) { data, _ ->
                     if (data == null || data.isEmpty() || data.size > MAX_SOURCE_BYTES) { captureFailed(); return@takePicture }
                     releaseCamera()
@@ -491,19 +665,23 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
 
     private fun captureFailed() {
         capturing.set(false)
-        shutter?.isEnabled = true
-        shutter?.alpha = 1f
+        shutterView?.isEnabled = true
+        shutterView?.alpha = 1f
+        resetLiveTracking()
         status?.text = "Não foi possível capturar. Tente novamente."
         if (camera == null && !cropping) openCamera()
     }
 
     private fun releaseCamera() {
+        cameraEpoch++
         handler.removeCallbacks(restoreContinuousFocus)
         val device = camera; camera = null
-        runCatching { device?.stopPreview() }; runCatching { device?.release() }
+        runCatching { device?.setPreviewCallbackWithBuffer(null); device?.stopPreview() }
+        runCatching { device?.release() }
     }
 
     private fun pickFromGallery() {
+        capturedNormQuad = null
         val pick = Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "image/*" }
         try { startActivityForResult(pick, PICK_IMAGE) } catch (_: Exception) {
             Toast.makeText(this, "Nenhum aplicativo disponível para escolher imagens.", Toast.LENGTH_LONG).show()
@@ -520,6 +698,7 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
             if (fromGallery() && !cropping) { setResult(RESULT_CANCELED); finish() }
             return
         }
+        capturedNormQuad = null
         loadSource(uri)
     }
 
@@ -545,12 +724,19 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
     private fun loadSource(uri: Uri?) {
         releaseCamera()
         if (!processing.compareAndSet(false, true)) return
+        val handedOffQuad = if (uri == null) capturedNormQuad else null
         showBusy("Preparando imagem…")
         worker.execute {
             val result = runCatching {
                 if (uri != null) writeSource(requireNotNull(contentResolver.openInputStream(uri)) { "Não foi possível abrir a imagem." })
                 val image = decodeWorking(sourceFile)
-                image to (detect(image) ?: PerspectiveGeometry.defaultQuad(image.width, image.height, mode))
+                // Prefer the exact live-detected / guide quad from the camera so the cropper never jumps randomly.
+                val initialQuad = handedOffQuad?.let {
+                    PerspectiveGeometry.denormalizeQuad(it, image.width, image.height)
+                }?.takeIf { PerspectiveGeometry.isConvex(it, minArea = 64f) }
+                    ?: detect(image)
+                    ?: PerspectiveGeometry.defaultQuad(image.width, image.height, mode)
+                image to initialQuad
             }
             handler.post {
                 processing.set(false); capturing.set(false)
@@ -601,7 +787,8 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun showCrop(image: Bitmap, quad: List<QuadPoint>) {
-        cropping = true; preview = null; stage = null; focusOverlay = null; status = null; flashButton = null; zoomBar = null; shutter = null
+        cropping = true; preview = null; stage = null; liveOverlay = null; focusOverlay = null
+        status = null; autoButton = null; flashButton = null; zoomBar = null; shutterView = null
         val previous = working
         working = image
         root.removeAllViews()
@@ -624,7 +811,6 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
         view.setImage(image, quad)
         if (previous != null && previous !== image && !previous.isRecycled) previous.recycle()
 
-        // Clean bottom bar with compact icon + short label buttons so nothing clips on 360dp screens.
         val bar = ui.row().apply {
             setBackgroundColor(0xFF151515.toInt())
             setPadding(ui.dp(10), ui.dp(10), ui.dp(10), ui.dp(14))
@@ -720,9 +906,10 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
         worker.execute {
             val saved = runCatching {
                 val output = warp(image, quad)
+                val quality = PerspectiveGeometry.jpegQualityFor(mode)
                 val bytes = try {
                     java.io.ByteArrayOutputStream().use { out ->
-                        require(output.compress(Bitmap.CompressFormat.JPEG, 90, out))
+                        require(output.compress(Bitmap.CompressFormat.JPEG, quality, out))
                         out.toByteArray()
                     }
                 } finally { output.recycle() }
@@ -744,9 +931,9 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
-    /** Native perspective correction: maps the 4 chosen corners onto an upright rectangle. */
+    /** Native perspective correction bounded for crisp local display and lightweight sync snapshots. */
     private fun warp(source: Bitmap, quad: List<QuadPoint>): Bitmap {
-        val (w, h) = PerspectiveGeometry.outputSize(quad)
+        val (w, h) = PerspectiveGeometry.outputSize(quad, maxEdge = PerspectiveGeometry.maxEdgeFor(mode))
         val src = FloatArray(8).also { a -> quad.forEachIndexed { i, p -> a[i * 2] = p.x; a[i * 2 + 1] = p.y } }
         val dst = floatArrayOf(0f, 0f, w.toFloat(), 0f, w.toFloat(), h.toFloat(), 0f, h.toFloat())
         val matrix = Matrix()
@@ -756,19 +943,37 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
         return output
     }
 
-    // ---------- Overlays & drawables ----------
+    // ---------- Overlays & shutter ----------
 
-    /** Dims everything outside the cover (2:3) or spine (narrow vertical) frame, centered between top/bottom bars. */
-    private inner class GuideOverlay : View(this@BookPhotoCropActivity) {
+    /**
+     * Draws the framing guide AND, when a book/spine is detected live, overlays a translucent
+     * white highlight directly over the detected book polygon (brightening as auto-capture locks).
+     */
+    private inner class LiveDocumentOverlay : View(this@BookPhotoCropActivity) {
         private val density = resources.displayMetrics.density
-        private val dim = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x78000000 }
+        private val dim = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x6A000000 }
         private val subtle = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x55FFFFFF; style = Paint.Style.STROKE; strokeWidth = 1f * density }
         private val cornerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 3f * density; strokeCap = Paint.Cap.ROUND
         }
-        private val path = Path()
+        private val whiteFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        private val whiteBorder = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2.6f * density }
+        private val dimPath = Path()
+        private val polyPath = Path()
         private val frame = RectF()
+        private var normQuad: List<QuadPoint>? = null
+        private var holdProgress = 0f
+
         init { importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }
+
+        fun update(quad: List<QuadPoint>?, progress: Float) {
+            normQuad = quad
+            holdProgress = progress.coerceIn(0f, 1f)
+            invalidate()
+        }
+
+        fun currentGuideRect(): RectF? = if (frame.isEmpty) null else RectF(frame)
+
         override fun onDraw(canvas: Canvas) {
             if (width <= 0 || height <= 0) return
             val topInset = 64f * density
@@ -776,17 +981,35 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
             val usableH = (height - topInset - bottomInset).coerceAtLeast(120f)
             val q = PerspectiveGeometry.defaultQuad(width, usableH.toInt(), mode)
             frame.set(q[0].x, topInset + q[0].y, q[2].x, topInset + q[2].y)
-            path.reset(); path.fillType = Path.FillType.EVEN_ODD
-            path.addRect(0f, 0f, width.toFloat(), height.toFloat(), Path.Direction.CW)
-            path.addRect(frame, Path.Direction.CW)
-            canvas.drawPath(path, dim)
-            canvas.drawRect(frame, subtle)
-            val c = minOf(frame.width(), frame.height()) * .22f
-            fun l(x1: Float, y1: Float, x2: Float, y2: Float) = canvas.drawLine(x1, y1, x2, y2, cornerPaint)
-            l(frame.left, frame.top, frame.left + c, frame.top); l(frame.left, frame.top, frame.left, frame.top + c)
-            l(frame.right, frame.top, frame.right - c, frame.top); l(frame.right, frame.top, frame.right, frame.top + c)
-            l(frame.left, frame.bottom, frame.left + c, frame.bottom); l(frame.left, frame.bottom, frame.left, frame.bottom - c)
-            l(frame.right, frame.bottom, frame.right - c, frame.bottom); l(frame.right, frame.bottom, frame.right, frame.bottom - c)
+
+            val live = normQuad
+            if (live != null && live.size == 4 && previewBounds.width() > 1f && previewBounds.height() > 1f) {
+                polyPath.reset()
+                live.forEachIndexed { idx, p ->
+                    val sx = previewBounds.left + p.x * previewBounds.width()
+                    val sy = previewBounds.top + p.y * previewBounds.height()
+                    if (idx == 0) polyPath.moveTo(sx, sy) else polyPath.lineTo(sx, sy)
+                }
+                polyPath.close()
+                // White translucent highlight over the book before taking the photo.
+                val alpha = (64 + (holdProgress * 72).roundToInt()).coerceIn(64, 140)
+                whiteFill.color = Color.argb(alpha, 255, 255, 255)
+                whiteBorder.color = if (holdProgress >= 0.95f) 0xFF4ADE80.toInt() else Color.WHITE
+                canvas.drawPath(polyPath, whiteFill)
+                canvas.drawPath(polyPath, whiteBorder)
+            } else {
+                dimPath.reset(); dimPath.fillType = Path.FillType.EVEN_ODD
+                dimPath.addRect(0f, 0f, width.toFloat(), height.toFloat(), Path.Direction.CW)
+                dimPath.addRect(frame, Path.Direction.CW)
+                canvas.drawPath(dimPath, dim)
+                canvas.drawRect(frame, subtle)
+                val c = minOf(frame.width(), frame.height()) * .22f
+                fun l(x1: Float, y1: Float, x2: Float, y2: Float) = canvas.drawLine(x1, y1, x2, y2, cornerPaint)
+                l(frame.left, frame.top, frame.left + c, frame.top); l(frame.left, frame.top, frame.left, frame.top + c)
+                l(frame.right, frame.top, frame.right - c, frame.top); l(frame.right, frame.top, frame.right, frame.top + c)
+                l(frame.left, frame.bottom, frame.left + c, frame.bottom); l(frame.left, frame.bottom, frame.left, frame.bottom - c)
+                l(frame.right, frame.bottom, frame.right - c, frame.bottom); l(frame.right, frame.bottom, frame.right, frame.bottom - c)
+            }
         }
     }
 
@@ -822,18 +1045,33 @@ class BookPhotoCropActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
-    private class ShutterDrawable : android.graphics.drawable.Drawable() {
-        private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE }
+    /** Shutter button with circular progress arc during auto-capture hold. */
+    private inner class ShutterView : View(this@BookPhotoCropActivity) {
+        private var progress = 0f
+        private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x88FFFFFF.toInt(); style = Paint.Style.STROKE }
+        private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF4ADE80.toInt(); style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
         private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
-        override fun draw(canvas: Canvas) {
-            val r = minOf(bounds.width(), bounds.height()) / 2f
-            ring.strokeWidth = r * .09f
-            canvas.drawCircle(bounds.exactCenterX(), bounds.exactCenterY(), r - ring.strokeWidth, ring)
-            canvas.drawCircle(bounds.exactCenterX(), bounds.exactCenterY(), r * .76f, fill)
+        private val arcRect = RectF()
+        fun setProgress(value: Float) {
+            val next = value.coerceIn(0f, 1f)
+            if (abs(next - progress) >= 0.01f || next == 0f || next == 1f) {
+                progress = next
+                invalidate()
+            }
         }
-        override fun setAlpha(alpha: Int) { fill.alpha = alpha; ring.alpha = alpha }
-        override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) { fill.colorFilter = colorFilter; ring.colorFilter = colorFilter }
-        @Deprecated("Framework drawable contract")
-        override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT
+        override fun onDraw(canvas: Canvas) {
+            val r = minOf(width, height) / 2f
+            if (r <= 0f) return
+            val stroke = r * .10f
+            ring.strokeWidth = stroke
+            arc.strokeWidth = stroke * 1.15f
+            val cx = width / 2f; val cy = height / 2f
+            canvas.drawCircle(cx, cy, r - stroke, ring)
+            if (progress > 0f) {
+                arcRect.set(cx - r + stroke, cy - r + stroke, cx + r - stroke, cy + r - stroke)
+                canvas.drawArc(arcRect, -90f, 360f * progress, false, arc)
+            }
+            canvas.drawCircle(cx, cy, r * .72f, fill)
+        }
     }
 }

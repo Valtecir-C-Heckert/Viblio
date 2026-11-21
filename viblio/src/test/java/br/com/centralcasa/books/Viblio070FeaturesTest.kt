@@ -124,4 +124,31 @@ class Viblio070FeaturesTest {
         assertEquals(24f, quad[0].y, 5f)
         assertEquals(256f, quad[2].y, 5f)
     }
+
+    @Test
+    fun liveScannerHelpersSmoothNormalizeAndBoundExportsForServer() {
+        assertEquals(720, PerspectiveGeometry.maxEdgeFor(PhotoCropMode.SPINE))
+        assertEquals(1000, PerspectiveGeometry.maxEdgeFor(PhotoCropMode.COVER))
+        assertEquals(80, PerspectiveGeometry.jpegQualityFor(PhotoCropMode.SPINE))
+        assertEquals(82, PerspectiveGeometry.jpegQualityFor(PhotoCropMode.COVER))
+
+        val norm = PerspectiveGeometry.normalizeQuad(square, 200, 200)
+        assertEquals(0.05f, norm[0].x, 0.001f)
+        assertEquals(0.80f, norm[2].y, 0.001f)
+        val restored = PerspectiveGeometry.denormalizeQuad(norm, 1000, 1000)
+        assertEquals(50f, restored[0].x, 1f)
+        assertEquals(800f, restored[2].y, 1f)
+
+        val shifted = norm.map { QuadPoint(it.x + 0.02f, it.y) }
+        assertEquals(0.02f, PerspectiveGeometry.quadDelta(norm, shifted), 0.001f)
+        val smooth = PerspectiveGeometry.smoothQuad(norm, shifted, alpha = 0.5f)
+        assertEquals(norm[0].x + 0.01f, smooth[0].x, 0.001f)
+
+        // 320x240 landscape NV21 rotated 90 deg -> portrait upright frame <= 160px tall
+        val nv21 = ByteArray(320 * 240) { 120 }
+        val gray = requireNotNull(PerspectiveGeometry.downsampleNv21Oriented(nv21, 320, 240, 90, mirrorX = false, maxEdge = 160))
+        assertEquals(120, gray.width)
+        assertEquals(160, gray.height)
+        assertEquals(120, gray.luma[0])
+    }
 }

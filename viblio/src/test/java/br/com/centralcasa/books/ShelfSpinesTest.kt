@@ -4,17 +4,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ShelfSpinesTest {
-    @Test fun widthIncreasesOnlyOnHundredPageBoundaries(){
-        assertEquals(28,ShelfSpines.width(1));assertEquals(28,ShelfSpines.width(100))
-        assertEquals(32,ShelfSpines.width(101));assertEquals(32,ShelfSpines.width(200))
-        assertEquals(36,ShelfSpines.width(201))
-        assertEquals(104,ShelfSpines.width(2000))
+    @Test fun widthIncreasesOnlyOnFiftyPageBoundaries(){
+        assertEquals(22,ShelfSpines.width(1));assertEquals(22,ShelfSpines.width(50))
+        assertEquals(24,ShelfSpines.width(51));assertEquals(24,ShelfSpines.width(100))
+        assertEquals(28,ShelfSpines.width(200));assertEquals(30,ShelfSpines.width(201))
+        assertEquals(100,ShelfSpines.width(2000))
         assertTrue(ShelfSpines.width(2000)>ShelfSpines.width(1000))
     }
     @Test fun unknownAndExtremePageCountsRemainBounded(){
-        assertEquals(34,ShelfSpines.width(0,false));assertEquals(52,ShelfSpines.width(2000,collection=true))
-        assertEquals(28,ShelfSpines.width(Int.MIN_VALUE))
-        assertEquals(428,ShelfSpines.width(Int.MAX_VALUE))
+        assertEquals(28,ShelfSpines.width(0,false));assertEquals(48,ShelfSpines.width(2000,collection=true))
+        assertEquals(22,ShelfSpines.width(Int.MIN_VALUE))
+        assertEquals(262,ShelfSpines.width(Int.MAX_VALUE))
     }
     @Test fun textHasAtLeastNormalTextContrastAcrossCoverColours(){
         // Sample neutrals, saturated artwork and intermediate colours, including old weak spots.

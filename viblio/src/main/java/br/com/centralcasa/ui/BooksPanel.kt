@@ -138,8 +138,9 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     private val collectionFields = linkedMapOf<String, EditText>()
     fun currentAppearanceKey():String=repository.current()?.let {it.id+":"+it.cover}.orEmpty()
     fun currentReadingColor():Int?=repository.current()?.let {images.coverColor(it.cover)}
-    /** Book on screen (detail) or, otherwise, the current reading; used by the icon widget when leaving the app. */
+    /** Book on screen (detail) or, otherwise, the current reading; used by DynamicAppIcon when leaving the app. */
     fun lastViewedBookId():String?=(if(isDetail)selected else null) ?: repository.currentId()
+    fun lastViewedBookCover():String?=lastViewedBookId()?.let { repository.book(it)?.takeUnless { b -> b.archived }?.cover }?.takeIf { it.isNotBlank() }
     fun bookCoverColor(id:String):Int?=repository.book(id)?.takeUnless {it.archived}?.let {images.coverColor(it.cover)}
     fun currentReadingThumbnail(): android.graphics.Bitmap? = repository.current()?.let { images.thumbnail(it.cover) }
     val isCurrentReading get()=isDetail && selected!=null && selected==repository.current()?.id

@@ -16,14 +16,25 @@ enum class PhotoCropMode(val key: String) {
 
 data class QuadPoint(val x: Float, val y: Float)
 
+data class GrayFrame(val luma: IntArray, val width: Int, val height: Int)
+
 /**
- * Pure geometry for the 4-corner cropper (JVM-testable, no Android graphics).
+ * Pure geometry and edge detection for the live document scanner and 4-corner cropper
+ * (JVM-testable, zero Android framework dependency).
  * Quads are always ordered top-left, top-right, bottom-right, bottom-left.
  */
 object PerspectiveGeometry {
-    /** Longest output edge; keeps embedded sync images far below the 2048 px / 12 MB server limits. */
+    /** Default ceiling kept for direct callers; sync-optimized ceilings are provided per mode below. */
     const val MAX_OUTPUT_EDGE = 1600
+    const val MAX_COVER_OUTPUT_EDGE = 1000
+    const val MAX_SPINE_OUTPUT_EDGE = 720
     const val MIN_OUTPUT_EDGE = 16
+
+    fun maxEdgeFor(mode: PhotoCropMode): Int =
+        if (mode == PhotoCropMode.SPINE) MAX_SPINE_OUTPUT_EDGE else MAX_COVER_OUTPUT_EDGE
+
+    fun jpegQualityFor(mode: PhotoCropMode): Int =
+        if (mode == PhotoCropMode.SPINE) 80 else 82
 
     fun orderQuad(points: List<QuadPoint>): List<QuadPoint> {
         require(points.size == 4) { "Quatro cantos são necessários." }
@@ -61,7 +72,7 @@ object PerspectiveGeometry {
 
     private fun distance(a: QuadPoint, b: QuadPoint) = hypot((a.x - b.x).toDouble(), (a.y - b.y).toDouble())
 
-    /** Output keeps the measured proportions of the photographed object, bounded to [MAX_OUTPUT_EDGE]. */
+    /** Output keeps the measured proportions of the photographed object, bounded to [maxEdge]. */
     fun outputSize(quad: List<QuadPoint>, maxEdge: Int = MAX_OUTPUT_EDGE): Pair<Int, Int> {
         require(quad.size == 4)
         val (tl, tr, br, bl) = quad
@@ -97,10 +108,75 @@ object PerspectiveGeometry {
     fun clamp(point: QuadPoint, width: Int, height: Int) =
         QuadPoint(point.x.coerceIn(0f, width.toFloat()), point.y.coerceIn(0f, height.toFloat()))
 
+    fun normalizeQuad(quad: List<QuadPoint>, width: Int, height: Int): List<QuadPoint> {
+        val w = width.coerceAtLeast(1).toFloat(); val h = height.coerceAtLeast(1).toFloat()
+        return quad.map { QuadPoint((it.x / w).coerceIn(0f, 1f), (it.y / h).coerceIn(0f, 1f)) }
+    }
+
+    fun denormalizeQuad(normQuad: List<QuadPoint>, width: Int, height: Int): List<QuadPoint> =
+        orderQuad(normQuad.map { QuadPoint((it.x * width).coerceIn(0f, width.toFloat()), (it.y * height).coerceIn(0f, height.toFloat())) })
+
+    /** Exponential moving average smoothing for live preview quads (normalized [0..1] coordinates). */
+    fun smoothQuad(previous: List<QuadPoint>?, next: List<QuadPoint>, alpha: Float = 0.36f): List<QuadPoint> {
+        if (previous == null || previous.size != 4 || next.size != 4) return next
+        val a = alpha.coerceIn(0.05f, 1f)
+        return List(4) { i ->
+            QuadPoint(
+                previous[i].x + (next[i].x - previous[i].x) * a,
+                previous[i].y + (next[i].y - previous[i].y) * a,
+            )
+        }
+    }
+
+    /** Mean Euclidean movement across the 4 corners (in normalized [0..1] units) for auto-capture stability. */
+    fun quadDelta(a: List<QuadPoint>, b: List<QuadPoint>): Float {
+        if (a.size != 4 || b.size != 4) return Float.MAX_VALUE
+        var total = 0.0
+        for (i in 0 until 4) total += distance(a[i], b[i])
+        return (total / 4.0).toFloat()
+    }
+
     /**
-     * Separable 5x5 Gaussian-like blur ([1, 4, 6, 4, 1] / 16) to suppress spine lettering/texture
-     * while preserving long structural book edges.
+     * Downscales and rotates an NV21 Y-plane directly into an upright portrait/landscape grayscale frame
+     * (≤ [maxEdge] on longest side) with zero Bitmap allocations — runs in ~2-5 ms on-device.
      */
+    fun downsampleNv21Oriented(
+        nv21: ByteArray,
+        srcW: Int,
+        srcH: Int,
+        rotationDegrees: Int,
+        mirrorX: Boolean = false,
+        maxEdge: Int = 160,
+    ): GrayFrame? {
+        if (srcW <= 0 || srcH <= 0 || nv21.size < srcW * srcH) return null
+        val rot = ((rotationDegrees % 360) + 360) % 360
+        val swapped = rot == 90 || rot == 270
+        val uprightW = if (swapped) srcH else srcW
+        val uprightH = if (swapped) srcW else srcH
+        val scale = minOf(1f, maxEdge.toFloat() / maxOf(uprightW, uprightH))
+        val outW = (uprightW * scale).roundToInt().coerceAtLeast(24)
+        val outH = (uprightH * scale).roundToInt().coerceAtLeast(24)
+        val luma = IntArray(outW * outH)
+        for (oy in 0 until outH) {
+            val uy = ((oy + 0.5f) / outH * uprightH).toInt().coerceIn(0, uprightH - 1)
+            for (ox in 0 until outW) {
+                val rawUx = ((ox + 0.5f) / outW * uprightW).toInt().coerceIn(0, uprightW - 1)
+                val ux = if (mirrorX) uprightW - 1 - rawUx else rawUx
+                val sx: Int
+                val sy: Int
+                when (rot) {
+                    90 -> { sx = uy; sy = srcH - 1 - ux }
+                    180 -> { sx = srcW - 1 - ux; sy = srcH - 1 - uy }
+                    270 -> { sx = srcW - 1 - uy; sy = ux }
+                    else -> { sx = ux; sy = uy }
+                }
+                luma[oy * outW + ox] = nv21[sy.coerceIn(0, srcH - 1) * srcW + sx.coerceIn(0, srcW - 1)].toInt() and 0xFF
+            }
+        }
+        return GrayFrame(luma, outW, outH)
+    }
+
+    /** Separable 5x5 Gaussian-like blur ([1, 4, 6, 4, 1] / 16) to suppress lettering while keeping book edges. */
     private fun blur5x5(luma: IntArray, width: Int, height: Int): FloatArray {
         val tmp = FloatArray(width * height)
         for (y in 0 until height) {
@@ -121,12 +197,11 @@ object PerspectiveGeometry {
     }
 
     /**
-     * Edge detection on a small luminance image (≤ ~320 px).
-     * - SPINE: searches within the plausible central band around the camera guide using edge
-     *   continuity (so big spine letters don't fool it) and then locates top/bottom strictly
-     *   between the detected left/right spine edges.
+     * Edge detection on a small luminance image (120–320 px).
+     * - SPINE: searches within the plausible central band using edge continuity and parallelism,
+     *   then locates top/bottom strictly inside the detected vertical spine strip.
      * - COVER: smoothed Sobel projections per half for mild perspective.
-     * Returns null when unsure so the caller falls back cleanly to the camera guide frame.
+     * Returns null when unsure so the caller keeps the guide frame cleanly.
      */
     fun detectQuad(luma: IntArray, width: Int, height: Int, mode: PhotoCropMode): List<QuadPoint>? {
         if (width < 24 || height < 24 || luma.size != width * height) return null
@@ -146,7 +221,6 @@ object PerspectiveGeometry {
         val yFrom = (height * .12f).toInt().coerceAtLeast(1)
         val yTo = (height * .88f).toInt().coerceAtMost(height - 2)
         val bandRows = (yTo - yFrom + 1).coerceAtLeast(1)
-        // Only search where a framed spine's left/right edges can plausibly sit (not far-off neighbor books).
         val leftFrom = (width * .18f).toInt().coerceAtLeast(1)
         val leftTo = (midX - max(3, (width * .03f).toInt())).coerceAtLeast(leftFrom + 2)
         val rightFrom = (midX + max(3, (width * .03f).toInt())).coerceAtMost(width - 4)
@@ -162,9 +236,8 @@ object PerspectiveGeometry {
                 for (y in rows) {
                     val g = gx[y * width + x]
                     sum += g
-                    if (g >= 24f) strong++
+                    if (g >= 22f) strong++
                 }
-                // Continuity weight: a real spine edge runs along most of the height; big letters only span a short band.
                 val continuity = strong.toFloat() / count
                 profile[x] = sum * (0.35f + continuity)
             }
@@ -178,12 +251,15 @@ object PerspectiveGeometry {
         val rt = continuousVerticalEdge(topHalf, rightFrom, rightTo) ?: return null
         val rb = continuousVerticalEdge(bottomHalf, rightFrom, rightTo) ?: return null
 
+        // Reject wild non-parallel skew (typical false detection on neighboring books or background objects).
+        val maxSkew = (width * 0.14f).coerceAtLeast(6f)
+        if (abs(lt - lb) > maxSkew || abs(rt - rb) > maxSkew) return null
+
         val innerLeft = maxOf(lt, lb).coerceIn(1, width - 3)
         val innerRight = minOf(rt, rb).coerceIn(innerLeft + 2, width - 2)
         val spineW = ((rt - lt) + (rb - lb)) / 2f
-        if (spineW < width * .05f || spineW > width * .55f) return null
+        if (spineW < width * .05f || spineW > width * .52f) return null
 
-        // Now find top and bottom strictly inside the detected spine strip!
         fun horizontalEdgeInStrip(fromY: Int, toY: Int): Int? {
             if (toY - fromY < 4) return null
             val profile = FloatArray(height)
@@ -194,7 +270,7 @@ object PerspectiveGeometry {
                 for (x in innerLeft..innerRight) {
                     val g = gy[y * width + x]
                     sum += g
-                    if (g >= 20f) strong++
+                    if (g >= 18f) strong++
                 }
                 profile[y] = sum * (0.4f + strong.toFloat() / cols)
             }

@@ -166,14 +166,23 @@ class ViblioActivity : Activity() {
         composerDock=this@ViblioActivity.composerDock
         onBackdrop={if(tab=="friends" && !needsLogin())applyBackground(displayTheme)}
     }
+    private var suppressIconSwitch = false
+    override fun startActivity(intent: Intent?, options: Bundle?) {
+        suppressIconSwitch = true
+        super.startActivity(intent, options)
+    }
+    @Deprecated("Activity result API")
+    override fun startActivityForResult(intent: Intent?, requestCode: Int, options: Bundle?) {
+        suppressIconSwitch = true
+        super.startActivityForResult(intent, requestCode, options)
+    }
     private fun refreshWidgetsAsync(captureLastBook:Boolean=false) {
         val ctx = applicationContext
-        val source=library
-        val lastBook=if(captureLastBook && !needsLogin()) runCatching { source.lastViewedBookId() }.getOrNull() else null
         br.com.viblio.widget.BaseViblioReadingWidget.refreshAsync(ctx)
-        if(captureLastBook && !needsLogin()) {
+        if(captureLastBook && !needsLogin() && !suppressIconSwitch && !isChangingConfigurations) {
+            val coverName = runCatching { library.lastViewedBookCover() }.getOrNull()
             br.com.viblio.ui.DynamicAppIcon.applyForBookAsync(ctx) {
-                lastBook?.let { source.bookCoverColor(it) }
+                coverName?.let { br.com.centralcasa.books.BookImages(ctx).coverColor(it) }
             }
         }
     }
@@ -352,7 +361,7 @@ class ViblioActivity : Activity() {
             .setPositiveButton("Abrir cadastro") { _,_->open() }.setNegativeButton("Continuar editando") { _,_->switchTab("shelf") }.show()
         else open()
     }
-    override fun onStart() { super.onStart();stopped=false;accounts.start();homeAssistant.start();started=true;if(tab=="shelf" && !needsLogin()) library.onStart();catalog.retry();if(br.com.viblio.reminder.ReadingReminder.isEnabled(this)) br.com.viblio.reminder.ReadingReminder.scheduleNext(this);if(needsRender)render() }
+    override fun onStart() { super.onStart();suppressIconSwitch=false;stopped=false;accounts.start();homeAssistant.start();started=true;if(tab=="shelf" && !needsLogin()) library.onStart();catalog.retry();if(br.com.viblio.reminder.ReadingReminder.isEnabled(this)) br.com.viblio.reminder.ReadingReminder.scheduleNext(this);if(needsRender)render() }
     override fun onStop() { stopped=true;accounts.stop();homeAssistant.stop();started=false;library.onStop();if(tab=="search") search.hide();if(tab=="friends")friends.hide();refreshWidgetsAsync(captureLastBook=true);super.onStop() }
     override fun onResume() { super.onResume();if(tab=="search" || tab=="friends") render() }
     override fun onDestroy() { introView?.cancel();introView=null;navigationCovers.shutdownNow();accounts.close();homeAssistant.close();search.close();catalog.close();friends.close();statistics?.onDestroy();library.onDestroy();super.onDestroy() }
