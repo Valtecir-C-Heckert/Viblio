@@ -180,7 +180,7 @@ class ViblioActivity : Activity() {
         val ctx = applicationContext
         br.com.viblio.widget.BaseViblioReadingWidget.refreshAsync(ctx)
         if(captureLastBook && !needsLogin() && !suppressIconSwitch && !isChangingConfigurations) {
-            val coverName = runCatching { library.lastViewedBookCover() }.getOrNull()
+            val coverName = runCatching { library.currentReadingCover() }.getOrNull()
             br.com.viblio.ui.DynamicAppIcon.applyForBookAsync(ctx) {
                 coverName?.let { br.com.centralcasa.books.BookImages(ctx).coverColor(it) }
             }

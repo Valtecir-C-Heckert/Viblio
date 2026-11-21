@@ -3,9 +3,9 @@ package br.com.centralcasa.books
 /** Visual page bands; these are not physical measurements of paper thickness. */
 object ShelfSpines {
     fun width(pages:Int,known:Boolean=true,collection:Boolean=false):Int = when {
-        collection -> 48
-        !known -> 28
-        else -> 22 + ((pages.coerceAtLeast(1)-1)/50).coerceAtMost(120)*2
+        collection -> 42
+        !known -> 24
+        else -> 16 + ((pages.coerceAtLeast(1)-1)/20).coerceAtMost(240)
     }
     fun ink(color:Int):Int = if(CoverColors.contrast(color,-1)>=CoverColors.contrast(color,0xff000000.toInt())) -1 else 0xff000000.toInt()
     fun authorLines(raw:String):String {

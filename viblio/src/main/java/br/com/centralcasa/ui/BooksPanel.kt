@@ -138,10 +138,8 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     private val collectionFields = linkedMapOf<String, EditText>()
     fun currentAppearanceKey():String=repository.current()?.let {it.id+":"+it.cover}.orEmpty()
     fun currentReadingColor():Int?=repository.current()?.let {images.coverColor(it.cover)}
-    /** Book on screen (detail) or, otherwise, the current reading; used by DynamicAppIcon when leaving the app. */
-    fun lastViewedBookId():String?=(if(isDetail)selected else null) ?: repository.currentId()
-    fun lastViewedBookCover():String?=lastViewedBookId()?.let { repository.book(it)?.takeUnless { b -> b.archived }?.cover }?.takeIf { it.isNotBlank() }
-    fun bookCoverColor(id:String):Int?=repository.book(id)?.takeUnless {it.archived}?.let {images.coverColor(it.cover)}
+    /** Cover filename of the current reading book only; used by DynamicAppIcon when leaving the app. */
+    fun currentReadingCover():String?=repository.current()?.cover?.takeIf { it.isNotBlank() }
     fun currentReadingThumbnail(): android.graphics.Bitmap? = repository.current()?.let { images.thumbnail(it.cover) }
     val isCurrentReading get()=isDetail && selected!=null && selected==repository.current()?.id
     val isEditor get() = screen in listOf("editor", "collection_editor")
@@ -678,7 +676,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
     private fun toast(message: String) = Toast.makeText(activity, message, Toast.LENGTH_LONG).show()
     private fun attempt(action: () -> Unit) { try { action() } catch (e: Exception) { toast(e.message ?: "Não foi possível concluir.") } }
     private fun cover(parent: LinearLayout, book: LibraryBook, width: Int, height: Int) {
-        val bitmap = images.thumbnail(book.cover)
+        val bitmap = if (width >= 100) images.detailCover(book.cover) else images.thumbnail(book.cover)
         if (bitmap != null) parent.addView(ImageView(activity).apply {
             setImageBitmap(bitmap); scaleType = ImageView.ScaleType.FIT_CENTER; contentDescription = "Capa de ${book.title}"
             background = ui.shape(ui.activeSurface, 12)

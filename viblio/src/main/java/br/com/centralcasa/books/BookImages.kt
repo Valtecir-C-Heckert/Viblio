@@ -74,21 +74,36 @@ class BookImages(private val context: Context, private val profileSuffix:String=
         cache[name]?.let { return it }
         val f = file(name) ?: return null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeFile(f.path, bounds)
-        var sample = 1; while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 320) sample *= 2
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1; while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 480) sample *= 2
         val bitmap = BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
         cache[name] = bitmap; return bitmap
+    }
+    private val details = object : LinkedHashMap<String, Bitmap>(4, .75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?) = size > 4
+    }
+    /** Crisp cover decode for large book detail screens without bloating the shelf cache. */
+    @Synchronized fun detailCover(name: String): Bitmap? {
+        if (name.isBlank()) return null
+        details[name]?.let { return it }
+        val f = file(name) ?: return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeFile(f.path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1; while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1080) sample *= 2
+        val bitmap = BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+        details[name] = bitmap; return bitmap
     }
     private val spines = object : LinkedHashMap<String, Bitmap>(8, .75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?) = size > 16
     }
-    /** Tall, narrow spine photos: bounded by height so the shelf keeps its standard spine width. */
+    /** Full-sharpness spine photos for high-DPI shelves (never halved down to 360px). */
     @Synchronized fun spineThumbnail(name: String): Bitmap? {
         if (name.isBlank()) return null
         spines[name]?.let { return it }
         val f = file(name) ?: return null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeFile(f.path, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-        var sample = 1; while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 640) sample *= 2
+        var sample = 1; while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1440) sample *= 2
         val bitmap = BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
         spines[name] = bitmap; return bitmap
     }

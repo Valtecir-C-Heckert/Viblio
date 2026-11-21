@@ -26,15 +26,14 @@ data class GrayFrame(val luma: IntArray, val width: Int, val height: Int)
 object PerspectiveGeometry {
     /** Default ceiling kept for direct callers; sync-optimized ceilings are provided per mode below. */
     const val MAX_OUTPUT_EDGE = 1600
-    const val MAX_COVER_OUTPUT_EDGE = 1000
-    const val MAX_SPINE_OUTPUT_EDGE = 720
+    const val MAX_COVER_OUTPUT_EDGE = 1600
+    const val MAX_SPINE_OUTPUT_EDGE = 1400
     const val MIN_OUTPUT_EDGE = 16
 
     fun maxEdgeFor(mode: PhotoCropMode): Int =
         if (mode == PhotoCropMode.SPINE) MAX_SPINE_OUTPUT_EDGE else MAX_COVER_OUTPUT_EDGE
 
-    fun jpegQualityFor(mode: PhotoCropMode): Int =
-        if (mode == PhotoCropMode.SPINE) 80 else 82
+    fun jpegQualityFor(mode: PhotoCropMode): Int = 92
 
     fun orderQuad(points: List<QuadPoint>): List<QuadPoint> {
         require(points.size == 4) { "Quatro cantos são necessários." }

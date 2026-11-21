@@ -127,10 +127,10 @@ class Viblio070FeaturesTest {
 
     @Test
     fun liveScannerHelpersSmoothNormalizeAndBoundExportsForServer() {
-        assertEquals(720, PerspectiveGeometry.maxEdgeFor(PhotoCropMode.SPINE))
-        assertEquals(1000, PerspectiveGeometry.maxEdgeFor(PhotoCropMode.COVER))
-        assertEquals(80, PerspectiveGeometry.jpegQualityFor(PhotoCropMode.SPINE))
-        assertEquals(82, PerspectiveGeometry.jpegQualityFor(PhotoCropMode.COVER))
+        assertEquals(1400, PerspectiveGeometry.maxEdgeFor(PhotoCropMode.SPINE))
+        assertEquals(1600, PerspectiveGeometry.maxEdgeFor(PhotoCropMode.COVER))
+        assertEquals(92, PerspectiveGeometry.jpegQualityFor(PhotoCropMode.SPINE))
+        assertEquals(92, PerspectiveGeometry.jpegQualityFor(PhotoCropMode.COVER))
 
         val norm = PerspectiveGeometry.normalizeQuad(square, 200, 200)
         assertEquals(0.05f, norm[0].x, 0.001f)
