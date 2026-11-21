@@ -62,6 +62,19 @@ def collection_inventory(data):
         title['missingVolumes']=None if total is None else total-len({n for n in numbers if 1<=n<=total})
     return data
 
+IMAGE_FIELDS=('coverData','spineData')
+def _validate_embedded_jpeg(art,label):
+    if not isinstance(art,str):raise HTTPException(422,f'{label} inválida.')
+    if not art:return
+    try:
+        if not art.startswith('data:image/jpeg;base64,') or len(art)>17*1024*1024:raise ValueError()
+        pixels=base64.b64decode(art.split(',',1)[1],validate=True)
+        if len(pixels)>12*1024*1024:raise ValueError()
+        with Image.open(io.BytesIO(pixels)) as image:
+            if image.format!='JPEG' or max(image.size)>2048:raise ValueError()
+            image.verify()
+    except Exception:raise HTTPException(422,f'{label} JPEG inválida.') from None
+
 def validate_snapshot(data):
     if not isinstance(data,dict) or set(data)-{'library','appearance'}:raise HTTPException(422,'Estrutura do acervo inválida.')
     library=data.get('library');appearance=data.get('appearance',{})
@@ -95,17 +108,9 @@ def validate_snapshot(data):
                 if type(row.get('archived',False)) is not bool:raise HTTPException(422,'Remoção inválida.')
                 rating=row.get('rating')
                 if rating is not None and (type(rating) not in (int,float) or not math.isfinite(rating) or not 0<=rating<=5 or rating*2!=int(rating*2)):raise HTTPException(422,'Nota inválida.')
-                art=row.get('coverData','')
-                if not isinstance(art,str):raise HTTPException(422,'Capa inválida.')
-                if art:
-                    try:
-                        if not art.startswith('data:image/jpeg;base64,'):raise ValueError()
-                        pixels=base64.b64decode(art.split(',',1)[1],validate=True)
-                        if len(pixels)>12*1024*1024:raise ValueError()
-                        with Image.open(io.BytesIO(pixels)) as image:
-                            if image.format!='JPEG' or max(image.size)>2048:raise ValueError()
-                            image.verify()
-                    except Exception:raise HTTPException(422,'Capa JPEG inválida.') from None
+                _validate_embedded_jpeg(row.get('coverData',''),'Capa')
+                if section=='books':_validate_embedded_jpeg(row.get('spineData',''),'Lombada')
+                elif 'spineData' in row:raise HTTPException(422,'Lombada permitida apenas em livros.')
         ids[section]=identifiers
     if ids['books'] & ids['collections']:raise HTTPException(422,'IDs de livros e títulos devem ser diferentes.')
     books={r['id']:r for r in library.get('books',[])};collections={r['id']:r for r in library.get('collections',[])}
@@ -139,7 +144,7 @@ def validate_snapshot(data):
     return result
 
 def compact(value):
-    if isinstance(value,dict):return {k:({'_cover_hash':hashlib.sha256(v.encode()).hexdigest()} if k=='coverData' and isinstance(v,str) else compact(v)) for k,v in value.items()}
+    if isinstance(value,dict):return {k:({'_cover_hash':hashlib.sha256(v.encode()).hexdigest()} if k in IMAGE_FIELDS and isinstance(v,str) else compact(v)) for k,v in value.items()}
     if isinstance(value,list):return [compact(v) for v in value]
     return value
 def same(a,b):

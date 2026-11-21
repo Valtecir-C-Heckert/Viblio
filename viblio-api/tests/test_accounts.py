@@ -226,3 +226,28 @@ def test_zoom_cleanup_cannot_silently_choose_a_conflicting_page(api):
     assert any(c['path']=='/library/books/book/currentPage' for c in response.json()['detail']['conflicts'])
     current=json.loads(gzip.decompress(api.get('/v1/me/library',headers=headers(owner)).content))
     assert current['library']['books'][0]['currentPage']==40
+
+def _jpeg_data(size=(20,40)):
+    import base64,io
+    from PIL import Image
+    buffer=io.BytesIO();Image.new('RGB',size,(120,40,30)).save(buffer,'JPEG')
+    return 'data:image/jpeg;base64,'+base64.b64encode(buffer.getvalue()).decode()
+
+def test_spine_photo_syncs_and_invalid_spine_is_rejected(api):
+    a=invited(api,admin(api));data=snapshot();spine=_jpeg_data()
+    data['library']['books'][0]['spineData']=spine
+    synced=result(sync(api,a,data));assert synced['snapshot']['library']['books'][0]['spineData']==spine
+    stored=api.get('/v1/me/library',headers=headers(a));assert json.loads(gzip.decompress(stored.content))['library']['books'][0]['spineData']==spine
+    for invalid in ('data:image/png;base64,AAAA','data:image/jpeg;base64,not-base64!',12,_jpeg_data((2049,10))):
+        bad=snapshot();bad['library']['books'][0]['spineData']=invalid
+        assert sync(api,a,bad).status_code==422
+    titled=inventory_snapshot();titled['library']['collections'][0]['spineData']=spine
+    assert sync(api,a,titled).status_code==422
+
+def test_compact_spine_bases_merge_without_image_loss():
+    original=snapshot();original['library']['books'][0]['spineData']='data:image/jpeg;base64,old'
+    local=copy.deepcopy(original);local['library']['books'][0]['currentPage']=40
+    server=copy.deepcopy(original);server['library']['books'][0]['spineData']='data:image/jpeg;base64,new'
+    base=compact(original);assert base['library']['books'][0]['spineData'].keys()=={'_cover_hash'}
+    merged,conflicts=merge_snapshot(base,local,server)
+    assert not conflicts and merged['library']['books'][0]['spineData'].endswith(',new') and merged['library']['books'][0]['currentPage']==40

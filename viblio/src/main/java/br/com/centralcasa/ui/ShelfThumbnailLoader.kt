@@ -42,20 +42,30 @@ class ShelfThumbnailLoader(private val images:BookImages) {
         cache[name]?.let { view.setImageBitmap(it);return }
         entries[view]=name;schedule()
     }
+    /** Real spine photo; replaces the procedural spine drawing while keeping the same width. */
+    fun bindSpine(view:ShelfSpineView,name:String) {
+        if(name.isBlank()) return
+        val key=SPINE+name
+        cache[key]?.let { view.setSpinePhoto(it);return }
+        entries[view]=key;schedule()
+    }
+    private fun apply(view:ImageView,key:String,bitmap:Bitmap) {
+        if(key.startsWith(SPINE)) (view as? ShelfSpineView)?.setSpinePhoto(bitmap) else view.setImageBitmap(bitmap)
+    }
     private fun schedule() { handler.removeCallbacks(scan);handler.post(scan) }
     private fun loadVisible() {
         if(closed || root?.isAttachedToWindow!=true) return
         val rect=Rect();val current=generation
         entries.toList().forEach { (view,name)->
             if(view in loading || !view.getGlobalVisibleRect(rect)) return@forEach
-            cache[name]?.let { view.setImageBitmap(it);entries.remove(view);return@forEach }
+            cache[name]?.let { apply(view,name,it);entries.remove(view);return@forEach }
             loading.add(view)
             worker.execute {
-                val bitmap=runCatching { images.thumbnail(name) }.getOrNull()
+                val bitmap=runCatching { if(name.startsWith(SPINE)) images.spineThumbnail(name.removePrefix(SPINE)) else images.thumbnail(name) }.getOrNull()
                 handler.post {
                     if(closed) return@post
                     if(bitmap!=null) cache[name]=bitmap
-                    if(current==generation && entries[view]==name) { loading.remove(view);entries.remove(view);if(bitmap!=null && view.isAttachedToWindow) view.setImageBitmap(bitmap) }
+                    if(current==generation && entries[view]==name) { loading.remove(view);entries.remove(view);if(bitmap!=null && view.isAttachedToWindow) apply(view,name,bitmap) }
                 }
             }
         }
@@ -64,4 +74,5 @@ class ShelfThumbnailLoader(private val images:BookImages) {
         closed=true;generation++;handler.removeCallbacksAndMessages(null);worker.shutdownNow();entries.clear();loading.clear();cache.clear()
         unwatch();root?.removeOnLayoutChangeListener(layout);root=null
     }
+    private companion object { const val SPINE="spine:" }
 }

@@ -166,16 +166,22 @@ class ViblioActivity : Activity() {
         composerDock=this@ViblioActivity.composerDock
         onBackdrop={if(tab=="friends" && !needsLogin())applyBackground(displayTheme)}
     }
-    private fun refreshWidgetsAsync() {
+    private fun refreshWidgetsAsync(captureLastBook:Boolean=false) {
         val ctx = applicationContext
-        navigationCovers.execute { runCatching { br.com.viblio.widget.BaseViblioReadingWidget.refreshAll(ctx) } }
+        val source=library
+        val lastBook=if(captureLastBook && !needsLogin()) runCatching { source.lastViewedBookId() }.getOrNull() else null
+        runCatching { navigationCovers.execute {
+            // Icon widget follows the last book seen before leaving the app (color only).
+            if(lastBook!=null) runCatching { source.bookCoverColor(lastBook) }.getOrNull()?.let { br.com.viblio.widget.ViblioIconWidget.saveLastBookColor(ctx,it) }
+            runCatching { br.com.viblio.widget.BaseViblioReadingWidget.refreshAll(ctx) }
+        } }
     }
     private fun makeLibrary()=BooksPanel(this,ui,{homeAssistant.changed();accounts.localChanged();refreshWidgetsAsync();if(tab=="shelf")render()}).apply {
         onAccount={switchTab("account")}
         jsonAllowed={accounts.signedIn && accounts.admin};useGroupedReadingHistory=true;useContrastCoverBorders=true;useSpineLayout=true;useCollectionInventory=true;useAsyncShelfImages=true;useCoverProgressColor=true;useManualShelfOrder=true;usePersonalArchive=true;separateShelfStatistics=true;pinchStep=1.4
     }
     private fun reloadProfile() {
-        themeBookKey=null;ui.readingColor(null);saveIntroCoverColor(null)
+        themeBookKey=null;ui.readingColor(null);saveIntroCoverColor(null);br.com.viblio.widget.ViblioIconWidget.saveLastBookColor(this,null)
         if(!accounts.signedIn)offline=false
         library.onStop();library.onDestroy();statistics?.onDestroy();statistics=null
         search.close();catalog.close();friends.close();friends=makeFriends()
@@ -346,7 +352,7 @@ class ViblioActivity : Activity() {
         else open()
     }
     override fun onStart() { super.onStart();stopped=false;accounts.start();homeAssistant.start();started=true;if(tab=="shelf" && !needsLogin()) library.onStart();catalog.retry();if(br.com.viblio.reminder.ReadingReminder.isEnabled(this)) br.com.viblio.reminder.ReadingReminder.scheduleNext(this);if(needsRender)render() }
-    override fun onStop() { stopped=true;accounts.stop();homeAssistant.stop();started=false;library.onStop();if(tab=="search") search.hide();if(tab=="friends")friends.hide();refreshWidgetsAsync();super.onStop() }
+    override fun onStop() { stopped=true;accounts.stop();homeAssistant.stop();started=false;library.onStop();if(tab=="search") search.hide();if(tab=="friends")friends.hide();refreshWidgetsAsync(captureLastBook=true);super.onStop() }
     override fun onResume() { super.onResume();if(tab=="search" || tab=="friends") render() }
     override fun onDestroy() { introView?.cancel();introView=null;navigationCovers.shutdownNow();accounts.close();homeAssistant.close();search.close();catalog.close();friends.close();statistics?.onDestroy();library.onDestroy();super.onDestroy() }
     override fun onSaveInstanceState(outState:Bundle) {

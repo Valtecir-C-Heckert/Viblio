@@ -32,8 +32,21 @@ class ShelfSpineView(context:Context,private val title:String,private val subtit
     private val texturePaint=Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
         shader=materials?.leather?.let {BitmapShader(it,Shader.TileMode.REPEAT,Shader.TileMode.REPEAT).apply {setLocalMatrix(Matrix().apply {setScale(density/3f,density/3f)})}}
     }
+    private var spinePhoto:Bitmap?=null
+    private val photoPaint=Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val photoSource=Rect()
+    private val photoTarget=RectF()
+    /** Draws the real spine photo (centre-cropped) inside the standard spine bounds; null restores the procedural spine. */
+    fun setSpinePhoto(bitmap:Bitmap?){
+        if(bitmap!=null && bitmap.isRecycled)return
+        spinePhoto=bitmap
+        if(bitmap!=null)extractColor(bitmap) else invalidate()
+    }
     override fun setImageBitmap(bitmap:Bitmap?){
-        if(bitmap==null)return
+        if(bitmap==null || spinePhoto!=null)return
+        extractColor(bitmap)
+    }
+    private fun extractColor(bitmap:Bitmap){
         val width=minOf(32,bitmap.width);val height=minOf(32,bitmap.height)
         val pixels=IntArray(width*height)
         for(y in 0 until height)for(x in 0 until width)pixels[y*width+x]=bitmap.getPixel(x*bitmap.width/width,y*bitmap.height/height)
@@ -87,6 +100,8 @@ class ShelfSpineView(context:Context,private val title:String,private val subtit
         val face=faceColor
         val color=inkColor
         canvas.save();canvas.clipPath(surfacePath)
+        val photo=spinePhoto?.takeIf { !it.isRecycled }
+        if(photo!=null){drawPhoto(canvas,photo,w,h);canvas.restore();return}
         paint.color=face;paint.shader=null;canvas.drawRect(0f,0f,w,h,paint)
         if(texturePaint.shader!=null)canvas.drawRect(0f,0f,w,h,texturePaint)
         val edge=minOf(3*density,w*.12f)/w
@@ -107,5 +122,18 @@ class ShelfSpineView(context:Context,private val title:String,private val subtit
             canvas.restore()
         }
         canvas.restore()
+    }
+    private fun drawPhoto(canvas:Canvas,photo:Bitmap,w:Float,h:Float){
+        val scale=maxOf(w/photo.width,h/photo.height)
+        val srcW=(w/scale).toInt().coerceIn(1,photo.width);val srcH=(h/scale).toInt().coerceIn(1,photo.height)
+        val left=(photo.width-srcW)/2;val top=(photo.height-srcH)/2
+        photoSource.set(left,top,left+srcW,top+srcH);photoTarget.set(0f,0f,w,h)
+        canvas.drawBitmap(photo,photoSource,photoTarget,photoPaint)
+        val edge=minOf(4*density,w*.16f)/w
+        paint.shader=LinearGradient(0f,0f,w,0f,intArrayOf(0x88000000.toInt(),0x14000000,0x00000000,0x22000000,0x77000000),floatArrayOf(0f,edge,.5f,1-edge,1f),Shader.TileMode.CLAMP)
+        canvas.drawRect(0f,0f,w,h,paint)
+        paint.shader=LinearGradient(0f,0f,0f,h,intArrayOf(0x22ffffff,0x00ffffff,0x00000000,0x33000000),floatArrayOf(0f,.06f,.92f,1f),Shader.TileMode.CLAMP)
+        canvas.drawRect(0f,0f,w,h,paint);paint.shader=null
+        paint.color=0x1effffff;canvas.drawRect(density,3*density,2*density,h-3*density,paint)
     }
 }

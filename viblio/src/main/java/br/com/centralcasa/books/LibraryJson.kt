@@ -49,11 +49,16 @@ class LibraryJson(private val images: BookImages, private val preserveStoredCove
                     val body = coverValue.substringAfter(",", ""); require(coverValue.substringBefore(",").endsWith(";base64")) { "Capa precisa usar data:image/...;base64." }
                     loadImage(Base64.decode(body, Base64.DEFAULT), createdCovers)
                 } else if (coverValue.isBlank()) "" else throw IllegalArgumentException("Capa do livro ${index + 1}: use imagem embutida base64; caminhos locais e URLs não são portáveis.")
+                val spineValue = if (o.isNull("spineData")) "" else o.optString("spineData")
+                val spine = if (spineValue.isBlank()) "" else {
+                    require(spineValue.startsWith("data:image/") && spineValue.substringBefore(",").endsWith(";base64")) { "Lombada do livro ${index + 1}: use imagem embutida base64." }
+                    loadImage(Base64.decode(spineValue.substringAfter(","), Base64.DEFAULT), createdCovers)
+                }
                 val tagsKey = listOf("subgenres", "subgeneros", "subgêneros").firstOrNull { o.has(it) && !o.isNull(it) }
                 val tagsArray = tagsKey?.let { requireNotNull(o.optJSONArray(it)) { "Livro ${index + 1}: subgêneros precisam ser uma lista." } }
                 val tags = tagsArray?.let { list -> (0 until list.length()).map { list.getString(it) } }
                 require(tags == null || tags.size <= 3) { "Livro ${index + 1}: escolha até três subgêneros." }
-                LibraryBook(id, metadata.title, author, string("genre", "genero", "gênero"), total, page, cover, string("background").ifBlank { "black" }, o.optLong("updatedAt", System.currentTimeMillis()), metadata.sequenceNumber, string("saga", "series", "serie", "série").trim(), (if (tags != null) tags.firstOrNull().orEmpty() else string("subgenre", "subgenero", "subgênero")), tags.orEmpty(), kind = string("kind").ifBlank { "book" }, collectionId = string("collectionId"), publisher = string("publisher", "editora"), rating = if (o.isNull("rating")) null else o.getDouble("rating"), pagesKnown = pagesKnown, readFinished = o.optBoolean("readFinished", false), catalogId = o.optString("catalogId").takeIf { it.isNotBlank() && it!="null" }, catalogSource=o.optString("catalogSource"),archived=o.optBoolean("archived",false)).let(BookGenres::normalize).validated()
+                LibraryBook(id, metadata.title, author, string("genre", "genero", "gênero"), total, page, cover, string("background").ifBlank { "black" }, o.optLong("updatedAt", System.currentTimeMillis()), metadata.sequenceNumber, string("saga", "series", "serie", "série").trim(), (if (tags != null) tags.firstOrNull().orEmpty() else string("subgenre", "subgenero", "subgênero")), tags.orEmpty(), kind = string("kind").ifBlank { "book" }, collectionId = string("collectionId"), publisher = string("publisher", "editora"), rating = if (o.isNull("rating")) null else o.getDouble("rating"), pagesKnown = pagesKnown, readFinished = o.optBoolean("readFinished", false), catalogId = o.optString("catalogId").takeIf { it.isNotBlank() && it!="null" }, catalogSource=o.optString("catalogSource"),archived=o.optBoolean("archived",false),spineImage=spine).let(BookGenres::normalize).validated()
             }
             val collectionArray = root.optJSONArray("collections") ?: JSONArray()
             require(collectionArray.length() <= 5000) { "Importe até 5.000 títulos." }
@@ -124,6 +129,8 @@ class LibraryJson(private val images: BookImages, private val preserveStoredCove
             put("subgenres", JSONArray(b.selectedSubgenres)); put("subgenre", b.selectedSubgenres.firstOrNull().orEmpty()); put("saga", b.saga); put("sequenceNumber", b.sequenceNumber ?: JSONObject.NULL); put("id", b.id); put("title", b.title); put("author", b.author); put("genre", b.genre); put("totalPages", if (b.pagesKnown) b.totalPages else JSONObject.NULL); put("currentPage", b.currentPage)
             val file = images.file(b.cover)
             put("coverData", if (file == null) "" else "data:image/jpeg;base64," + Base64.encodeToString(file.readBytes(), Base64.NO_WRAP))
+            val spineFile = images.file(b.spineImage)
+            if (spineFile != null) put("spineData", "data:image/jpeg;base64," + Base64.encodeToString(spineFile.readBytes(), Base64.NO_WRAP))
             put("archived",b.archived); put("kind", b.kind); put("collectionId", b.collectionId); put("publisher", b.publisher); put("rating", b.rating ?: JSONObject.NULL)
             put("pagesKnown", b.pagesKnown); put("readFinished", b.readFinished)
             put("background", b.background); put("updatedAt", b.updatedAt)

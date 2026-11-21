@@ -14,7 +14,9 @@ data class LibraryBook(
     val subgenres: List<String> = emptyList(),
     val kind: String = "book", val collectionId: String = "", val publisher: String = "",
     val rating: Double? = null, val pagesKnown: Boolean = true, val readFinished: Boolean = false,
-    val catalogId:String?=null,val catalogSource:String="", val archived:Boolean=false
+    val catalogId:String?=null,val catalogSource:String="", val archived:Boolean=false,
+    /** Local photo of the physical spine (same storage as covers); blank keeps the procedural spine. */
+    val spineImage: String = ""
 ) {
     val selectedSubgenres get() = subgenres.ifEmpty { listOf(subgenre).filter(String::isNotBlank) }
     val percent get() = if (!pagesKnown) { if (readFinished) 100 else 0 } else (currentPage.toLong() * 100 / totalPages.coerceAtLeast(1)).toInt()
@@ -33,6 +35,7 @@ data class LibraryBook(
         require(totalPages in 1..100000) { "Total de páginas: use um número entre 1 e 100.000." }
         require(currentPage in 0..totalPages) { "A página atual precisa estar entre 0 e $totalPages." }
         require(background in backgrounds) { "Fundo inválido." }
+        require(spineImage.isEmpty() || spineImage.length <= 80 && spineImage.matches(Regex("[a-zA-Z0-9-]+\\.jpg"))) { "Foto da lombada inválida." }
         require(id.isNotBlank() && id.length <= 200) { "Identificador inválido." }
         return this
     }

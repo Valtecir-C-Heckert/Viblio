@@ -25,7 +25,7 @@ enum class WidgetSize { SIZE_1X1, SIZE_2X1, SIZE_3X1, SIZE_4X1, SIZE_5X1 }
 
 /**
  * Shared 1-row editorial Home Screen widget provider supporting 1x1, 2x1, 3x1, 4x1 and 5x1 sizes
- * with dynamic resize adaptation, real current-book cover (memory-bounded for RemoteViews IPC),
+ * with width-only resize adaptation (height locked to one row), real current-book cover (memory-bounded for RemoteViews IPC),
  * cover-derived accent color, and the Viblio book icon (book cover color + white pages) beside VIBLIO.
  */
 abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : AppWidgetProvider() {
@@ -137,6 +137,7 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
 
         fun refreshAll(context: Context) {
             val appCtx = context.applicationContext
+            runCatching { ViblioIconWidget.updateAll(appCtx) }
             val manager = runCatching { AppWidgetManager.getInstance(appCtx) }.getOrNull() ?: return
             val providers = listOf(
                 ViblioWidget1x1::class.java to WidgetSize.SIZE_1X1,
@@ -189,12 +190,6 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
             return bmp
         }
 
-        private fun solidBitmap(color: Int): Bitmap {
-            val bmp = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
-            bmp.eraseColor(color)
-            return bmp
-        }
-
         private fun placeholderCover(title: String, accent: Int): Bitmap {
             val bmp = Bitmap.createBitmap(120, 180, Bitmap.Config.ARGB_8888)
             val c = Canvas(bmp)
@@ -228,15 +223,12 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
                 else -> 0
             }
             val progBmp = progressBitmap(pct, readableAccent)
-            var barBmp: Bitmap? = null
             var markBmp: Bitmap? = null
             try {
                 views.setImageViewBitmap(R.id.widget_cover, snap.coverBmp)
                 views.setImageViewBitmap(R.id.widget_progress_img, progBmp)
 
                 if (size != WidgetSize.SIZE_1X1) {
-                    barBmp = solidBitmap(readableAccent)
-                    views.setImageViewBitmap(R.id.widget_accent_bar, barBmp)
                     if (book != null) {
                         views.setTextViewText(R.id.widget_title, book.title)
                         val pagesText = when {
@@ -304,7 +296,6 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
                 manager.updateAppWidget(widgetId, views)
             } finally {
                 if (!progBmp.isRecycled) progBmp.recycle()
-                if (barBmp != null && !barBmp.isRecycled) barBmp.recycle()
                 if (markBmp != null && !markBmp.isRecycled) markBmp.recycle()
             }
         }
