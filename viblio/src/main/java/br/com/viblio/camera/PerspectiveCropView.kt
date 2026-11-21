@@ -17,10 +17,11 @@ import kotlin.math.atan2
 import kotlin.math.hypot
 
 /**
- * 4-corner + 4-edge perspective cropper: dimmed outside, accent border, dashed 3×3 inner grid,
- * draggable corners and side mid-handles (essential for narrow book spines).
- * While dragging any corner or edge, a 2.5× circular loupe with a crosshair shows the exact point
- * in the opposite top corner.
+ * 4-corner + 4-edge perspective cropper with precision touch handling:
+ * - Relative dragging (zero jump on touch down)
+ * - Single pointerId tracking (ignores accidental palm/edge touches)
+ * - Precision damping for micro-adjustments inside the 2.5x circular loupe
+ * - 65ms lift-off drift compensation so corners/edges stay locked exactly where aimed when lifting the finger
  */
 class PerspectiveCropView(context: Context, private val accent: Int) : View(context) {
     private val density = resources.displayMetrics.density
@@ -28,8 +29,10 @@ class PerspectiveCropView(context: Context, private val accent: Int) : View(cont
     private var quad: List<QuadPoint> = emptyList()
     private var activeCorner = -1
     private var activeEdge = -1
+    private var activePointerId = MotionEvent.INVALID_POINTER_ID
     private var lastTouchX = 0f
     private var lastTouchY = 0f
+    private val stabilizer = TouchStabilizer()
     private val fit = RectF()
     private var scale = 1f
     private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -42,7 +45,8 @@ class PerspectiveCropView(context: Context, private val accent: Int) : View(cont
     private val handleFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.FILL }
     private val handleStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accent; style = Paint.Style.STROKE; strokeWidth = 2.8f * density }
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 3f * density }
-    private val crossPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accent; style = Paint.Style.STROKE; strokeWidth = 1.6f * density }
+    private val crossHalo = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x99000000.toInt(); style = Paint.Style.STROKE; strokeWidth = 2.8f * density }
+    private val crossPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 1.2f * density }
     private val loupePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val loupeMatrix = Matrix()
     private val path = Path()
@@ -62,6 +66,7 @@ class PerspectiveCropView(context: Context, private val accent: Int) : View(cont
         quad = PerspectiveGeometry.orderQuad(corners.map { PerspectiveGeometry.clamp(it, image.width, image.height) })
         activeCorner = -1
         activeEdge = -1
+        activePointerId = MotionEvent.INVALID_POINTER_ID
         computeFit(); invalidate()
     }
 
@@ -71,6 +76,7 @@ class PerspectiveCropView(context: Context, private val accent: Int) : View(cont
         quad = emptyList()
         activeCorner = -1
         activeEdge = -1
+        activePointerId = MotionEvent.INVALID_POINTER_ID
     }
 
     fun corners(): List<QuadPoint> = quad
@@ -122,7 +128,7 @@ class PerspectiveCropView(context: Context, private val accent: Int) : View(cont
             canvas.drawLine(sx(a), sy(a), sx(b), sy(b), edgePaint)
         }
 
-        // 4 side-edge pill handles (so narrow spines can be adjusted edge-by-edge without hitting corners).
+        // 4 side-edge pill handles
         for (i in 0..3) {
             val a = quad[i]; val b = quad[(i + 1) % 4]
             val ax = sx(a); val ay = sy(a); val bx = sx(b); val by = sy(b)
@@ -158,7 +164,6 @@ class PerspectiveCropView(context: Context, private val accent: Int) : View(cont
     private fun drawLoupe(canvas: Canvas, focus: QuadPoint, lineA: QuadPoint, lineB: QuadPoint) {
         val radius = 58 * density; val margin = 14 * density
         val px = sx(focus)
-        // Opposite top corner so the finger never hides the magnified point.
         val cx = if (px < width / 2f) width - margin - radius else margin + radius
         val cy = margin + radius
         val zoom = scale * 2.5f
@@ -179,8 +184,29 @@ class PerspectiveCropView(context: Context, private val accent: Int) : View(cont
         canvas.restore()
         canvas.drawCircle(cx, cy, radius, ringPaint)
         val arm = 11 * density
+        canvas.drawLine(cx - arm, cy, cx + arm, cy, crossHalo)
+        canvas.drawLine(cx, cy - arm, cx, cy + arm, crossHalo)
         canvas.drawLine(cx - arm, cy, cx + arm, cy, crossPaint)
         canvas.drawLine(cx, cy - arm, cx, cy + arm, crossPaint)
+    }
+
+    private fun finishDrag(event: MotionEvent, image: Bitmap, commitRelease: Boolean) {
+        if (commitRelease) {
+            val diag = hypot(image.width.toDouble(), image.height.toDouble()).toFloat()
+            val stabilized = stabilizer.resolveRelease(event.eventTime, quad, diag)
+            if (PerspectiveGeometry.isConvex(stabilized, minArea = 64f)) {
+                quad = stabilized
+            }
+        }
+        activeCorner = -1
+        activeEdge = -1
+        activePointerId = MotionEvent.INVALID_POINTER_ID
+        val ordered = PerspectiveGeometry.orderQuad(quad)
+        if (PerspectiveGeometry.isConvex(ordered)) quad = ordered
+        parent?.requestDisallowInterceptTouchEvent(false)
+        invalidate()
+        onChanged?.invoke()
+        if (commitRelease) performClick()
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -188,41 +214,57 @@ class PerspectiveCropView(context: Context, private val accent: Int) : View(cont
         if (quad.size != 4) return false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                val x = event.x; val y = event.y
                 val cornerHit = 34 * density
                 val edgeHit = 28 * density
-                val bestCorner = quad.indices.minByOrNull { hypot(sx(quad[it]) - event.x, sy(quad[it]) - event.y) }
-                    ?.takeIf { hypot(sx(quad[it]) - event.x, sy(quad[it]) - event.y) <= cornerHit } ?: -1
+                val bestCorner = quad.indices.minByOrNull { hypot(sx(quad[it]) - x, sy(quad[it]) - y) }
+                    ?.takeIf { hypot(sx(quad[it]) - x, sy(quad[it]) - y) <= cornerHit } ?: -1
                 if (bestCorner >= 0) {
                     activeCorner = bestCorner
                     activeEdge = -1
                 } else {
-                    val bestEdge = (0..3).minByOrNull { val m = edgeMid(it); hypot(sx(m) - event.x, sy(m) - event.y) }
-                        ?.takeIf { val m = edgeMid(it); hypot(sx(m) - event.x, sy(m) - event.y) <= edgeHit } ?: -1
+                    val bestEdge = (0..3).minByOrNull { val m = edgeMid(it); hypot(sx(m) - x, sy(m) - y) }
+                        ?.takeIf { val m = edgeMid(it); hypot(sx(m) - x, sy(m) - y) <= edgeHit } ?: -1
                     if (bestEdge < 0) return false
                     activeCorner = -1
                     activeEdge = bestEdge
                 }
-                lastTouchX = event.x
-                lastTouchY = event.y
+                activePointerId = event.getPointerId(0)
+                lastTouchX = x
+                lastTouchY = y
+                stabilizer.reset(event.eventTime, quad)
                 parent?.requestDisallowInterceptTouchEvent(true)
                 invalidate()
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
+                if (activePointerId == MotionEvent.INVALID_POINTER_ID) return false
+                val idx = event.findPointerIndex(activePointerId)
+                if (idx < 0) return false
+                val x = event.getX(idx)
+                val y = event.getY(idx)
+                val rawDx = x - lastTouchX
+                val rawDy = y - lastTouchY
+                lastTouchX = x
+                lastTouchY = y
+                val (dampedDx, dampedDy) = TouchStabilizer.dampenDelta(rawDx, rawDy, fineThresholdPx = 3.5f * density)
+                val dx = dampedDx / scale
+                val dy = dampedDy / scale
+
                 if (activeCorner >= 0) {
-                    val moved = PerspectiveGeometry.clamp(QuadPoint((event.x - fit.left) / scale, (event.y - fit.top) / scale), image.width, image.height)
+                    val cur = quad[activeCorner]
+                    val moved = PerspectiveGeometry.clamp(QuadPoint(cur.x + dx, cur.y + dy), image.width, image.height)
                     val candidate = quad.toMutableList().also { it[activeCorner] = moved }
-                    if (PerspectiveGeometry.isConvex(candidate, minArea = 64f)) { quad = candidate; invalidate() }
+                    if (PerspectiveGeometry.isConvex(candidate, minArea = 64f)) {
+                        quad = candidate
+                        stabilizer.record(event.eventTime, quad)
+                        invalidate()
+                    }
                     return true
                 }
                 if (activeEdge >= 0) {
-                    val dx = (event.x - lastTouchX) / scale
-                    val dy = (event.y - lastTouchY) / scale
-                    lastTouchX = event.x
-                    lastTouchY = event.y
                     val i1 = activeEdge
                     val i2 = (activeEdge + 1) % 4
-                    // Move both endpoints along the edge's perpendicular axis (horizontal for left/right, vertical for top/bottom).
                     val a = quad[i1]; val b = quad[i2]
                     val ex = b.x - a.x; val ey = b.y - a.y
                     val len = hypot(ex, ey).coerceAtLeast(1f)
@@ -232,25 +274,35 @@ class PerspectiveCropView(context: Context, private val accent: Int) : View(cont
                     val p1 = PerspectiveGeometry.clamp(QuadPoint(a.x + mx, a.y + my), image.width, image.height)
                     val p2 = PerspectiveGeometry.clamp(QuadPoint(b.x + mx, b.y + my), image.width, image.height)
                     val candidate = quad.toMutableList().also { it[i1] = p1; it[i2] = p2 }
-                    if (PerspectiveGeometry.isConvex(candidate, minArea = 64f)) { quad = candidate; invalidate() }
+                    if (PerspectiveGeometry.isConvex(candidate, minArea = 64f)) {
+                        quad = candidate
+                        stabilizer.record(event.eventTime, quad)
+                        invalidate()
+                    }
                     return true
                 }
                 return false
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+            MotionEvent.ACTION_POINTER_UP -> {
+                val liftedId = event.getPointerId(event.actionIndex)
+                if (liftedId == activePointerId && (activeCorner >= 0 || activeEdge >= 0)) {
+                    finishDrag(event, image, commitRelease = true)
+                    return true
+                }
+                return activePointerId != MotionEvent.INVALID_POINTER_ID
+            }
+            MotionEvent.ACTION_UP -> {
                 if (activeCorner < 0 && activeEdge < 0) return false
-                activeCorner = -1
-                activeEdge = -1
-                val ordered = PerspectiveGeometry.orderQuad(quad)
-                if (PerspectiveGeometry.isConvex(ordered)) quad = ordered
-                parent?.requestDisallowInterceptTouchEvent(false)
-                invalidate()
-                onChanged?.invoke()
-                if (event.actionMasked == MotionEvent.ACTION_UP) performClick()
+                finishDrag(event, image, commitRelease = true)
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                if (activeCorner < 0 && activeEdge < 0) return false
+                finishDrag(event, image, commitRelease = false)
                 return true
             }
         }
-        return false
+        return activePointerId != MotionEvent.INVALID_POINTER_ID
     }
 
     override fun performClick(): Boolean { super.performClick(); return true }

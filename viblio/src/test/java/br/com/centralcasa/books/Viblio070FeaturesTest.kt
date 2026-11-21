@@ -151,4 +151,37 @@ class Viblio070FeaturesTest {
         assertEquals(160, gray.height)
         assertEquals(120, gray.luma[0])
     }
+
+    @Test
+    fun touchStabilizerCancelsLiftOffDriftButPreservesFastDrags() {
+        val diag = 2000f
+        val aimed = listOf(QuadPoint(100f, 100f), QuadPoint(300f, 100f), QuadPoint(300f, 900f), QuadPoint(100f, 900f))
+        val drifted = listOf(QuadPoint(118f, 114f), QuadPoint(300f, 100f), QuadPoint(300f, 900f), QuadPoint(100f, 900f))
+
+        // Scenario 1: User aims steady, pauses 100ms, then finger drifts 30ms before ACTION_UP -> restores aimed.
+        val st1 = br.com.viblio.camera.TouchStabilizer()
+        st1.reset(1000L, aimed)
+        st1.record(1120L, aimed)
+        st1.record(1210L, drifted)
+        assertEquals(aimed, st1.resolveRelease(1240L, drifted, diag))
+
+        // Scenario 2: User drags fast continuously without pausing -> keeps final position.
+        val st2 = br.com.viblio.camera.TouchStabilizer()
+        val p0 = aimed
+        val p1 = aimed.map { QuadPoint(it.x + 120f, it.y) }
+        val p2 = aimed.map { QuadPoint(it.x + 240f, it.y) }
+        val p3 = aimed.map { QuadPoint(it.x + 320f, it.y) }
+        st2.reset(1000L, p0)
+        st2.record(1050L, p1)
+        st2.record(1100L, p2)
+        st2.record(1140L, p3)
+        assertEquals(p3, st2.resolveRelease(1160L, p3, diag))
+
+        // Precision damping: small tremor is attenuated to 0.55x; fast drag remains 1.0x.
+        val (sx, sy) = br.com.viblio.camera.TouchStabilizer.dampenDelta(2f, 0f, fineThresholdPx = 10f)
+        assertEquals(1.1f, sx, 0.01f)
+        assertEquals(0f, sy, 0.01f)
+        val (fx, _) = br.com.viblio.camera.TouchStabilizer.dampenDelta(30f, 0f, fineThresholdPx = 10f)
+        assertEquals(30f, fx, 0.01f)
+    }
 }

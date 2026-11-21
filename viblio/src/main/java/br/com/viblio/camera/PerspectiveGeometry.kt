@@ -336,3 +336,71 @@ object PerspectiveGeometry {
         return if (best >= 0 && mean > 0f && bestValue >= mean * minRatio) best else null
     }
 }
+
+/**
+ * Eliminates capacitive touchscreen lift-off drift (the 40–70 ms centroid shift right as a finger
+ * leaves the glass) and dampens tiny finger tremors while aiming inside the loupe.
+ */
+class TouchStabilizer(
+    private val liftOffWindowMs: Long = 65L,
+    private val holdLookbackMs: Long = 160L,
+) {
+    private data class Sample(val timeMs: Long, val quad: List<QuadPoint>)
+    private val history = ArrayDeque<Sample>(24)
+
+    fun reset(timeMs: Long, quad: List<QuadPoint>) {
+        history.clear()
+        history.addLast(Sample(timeMs, quad))
+    }
+
+    fun record(timeMs: Long, quad: List<QuadPoint>) {
+        history.addLast(Sample(timeMs, quad))
+        while (history.size > 24) history.removeFirst()
+    }
+
+    /**
+     * Resolves the final quad on finger lift-off: if the user paused or moved slowly to aim
+     * before the final [liftOffWindowMs], roll back any lift-off drift that occurred in those last ms.
+     * Continuous fast drags keep the final release position untouched.
+     */
+    fun resolveRelease(releaseTimeMs: Long, currentQuad: List<QuadPoint>, imageDiag: Float): List<QuadPoint> {
+        if (history.size < 2 || imageDiag <= 1f) return currentQuad
+        val cutoff = releaseTimeMs - liftOffWindowMs
+        val anchorIdx = history.indexOfLast { it.timeMs <= cutoff }
+        if (anchorIdx < 0) return currentQuad
+        val anchor = history[anchorIdx]
+        val drift = PerspectiveGeometry.quadDelta(anchor.quad, currentQuad)
+        if (drift <= 0.0002f * imageDiag) return currentQuad
+
+        // Case 1: Finger was completely still (no MOVE events for >= 65 ms), then spiked right on lift-off.
+        val nextAfterAnchor = history.getOrNull(anchorIdx + 1)
+        if (nextAfterAnchor != null && nextAfterAnchor.timeMs - anchor.timeMs >= liftOffWindowMs) {
+            return anchor.quad
+        }
+
+        // Case 2: User was aiming slowly / holding nearly steady before the lift-off window.
+        val holdStart = anchor.timeMs - holdLookbackMs
+        val preSample = history.firstOrNull { it.timeMs >= holdStart } ?: anchor
+        val preDt = (anchor.timeMs - preSample.timeMs).coerceAtLeast(1L)
+        val preMove = PerspectiveGeometry.quadDelta(preSample.quad, anchor.quad)
+        val preSpeedPer100Ms = (preMove / imageDiag) * (100f / preDt)
+        val isSlowAiming = preSpeedPer100Ms <= 0.018f
+        // Only roll back plausible lift-off drifts (<= 8% of image diagonal), not intentional big jumps.
+        return if (isSlowAiming && drift <= 0.08f * imageDiag) anchor.quad else currentQuad
+    }
+
+    companion object {
+        /** Dampens tiny slow movements (< fineThresholdPx) to 0.55x for steady alignment inside the loupe. */
+        fun dampenDelta(dxPx: Float, dyPx: Float, fineThresholdPx: Float): Pair<Float, Float> {
+            if (fineThresholdPx <= 0f) return dxPx to dyPx
+            val dist = hypot(dxPx.toDouble(), dyPx.toDouble()).toFloat()
+            if (dist <= 0f) return 0f to 0f
+            val factor = when {
+                dist <= fineThresholdPx -> 0.55f
+                dist >= fineThresholdPx * 2f -> 1f
+                else -> 0.55f + 0.45f * ((dist - fineThresholdPx) / fineThresholdPx)
+            }
+            return (dxPx * factor) to (dyPx * factor)
+        }
+    }
+}
