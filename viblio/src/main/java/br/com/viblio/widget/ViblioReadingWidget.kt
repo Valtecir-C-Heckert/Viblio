@@ -135,9 +135,13 @@ abstract class BaseViblioReadingWidget(private val defaultSize: WidgetSize) : Ap
             return WidgetSnapshot(book, readableAccent, coverBmp, ownsCover)
         }
 
+        fun refreshAsync(context: Context) {
+            val appCtx = context.applicationContext
+            widgetExecutor.execute { runCatching { refreshAll(appCtx) } }
+        }
+
         fun refreshAll(context: Context) {
             val appCtx = context.applicationContext
-            runCatching { ViblioIconWidget.updateAll(appCtx) }
             val manager = runCatching { AppWidgetManager.getInstance(appCtx) }.getOrNull() ?: return
             val providers = listOf(
                 ViblioWidget1x1::class.java to WidgetSize.SIZE_1X1,

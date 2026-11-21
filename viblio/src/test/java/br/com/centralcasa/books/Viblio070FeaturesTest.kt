@@ -91,4 +91,37 @@ class Viblio070FeaturesTest {
             assertThrows(IllegalArgumentException::class.java) { book.copy(spineImage = bad).validated() }
         }
     }
+
+    @Test
+    fun dynamicAppIconMapsBookCoverColorsToClosestAlias() {
+        assertEquals("default", br.com.viblio.ui.DynamicAppIcon.nearestKey(null))
+        assertEquals("default", br.com.viblio.ui.DynamicAppIcon.nearestKey(0xFFF5F5F5.toInt()))
+        assertEquals("default", br.com.viblio.ui.DynamicAppIcon.nearestKey(0xFF101010.toInt()))
+        assertEquals("red", br.com.viblio.ui.DynamicAppIcon.nearestKey(0xFFD63B3B.toInt()))
+        assertEquals("blue", br.com.viblio.ui.DynamicAppIcon.nearestKey(0xFF3370D8.toInt()))
+        assertEquals("green", br.com.viblio.ui.DynamicAppIcon.nearestKey(0xFF38A060.toInt()))
+        assertEquals("purple", br.com.viblio.ui.DynamicAppIcon.nearestKey(0xFF914EE0.toInt()))
+        assertEquals("orange", br.com.viblio.ui.DynamicAppIcon.nearestKey(0xFFE07630.toInt()))
+        assertEquals("yellow", br.com.viblio.ui.DynamicAppIcon.nearestKey(0xFFE5C845.toInt()))
+        assertEquals(16, br.com.viblio.ui.DynamicAppIcon.aliases.size)
+    }
+
+    @Test
+    fun spineDetectionFindsNarrowCentralSpineDespiteInternalLettering() {
+        val w = 200; val h = 280
+        val luma = IntArray(w * h) { i ->
+            val x = i % w; val y = i / w
+            val inSpine = x in 78..122 && y in 24..256
+            when {
+                inSpine && x in 92..108 && (y in 70..95 || y in 120..145 || y in 170..195) -> 235 // bright letters inside dark spine
+                inSpine -> 35
+                else -> 195
+            }
+        }
+        val quad = requireNotNull(PerspectiveGeometry.detectQuad(luma, w, h, PhotoCropMode.SPINE))
+        assertEquals(78f, quad[0].x, 4f)
+        assertEquals(122f, quad[1].x, 4f)
+        assertEquals(24f, quad[0].y, 5f)
+        assertEquals(256f, quad[2].y, 5f)
+    }
 }

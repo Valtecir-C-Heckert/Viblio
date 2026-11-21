@@ -101,7 +101,14 @@ class AccountPanel(private val activity:Activity,private val ui:DisplayUi,privat
             ui.label(parent,"Livros · Mangás · Quadrinhos",11,ui.muted).apply {gravity=Gravity.CENTER;setPadding(0,ui.dp(12),0,ui.dp(20))}
             return
         }
-        ui.action(parent,"Removidos da Estante",onClick=::removed).apply {background=ui.outlined();(layoutParams as LinearLayout.LayoutParams).topMargin=ui.dp(16)}
+        val iconEnabled=DynamicAppIcon.isEnabled(activity)
+        ui.action(parent,if(iconEnabled)"Ícone do app na cor do livro: Ativado" else "Ícone do app na cor do livro: Desativado") {
+            val next=!DynamicAppIcon.isEnabled(activity)
+            DynamicAppIcon.setEnabled(activity,next)
+            Toast.makeText(activity,if(next)"O ícone mudará ao sair do app." else "Ícone padrão restaurado.",Toast.LENGTH_SHORT).show()
+            changed()
+        }.apply {background=ui.outlined();(layoutParams as LinearLayout.LayoutParams).topMargin=ui.dp(16)}
+        ui.action(parent,"Removidos da Estante",onClick=::removed).apply {background=ui.outlined();(layoutParams as LinearLayout.LayoutParams).topMargin=ui.dp(10)}
         ui.action(parent,"Continuar na Estante",onClick=shelf)
     }
     private fun removed() {

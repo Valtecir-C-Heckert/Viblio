@@ -170,18 +170,19 @@ class ViblioActivity : Activity() {
         val ctx = applicationContext
         val source=library
         val lastBook=if(captureLastBook && !needsLogin()) runCatching { source.lastViewedBookId() }.getOrNull() else null
-        runCatching { navigationCovers.execute {
-            // Icon widget follows the last book seen before leaving the app (color only).
-            if(lastBook!=null) runCatching { source.bookCoverColor(lastBook) }.getOrNull()?.let { br.com.viblio.widget.ViblioIconWidget.saveLastBookColor(ctx,it) }
-            runCatching { br.com.viblio.widget.BaseViblioReadingWidget.refreshAll(ctx) }
-        } }
+        br.com.viblio.widget.BaseViblioReadingWidget.refreshAsync(ctx)
+        if(captureLastBook && !needsLogin()) {
+            br.com.viblio.ui.DynamicAppIcon.applyForBookAsync(ctx) {
+                lastBook?.let { source.bookCoverColor(it) }
+            }
+        }
     }
     private fun makeLibrary()=BooksPanel(this,ui,{homeAssistant.changed();accounts.localChanged();refreshWidgetsAsync();if(tab=="shelf")render()}).apply {
         onAccount={switchTab("account")}
         jsonAllowed={accounts.signedIn && accounts.admin};useGroupedReadingHistory=true;useContrastCoverBorders=true;useSpineLayout=true;useCollectionInventory=true;useAsyncShelfImages=true;useCoverProgressColor=true;useManualShelfOrder=true;usePersonalArchive=true;separateShelfStatistics=true;pinchStep=1.4
     }
     private fun reloadProfile() {
-        themeBookKey=null;ui.readingColor(null);saveIntroCoverColor(null);br.com.viblio.widget.ViblioIconWidget.saveLastBookColor(this,null)
+        themeBookKey=null;ui.readingColor(null);saveIntroCoverColor(null);br.com.viblio.ui.DynamicAppIcon.applyForColorAsync(this,null)
         if(!accounts.signedIn)offline=false
         library.onStop();library.onDestroy();statistics?.onDestroy();statistics=null
         search.close();catalog.close();friends.close();friends=makeFriends()

@@ -124,10 +124,8 @@ class ShelfSpineView(context:Context,private val title:String,private val subtit
         canvas.restore()
     }
     private fun drawPhoto(canvas:Canvas,photo:Bitmap,w:Float,h:Float){
-        val scale=maxOf(w/photo.width,h/photo.height)
-        val srcW=(w/scale).toInt().coerceIn(1,photo.width);val srcH=(h/scale).toInt().coerceIn(1,photo.height)
-        val left=(photo.width-srcW)/2;val top=(photo.height-srcH)/2
-        photoSource.set(left,top,left+srcW,top+srcH);photoTarget.set(0f,0f,w,h)
+        // The cropped spine photo already covers the full physical spine top-to-bottom; fit it without cropping letters.
+        photoSource.set(0,0,photo.width,photo.height);photoTarget.set(0f,0f,w,h)
         canvas.drawBitmap(photo,photoSource,photoTarget,photoPaint)
         val edge=minOf(4*density,w*.16f)/w
         paint.shader=LinearGradient(0f,0f,w,0f,intArrayOf(0x88000000.toInt(),0x14000000,0x00000000,0x22000000,0x77000000),floatArrayOf(0f,edge,.5f,1-edge,1f),Shader.TileMode.CLAMP)

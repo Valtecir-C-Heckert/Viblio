@@ -98,20 +98,127 @@ object PerspectiveGeometry {
         QuadPoint(point.x.coerceIn(0f, width.toFloat()), point.y.coerceIn(0f, height.toFloat()))
 
     /**
-     * Lightweight margin detection on a small luminance image (≤ ~320 px): Sobel edges projected per half,
-     * so each corner gets its own line estimate (captures mild perspective). Returns null when unsure.
+     * Separable 5x5 Gaussian-like blur ([1, 4, 6, 4, 1] / 16) to suppress spine lettering/texture
+     * while preserving long structural book edges.
+     */
+    private fun blur5x5(luma: IntArray, width: Int, height: Int): FloatArray {
+        val tmp = FloatArray(width * height)
+        for (y in 0 until height) {
+            val row = y * width
+            for (x in 0 until width) {
+                fun s(dx: Int) = luma[row + (x + dx).coerceIn(0, width - 1)]
+                tmp[row + x] = (s(-2) + 4 * s(-1) + 6 * s(0) + 4 * s(1) + s(2)) / 16f
+            }
+        }
+        val out = FloatArray(width * height)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                fun s(dy: Int) = tmp[(y + dy).coerceIn(0, height - 1) * width + x]
+                out[y * width + x] = (s(-2) + 4 * s(-1) + 6 * s(0) + 4 * s(1) + s(2)) / 16f
+            }
+        }
+        return out
+    }
+
+    /**
+     * Edge detection on a small luminance image (≤ ~320 px).
+     * - SPINE: searches within the plausible central band around the camera guide using edge
+     *   continuity (so big spine letters don't fool it) and then locates top/bottom strictly
+     *   between the detected left/right spine edges.
+     * - COVER: smoothed Sobel projections per half for mild perspective.
+     * Returns null when unsure so the caller falls back cleanly to the camera guide frame.
      */
     fun detectQuad(luma: IntArray, width: Int, height: Int, mode: PhotoCropMode): List<QuadPoint>? {
         if (width < 24 || height < 24 || luma.size != width * height) return null
+        val smooth = blur5x5(luma, width, height)
         val gx = FloatArray(width * height); val gy = FloatArray(width * height)
         for (y in 1 until height - 1) for (x in 1 until width - 1) {
-            fun p(dx: Int, dy: Int) = luma[(y + dy) * width + x + dx].toFloat()
+            fun p(dx: Int, dy: Int) = smooth[(y + dy) * width + x + dx]
             gx[y * width + x] = abs((p(1, -1) + 2 * p(1, 0) + p(1, 1)) - (p(-1, -1) + 2 * p(-1, 0) + p(-1, 1)))
             gy[y * width + x] = abs((p(-1, 1) + 2 * p(0, 1) + p(1, 1)) - (p(-1, -1) + 2 * p(0, -1) + p(1, -1)))
         }
-        val spine = mode == PhotoCropMode.SPINE
-        val xMin = if (spine) (width * .08f).toInt() else 1
-        val xMax = if (spine) (width * .92f).toInt() else width - 2
+        return if (mode == PhotoCropMode.SPINE) detectSpine(gx, gy, width, height) else detectCover(gx, gy, width, height)
+    }
+
+    private fun detectSpine(gx: FloatArray, gy: FloatArray, width: Int, height: Int): List<QuadPoint>? {
+        val midX = width / 2
+        val midY = height / 2
+        val yFrom = (height * .12f).toInt().coerceAtLeast(1)
+        val yTo = (height * .88f).toInt().coerceAtMost(height - 2)
+        val bandRows = (yTo - yFrom + 1).coerceAtLeast(1)
+        // Only search where a framed spine's left/right edges can plausibly sit (not far-off neighbor books).
+        val leftFrom = (width * .18f).toInt().coerceAtLeast(1)
+        val leftTo = (midX - max(3, (width * .03f).toInt())).coerceAtLeast(leftFrom + 2)
+        val rightFrom = (midX + max(3, (width * .03f).toInt())).coerceAtMost(width - 4)
+        val rightTo = (width * .82f).toInt().coerceAtMost(width - 2)
+
+        fun continuousVerticalEdge(rows: IntRange, from: Int, to: Int): Int? {
+            if (to - from < 3) return null
+            val profile = FloatArray(width)
+            val count = (rows.last - rows.first + 1).coerceAtLeast(1)
+            for (x in from..to) {
+                var sum = 0f
+                var strong = 0
+                for (y in rows) {
+                    val g = gx[y * width + x]
+                    sum += g
+                    if (g >= 24f) strong++
+                }
+                // Continuity weight: a real spine edge runs along most of the height; big letters only span a short band.
+                val continuity = strong.toFloat() / count
+                profile[x] = sum * (0.35f + continuity)
+            }
+            return peak(profile, from, to, minRatio = 1.65f)
+        }
+
+        val topHalf = yFrom until midY
+        val bottomHalf = midY..yTo
+        val lt = continuousVerticalEdge(topHalf, leftFrom, leftTo) ?: return null
+        val lb = continuousVerticalEdge(bottomHalf, leftFrom, leftTo) ?: return null
+        val rt = continuousVerticalEdge(topHalf, rightFrom, rightTo) ?: return null
+        val rb = continuousVerticalEdge(bottomHalf, rightFrom, rightTo) ?: return null
+
+        val innerLeft = maxOf(lt, lb).coerceIn(1, width - 3)
+        val innerRight = minOf(rt, rb).coerceIn(innerLeft + 2, width - 2)
+        val spineW = ((rt - lt) + (rb - lb)) / 2f
+        if (spineW < width * .05f || spineW > width * .55f) return null
+
+        // Now find top and bottom strictly inside the detected spine strip!
+        fun horizontalEdgeInStrip(fromY: Int, toY: Int): Int? {
+            if (toY - fromY < 4) return null
+            val profile = FloatArray(height)
+            val cols = (innerRight - innerLeft + 1).coerceAtLeast(1)
+            for (y in fromY..toY) {
+                var sum = 0f
+                var strong = 0
+                for (x in innerLeft..innerRight) {
+                    val g = gy[y * width + x]
+                    sum += g
+                    if (g >= 20f) strong++
+                }
+                profile[y] = sum * (0.4f + strong.toFloat() / cols)
+            }
+            return peak(profile, fromY, toY, minRatio = 1.55f)
+        }
+
+        val topY = horizontalEdgeInStrip(1, (height * .35f).toInt().coerceAtLeast(6)) ?: (height * .07f).toInt()
+        val botY = horizontalEdgeInStrip((height * .65f).toInt().coerceAtMost(height - 7), height - 2) ?: (height * .93f).toInt()
+        val spineH = (botY - topY).toFloat()
+        if (spineH < bandRows * .45f) return null
+        val ratio = spineW / spineH
+        if (ratio < .05f || ratio > .50f) return null
+
+        val quad = listOf(
+            QuadPoint(lt.toFloat(), topY.toFloat()),
+            QuadPoint(rt.toFloat(), topY.toFloat()),
+            QuadPoint(rb.toFloat(), botY.toFloat()),
+            QuadPoint(lb.toFloat(), botY.toFloat()),
+        )
+        if (!isConvex(quad) || area(quad) < width * height * .025f) return null
+        return orderQuad(quad)
+    }
+
+    private fun detectCover(gx: FloatArray, gy: FloatArray, width: Int, height: Int): List<QuadPoint>? {
         fun columnEdge(rows: IntRange, from: Int, to: Int): Int? {
             val profile = FloatArray(width)
             for (x in from..to) { var s = 0f; for (y in rows) s += gx[y * width + x]; profile[x] = s }
@@ -125,10 +232,10 @@ object PerspectiveGeometry {
         val midX = width / 2; val midY = height / 2
         val topRows = 1 until midY; val bottomRows = midY until height - 1
         val leftCols = 1 until midX; val rightCols = midX until width - 1
-        val lt = columnEdge(topRows, xMin, midX - 2) ?: return null
-        val lb = columnEdge(bottomRows, xMin, midX - 2) ?: return null
-        val rt = columnEdge(topRows, midX + 2, xMax) ?: return null
-        val rb = columnEdge(bottomRows, midX + 2, xMax) ?: return null
+        val lt = columnEdge(topRows, 1, midX - 2) ?: return null
+        val lb = columnEdge(bottomRows, 1, midX - 2) ?: return null
+        val rt = columnEdge(topRows, midX + 2, width - 2) ?: return null
+        val rb = columnEdge(bottomRows, midX + 2, width - 2) ?: return null
         val tl = rowEdge(leftCols, 1, midY - 2) ?: return null
         val tr = rowEdge(rightCols, 1, midY - 2) ?: return null
         val bl = rowEdge(leftCols, midY + 2, height - 2) ?: return null
@@ -137,13 +244,12 @@ object PerspectiveGeometry {
             QuadPoint(lt.toFloat(), tl.toFloat()), QuadPoint(rt.toFloat(), tr.toFloat()),
             QuadPoint(rb.toFloat(), br.toFloat()), QuadPoint(lb.toFloat(), bl.toFloat()),
         )
-        val minShare = if (spine) .03f else .12f
-        if (!isConvex(quad) || area(quad) < width * height * minShare) return null
+        if (!isConvex(quad) || area(quad) < width * height * .12f) return null
         return orderQuad(quad)
     }
 
-    /** Index of a clear maximum (≥ 1.8× the mean of the searched range), smoothed over 3 samples. */
-    private fun peak(profile: FloatArray, from: Int, to: Int): Int? {
+    /** Index of a clear maximum (≥ [minRatio]× the mean of the searched range), smoothed over 3 samples. */
+    private fun peak(profile: FloatArray, from: Int, to: Int, minRatio: Float = 1.8f): Int? {
         if (to - from < 4) return null
         var best = -1; var bestValue = 0f; var total = 0f
         for (i in from..to) {
@@ -152,6 +258,6 @@ object PerspectiveGeometry {
             if (v > bestValue) { bestValue = v; best = i }
         }
         val mean = total / (to - from + 1)
-        return if (best >= 0 && mean > 0f && bestValue >= mean * 1.8f) best else null
+        return if (best >= 0 && mean > 0f && bestValue >= mean * minRatio) best else null
     }
 }

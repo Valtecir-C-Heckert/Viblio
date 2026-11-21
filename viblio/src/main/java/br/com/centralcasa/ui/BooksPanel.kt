@@ -1837,8 +1837,11 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
         }
         val preview = row(art); cover(preview, b.copy(title = b.title.ifBlank { "Nova leitura" }), 76, 112)
         val options = ui.column(); preview.addView(options, LinearLayout.LayoutParams(0, -2, 1f))
+        ui.action(options, "Tirar foto") {
+            catalogGeneration++;captureEditor(); launchPhoto(b, "cover", br.com.viblio.camera.BookPhotoCropActivity.SOURCE_CAMERA)
+        }
         ui.action(options, if (b.cover.isBlank()) "Escolher imagem" else "Trocar imagem") {
-            catalogGeneration++;captureEditor(); launchDocument(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "image/*" }, COVER)
+            catalogGeneration++;captureEditor(); launchPhoto(b, "cover", br.com.viblio.camera.BookPhotoCropActivity.SOURCE_GALLERY)
         }
         ui.action(options, "Buscar capa") {
             captureEditor(); launchDocument(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?tbm=isch&q=" + Uri.encode(requireNotNull(editor).let { CoverSearch.query(it.title, it.author, it.kind, it.sequenceNumber, it.publisher) }))), WEB)
@@ -2929,12 +2932,15 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
         val id = data.getStringExtra(br.com.viblio.camera.BookPhotoCropActivity.EXTRA_BOOK_ID).orEmpty()
         val profile = data.getStringExtra(br.com.viblio.camera.BookPhotoCropActivity.EXTRA_PROFILE)
         if (!name.matches(Regex("[a-f0-9]{64}\\.jpg")) || id.isBlank() || profile != LibraryProfiles.database(activity) || images.file(name) == null) { toast("A foto não pôde ser aplicada. Tente novamente."); return }
+        if (request == COVER_PHOTO && screen == "editor" && editor?.id == id) {
+            attempt { captureEditor(); editor = editor?.copy(cover = name); fields.clear(); toast("Capa adicionada. Salve o livro para confirmar."); changed() }
+            return
+        }
         val latest = repository.book(id)?.takeUnless { it.archived } ?: run { toast("O livro mudou. Tire a foto novamente."); return }
         attempt {
             if (request == COVER_PHOTO) {
                 val updated = latest.copy(cover = name, updatedAt = System.currentTimeMillis())
-                if (screen == "editor" && editor?.id == id) { captureEditor(); editor = editor?.copy(cover = name); fields.clear(); toast("Capa adicionada. Salve o livro para confirmar.") }
-                else { repository.save(updated); repository.book(id)?.let { catalog?.saved(it) }; toast("Capa atualizada") }
+                repository.save(updated); repository.book(id)?.let { catalog?.saved(it) }; toast("Capa atualizada")
             } else {
                 repository.save(latest.copy(spineImage = name, updatedAt = System.currentTimeMillis()))
                 if (screen == "editor" && editor?.id == id) editor = editor?.copy(spineImage = name)

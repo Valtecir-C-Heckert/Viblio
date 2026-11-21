@@ -11,7 +11,6 @@
         <activity android:name="br.com.viblio.scanner.BarcodeScannerActivity" android:exported="false" android:screenOrientation="portrait" />
         <activity android:name="br.com.viblio.camera.BookPhotoCropActivity" android:exported="false" android:screenOrientation="portrait" />
         <activity android:name="br.com.viblio.ViblioActivity" android:exported="true" android:launchMode="singleTop" android:windowSoftInputMode="adjustResize">
-            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -19,6 +18,56 @@
                 <data android:scheme="viblio" android:host="current" />
             </intent-filter>
         </activity>
+
+        <!-- Dynamic launcher app icons (16 book-cover colors switched on app close) -->
+        <activity-alias android:name="br.com.viblio.LauncherDefault" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="true" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_default" android:roundIcon="@drawable/viblio_launcher_default">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherRed" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_red" android:roundIcon="@drawable/viblio_launcher_red">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherCrimson" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_crimson" android:roundIcon="@drawable/viblio_launcher_crimson">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherOrange" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_orange" android:roundIcon="@drawable/viblio_launcher_orange">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherAmber" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_amber" android:roundIcon="@drawable/viblio_launcher_amber">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherYellow" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_yellow" android:roundIcon="@drawable/viblio_launcher_yellow">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherOlive" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_olive" android:roundIcon="@drawable/viblio_launcher_olive">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherGreen" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_green" android:roundIcon="@drawable/viblio_launcher_green">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherEmerald" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_emerald" android:roundIcon="@drawable/viblio_launcher_emerald">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherTeal" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_teal" android:roundIcon="@drawable/viblio_launcher_teal">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherCyan" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_cyan" android:roundIcon="@drawable/viblio_launcher_cyan">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherBlue" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_blue" android:roundIcon="@drawable/viblio_launcher_blue">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherIndigo" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_indigo" android:roundIcon="@drawable/viblio_launcher_indigo">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherPurple" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_purple" android:roundIcon="@drawable/viblio_launcher_purple">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherMagenta" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_magenta" android:roundIcon="@drawable/viblio_launcher_magenta">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="br.com.viblio.LauncherBrown" android:targetActivity="br.com.viblio.ViblioActivity" android:enabled="false" android:exported="true" android:label="Viblio" android:icon="@drawable/viblio_launcher_brown" android:roundIcon="@drawable/viblio_launcher_brown">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
 
         <!-- 5 Home Screen Widget sizes (1x1, 2x1, 3x1, 4x1, 5x1), compact 1-row, width-only resizable -->
         <receiver android:name="br.com.viblio.widget.ViblioWidget1x1" android:label="Viblio · Capa (1×1)" android:exported="true">
@@ -50,13 +99,6 @@
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/viblio_widget_5x1_info" />
-        </receiver>
-        <!-- App-icon style 1x1 widget tinted with the last opened book's cover color -->
-        <receiver android:name="br.com.viblio.widget.ViblioIconWidget" android:label="Viblio · Ícone (1×1)" android:exported="true">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-            </intent-filter>
-            <meta-data android:name="android.appwidget.provider" android:resource="@xml/viblio_widget_icon_1x1_info" />
         </receiver>
 
         <!-- Optional local daily reading reminder -->
