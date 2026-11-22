@@ -110,3 +110,16 @@ def test_non_ascii_bearer_and_bigint_bounds_and_v1_covers_cache(tmp_path):
         unpack(gzip.compress(('['*20 + ']'*20).encode()))
     assert exc2.value.status_code==422
 
+
+def test_private_cover_get_classification():
+    from app.security import is_private_cover_get
+    u1='00000000-0000-0000-0000-000000000001'
+    u2='00000000-0000-0000-0000-000000000002'
+    assert is_private_cover_get(f'/v1/friends/{u1}/cover', 'GET')
+    assert is_private_cover_get(f'/v1/clubs/{u1}/proposals/{u2}/cover', 'GET')
+    assert is_private_cover_get(f'/v1/clubs/{u1}/library-cover', 'GET')
+    assert not is_private_cover_get(f'/v1/friends/{u1}/cover', 'POST')
+    assert not is_private_cover_get(f'/v1/friends/{u1}/library', 'GET')
+    assert not is_private_cover_get(f'/v1/clubs/{u1}/feed', 'GET')
+
+

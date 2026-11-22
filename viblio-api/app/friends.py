@@ -2,8 +2,9 @@
 import base64
 import io
 import re
+import threading
 import uuid
-from functools import lru_cache
+from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import urlencode
 from fastapi import Depends, HTTPException, Query
@@ -134,28 +135,69 @@ def mount_friends(app,connect,storage,current):
             page=matches[cursor:cursor+40]
             return dict(friend=friend,revision=row['revision'],items=page,next_cursor=cursor+40 if len(matches)>cursor+40 else None,
                         collection=dict(id=target['id'],title=str(target['title'])[:500]) if target else None)
-    @lru_cache(maxsize=2)
+    def _single_flight_lru(maxsize):
+        store = OrderedDict()
+        guard = threading.Lock()
+        key_locks = {}
+        def get_or_build(key, build):
+            with guard:
+                if key in store:
+                    store.move_to_end(key)
+                    return store[key]
+                lock = key_locks.get(key)
+                if lock is None:
+                    lock = threading.Lock()
+                    key_locks[key] = lock
+            with lock:
+                with guard:
+                    if key in store:
+                        store.move_to_end(key)
+                        return store[key]
+                try:
+                    value = build()
+                except Exception:
+                    with guard:
+                        key_locks.pop(key, None)
+                    raise
+                with guard:
+                    store[key] = value
+                    store.move_to_end(key)
+                    while len(store) > maxsize:
+                        evicted, _ = store.popitem(last=False)
+                        key_locks.pop(evicted, None)
+                    key_locks.pop(key, None)
+                    return value
+        return get_or_build
+
+    sources_cache = _single_flight_lru(32)
+    thumb_cache = _single_flight_lru(512)
+
     def cover_sources(owner,filename):
         if not re.fullmatch(r'[a-f0-9]{32}\.json\.gz',filename):raise HTTPException(404,'Capa indisponível.')
-        try:
-            with (root/str(owner)/filename).open('rb') as file:raw=file.read(MAX_PACKED+1)
-        except FileNotFoundError:raise HTTPException(404,'Capa indisponível. Atualize a estante.') from None
-        if len(raw)>MAX_PACKED:raise HTTPException(413,'Acervo acima do limite.')
-        library=unpack(raw)['library'];collections={c['id']:c for c in library.get('collections',[])}
-        return {b['id']:b.get('coverData','') for b in library.get('books',[])+library.get('collections',[]) if visible(b,collections)}
-    @lru_cache(maxsize=256)
+        def build():
+            try:
+                with (root/str(owner)/filename).open('rb') as file:raw=file.read(MAX_PACKED+1)
+            except FileNotFoundError:raise HTTPException(404,'Capa indisponível. Atualize a estante.') from None
+            if len(raw)>MAX_PACKED:raise HTTPException(413,'Acervo acima do limite.')
+            library=unpack(raw)['library'];collections={c['id']:c for c in library.get('collections',[])}
+            return {b['id']:b.get('coverData','') for b in library.get('books',[])+library.get('collections',[]) if visible(b,collections)}
+        return sources_cache((str(owner),filename),build)
+
     def thumbnail(owner,filename,book_id):
-        art=cover_sources(owner,filename).get(book_id,'')
-        data=read_image_bytes(root,owner,art)
-        if not data:raise HTTPException(404,'Capa indisponível.')
-        try:
-            with Image.open(io.BytesIO(data)) as image:
-                if image.format!='JPEG' or max(image.size)>2048:raise ValueError()
-                image.thumbnail((360,540));out=io.BytesIO();image.convert('RGB').save(out,'JPEG',quality=86)
-            result=out.getvalue()
-            if len(result)>256*1024:raise ValueError()
-            return result
-        except (ValueError,OSError,Image.DecompressionBombError):raise HTTPException(404,'Capa indisponível.') from None
+        def build():
+            art=cover_sources(owner,filename).get(book_id,'')
+            data=read_image_bytes(root,owner,art)
+            if not data:raise HTTPException(404,'Capa indisponível.')
+            try:
+                with Image.open(io.BytesIO(data)) as image:
+                    if image.format!='JPEG' or max(image.size)>2048:raise ValueError()
+                    image.thumbnail((360,540));out=io.BytesIO();image.convert('RGB').save(out,'JPEG',quality=86)
+                result=out.getvalue()
+                if len(result)>256*1024:raise ValueError()
+                return result
+            except (ValueError,OSError,Image.DecompressionBombError):raise HTTPException(404,'Capa indisponível.') from None
+        return thumb_cache((str(owner),filename,book_id),build)
+
     @app.get('/v1/friends/{other}/cover')
     def cover(other:uuid.UUID,book_id:str=Query(min_length=1,max_length=200),revision:int=Query(ge=1,le=2**63-1),user=Depends(current)):
         with connect() as db:

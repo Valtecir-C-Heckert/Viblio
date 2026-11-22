@@ -10,6 +10,13 @@ import br.com.centralcasa.data.HomeAssistantCredentials
 import com.google.gson.*
 import java.util.UUID
 import java.util.concurrent.Executors
+data class AccountSyncStatus(
+    val label: String,
+    val isError: Boolean = false,
+    val isPending: Boolean = false,
+    val isOffline: Boolean = false
+)
+
 /** Network work stays off the UI thread; incoming changes require a guarded apply. */
 class AccountManager(private val activity:Activity,private val changed:()->Unit,private val reloaded:()->Unit,private val canReplace:()->Boolean) {
     private val secret=HomeAssistantCredentials(activity,"viblio_account_session","viblio_account_session_key")
@@ -18,6 +25,7 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
     private var session=runCatching {JsonParser.parseString(secret.load()).asJsonObject}.getOrNull()
     private var closed=false;private var running=false;private var busy=false;private var retryAfter=0L
     private var automaticPending=false
+    private var syncError=false
     private var conflictProfile:String?=null
     private var progress:ProgressDialog?=null
     var status="";private set
@@ -29,6 +37,10 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
     val address get()=session?.get("address")?.asString ?: defaultAddress.ifBlank {config.getString("url","").orEmpty()}
     private val owner get()=session?.getAsJsonObject("user")?.let {LibraryProfiles.key(it.get("server_id").asString,it.get("id").asString)}.orEmpty()
     val linked get()=signedIn && LibraryProfiles.owner(activity)==owner
+    fun syncStatus():AccountSyncStatus {
+        val hasConflict=linked && (conflictProfile!=null || preferences().getBoolean("remote_changed",false))
+        return resolveSyncStatus(signedIn,linked,hasConflict,syncError,busy || automaticPending)
+    }
     private fun preferences()=activity.getSharedPreferences("viblio_sync"+LibraryProfiles.suffix(activity),0)
     fun catalogToken():String?=session?.get("token")?.asString
     fun personalMode()=config.getBoolean("personal_mode",false)
@@ -55,7 +67,7 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
     }
     fun stop(){if(observingNetwork){activity.unregisterReceiver(network);observingNetwork=false};running=false;handler.removeCallbacks(periodic);handler.removeCallbacks(scheduled)}
     fun localChanged(){deferAutomatic(5000)}
-    private fun <T> work(label:String,modal:Boolean=true,action:()->T,done:(T)->Unit) {
+    private fun <T> work(label:String,modal:Boolean=true,trackSync:Boolean=false,action:()->T,done:(T)->Unit) {
         if(closed || busy){if(modal)toast("Aguarde a operação atual.");return};busy=true
         val profile=LibraryProfiles.database(activity)
         val dialog=if(modal)ProgressDialog.show(activity,"Viblio",label,true,false) else null;progress=dialog
@@ -64,7 +76,8 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
             post {busy=false;dialog?.dismiss();progress=null
                 if(LibraryProfiles.database(activity)!=profile){resumePending();return@post}
                 try {result.fold(done,{error->
-                    if(error is AccountFailure && error.code==401 && signedIn){secret.clear();session=null;LibraryProfiles.anonymous(activity);reloaded()}
+                    if(error is AccountFailure && error.code==401 && signedIn){secret.clear();session=null;syncError=false;LibraryProfiles.anonymous(activity);reloaded()}
+                    else if(trackSync){syncError=true}
                     status=if(error is java.net.ConnectException || error is java.net.SocketTimeoutException)"Servidor indisponível. Sua Estante continua no aparelho." else error.message ?: "Não foi possível concluir."
                     retryAfter=System.currentTimeMillis()+300000;if(modal)toast(status);changed()
                 })}finally {resumePending()}
@@ -133,7 +146,7 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
         if(!signedIn)return
         if(!canReplace() || busy){toast("Salve o formulário e aguarde a operação atual antes de sair.");return}
         AlertDialog.Builder(activity).setTitle("Sair da conta?").setMessage("A cópia local permanece guardada neste perfil. Entre novamente nessa conta para reabrir a Estante. Outras contas têm acervos separados.")
-            .setPositiveButton("Sair") {_,_->val client=api();worker.execute {runCatching {client.call("/v1/auth/logout","POST")}};secret.clear();session=null;LibraryProfiles.anonymous(activity);status="Sessão encerrada. Sua Estante continua guardada no perfil.";reloaded();changed()}.setNegativeButton("Cancelar",null).show()
+            .setPositiveButton("Sair") {_,_->val client=api();worker.execute {runCatching {client.call("/v1/auth/logout","POST")}};secret.clear();session=null;syncError=false;LibraryProfiles.anonymous(activity);status="Sessão encerrada. Sua Estante continua guardada no perfil.";reloaded();changed()}.setNegativeButton("Cancelar",null).show()
     }
     private fun ready():Boolean {
         if(!linked){toast("Entre e conclua a vinculação primeiro.");return false}
@@ -172,7 +185,7 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
         automaticPending=false
         val expected=owner;val client=api();val io=AccountLibrary(activity)
         val base=prefs.getLong("revision",0)
-        work("Sincronizando…",modal=false,action={
+        work("Sincronizando…",modal=false,trackSync=true,action={
             val remoteInfo=client.call("/v1/me/library/status")
             val remote=remoteInfo.get("revision").asLong
             val useMedia=remoteInfo.get("media")?.asBoolean==true
@@ -188,7 +201,7 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
             }catch(e:AccountFailure){if(e.code==409)AutoSyncResult(e.response,hash,true,useMedia) else throw e}
         }) {result->
             if(expected!=owner)return@work
-            if(result==null){conflictProfile=null;prefs.edit().putBoolean("remote_changed",false).commit();status=if(automaticPending)"Alterações aguardando envio." else "Estante sincronizada. Backup salvo na conta.";changed();return@work}
+            if(result==null){syncError=false;conflictProfile=null;prefs.edit().putBoolean("remote_changed",false).commit();status=if(automaticPending)"Alterações aguardando envio." else "Estante sincronizada. Backup salvo na conta.";changed();return@work}
             val (response,uploadedHash,conflict,useMedia)=result
             if(conflict){
                 conflictProfile=if(response.get("detail")?.takeIf {it.isJsonObject}?.asJsonObject?.get("code")?.takeIf {it.isJsonPrimitive}?.asString=="changed_again")null else LibraryProfiles.database(activity)
@@ -196,14 +209,14 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
                 status="Há alterações que precisam da sua escolha. Toque em Conferir sincronização.";changed();return@work
             }
             if(response.get("_matches_local")?.asBoolean==true){
-                conflictProfile=null
+                syncError=false;conflictProfile=null
                 prefs.edit().putLong("revision",response.get("revision").asLong).putString("local_hash",uploadedHash).putBoolean("remote_changed",false).putLong("synced_at",System.currentTimeMillis()).commit()
                 status=if(automaticPending)"Alterações aguardando envio." else "Estante sincronizada. Backup salvo na conta.";changed();return@work
             }
             // Nothing is replaced while a form, active reading or newer local edits exist.
             if(!running || !canReplace()){localChanged();return@work}
             val repo=LibraryRepository(activity);val draft=repo.draft();repo.close();if(draft!=null)return@work
-            work("Atualizando sua Estante…",action={
+            work("Atualizando sua Estante…",trackSync=true,action={
                 if(io.hash(io.capture(useMedia))!=uploadedHash)return@work false
                 val merged=response.getAsJsonObject("snapshot")
                 if(io.hash(merged)!=uploadedHash){
@@ -213,7 +226,7 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
                 prefs.edit().putLong("revision",response.get("revision").asLong).putString("local_hash",io.hash(io.capture(useMedia))).putBoolean("remote_changed",false).putLong("synced_at",System.currentTimeMillis()).commit()
                 true
             }) {applied->
-                if(applied){conflictProfile=null;status="Estante sincronizada. Backup salvo na conta.";reloaded();changed()}
+                if(applied){syncError=false;conflictProfile=null;status="Estante sincronizada. Backup salvo na conta.";reloaded();changed()}
                 else localChanged()
             }
         }
@@ -221,7 +234,7 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
 
     fun sync() {
         if(!ready())return
-        work("Conferindo o acervo da conta…",action={api().call("/v1/me/library/status")}) {remote->
+        work("Conferindo o acervo da conta…",trackSync=true,action={api().call("/v1/me/library/status")}) {remote->
             val base=preferences().getLong("revision",-1);val revision=remote.get("revision").asLong
             val useMedia=remote.get("media")?.asBoolean==true
             if(base<0 && revision>0){
@@ -233,8 +246,8 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
                 builder.show()
             }else if(base==revision && preferences().getString("local_hash",null)!=null && !preferences().getBoolean("restore_pending",false)){
                 val io=AccountLibrary(activity)
-                work("Conferindo alterações…",modal=false,action={io.hash(io.capture(useMedia))==preferences().getString("local_hash",null)}) {same->
-                    if(same){conflictProfile=null;preferences().edit().putBoolean("remote_changed",false).commit();status="Estante sincronizada. Backup salvo na conta.";changed()}else performSync(base,useMedia=useMedia)
+                work("Conferindo alterações…",modal=false,trackSync=true,action={io.hash(io.capture(useMedia))==preferences().getString("local_hash",null)}) {same->
+                    if(same){syncError=false;conflictProfile=null;preferences().edit().putBoolean("remote_changed",false).commit();status="Estante sincronizada. Backup salvo na conta.";changed()}else performSync(base,useMedia=useMedia)
                 }
             }else performSync(if(base<0)0 else base,useMedia=useMedia)
         }
@@ -242,7 +255,7 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
     private fun performSync(base:Long,snapshot:JsonObject?=null,resolutions:JsonObject?=null,against:Long?=null,useMedia:Boolean=false) {
         if(!ready())return
         val io=AccountLibrary(activity);val prefs=preferences();val client=api()
-        work("Combinando sua Estante…",action={
+        work("Combinando sua Estante…",trackSync=true,action={
             val local=snapshot ?: io.capture(useMedia)
             val response=try {sendLibrary(client,io,local,base,useMedia,resolutions,against)}catch(e:AccountFailure){if(e.code==409)return@work Triple(local,e.response.get("detail")?.takeIf {it.isJsonObject}?.asJsonObject ?: JsonObject(),false);throw e}
             val merged=response.getAsJsonObject("snapshot")
@@ -253,12 +266,12 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
             prefs.edit().putLong("revision",response.get("revision").asLong).putString("local_hash",io.hash(io.capture(useMedia))).putBoolean("remote_changed",false).putBoolean("restore_pending",false).putLong("synced_at",System.currentTimeMillis()).commit()
             Triple(local,response,true)
         }) {(local,response,success)->
-            if(success){conflictProfile=null;status="Estante sincronizada. Backup salvo na conta.";reloaded();changed()}
+            if(success){syncError=false;conflictProfile=null;status="Estante sincronizada. Backup salvo na conta.";reloaded();changed()}
             else if(response.get("code")?.asString=="conflicts"){
                 conflictProfile=LibraryProfiles.database(activity);preferences().edit().putBoolean("remote_changed",true).commit();resolve(base,local,response,useMedia)
             }
             else if(response.get("code")?.asString=="base_expired")AlertDialog.Builder(activity).setTitle("Este aparelho ficou muito tempo offline").setMessage("A base antiga expirou. Podemos combinar como uma nova importação e pedir escolhas nos conflitos. Revise itens excluídos definitivamente, que podem existir no servidor.").setPositiveButton("Revisar e combinar") {_,_->performSync(0,local,useMedia=useMedia)}.setNegativeButton("Cancelar",null).show()
-            else {status=response.get("message")?.asString ?: "Revise os dados antes de sincronizar.";toast(status);changed()}
+            else {syncError=true;status=response.get("message")?.asString ?: "Revise os dados antes de sincronizar.";toast(status);changed()}
         }
     }
     private fun resolve(base:Long,local:JsonObject,detail:JsonObject,useMedia:Boolean) {
@@ -286,14 +299,14 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
     private fun restore(revision:Long,historical:Boolean=false,useMedia:Boolean?=null) {
         if(!ready())return
         val io=AccountLibrary(activity);val prefs=preferences();val client=api()
-        work("Restaurando sua Estante…",action={
+        work("Restaurando sua Estante…",trackSync=true,action={
             val statusObj=if(historical || useMedia==null)client.call("/v1/me/library/status") else null
             val mediaMode=useMedia ?: (statusObj?.get("media")?.asBoolean==true)
             val snapshot=client.call("/v1/me/library?revision=$revision",extraHeaders=if(mediaMode)mediaHeaders else emptyMap())
             val baseline=if(historical)requireNotNull(statusObj).get("revision").asLong else revision
             if(mediaMode)io.syncMediaDown(client,snapshot)
             io.apply(snapshot);prefs.edit().putBoolean("restore_pending",historical).putLong("revision",baseline).putString("local_hash",io.hash(io.capture(mediaMode))).putBoolean("remote_changed",false).commit()
-        }) {conflictProfile=null;status="Backup restaurado neste perfil. Sincronize para publicar novas alterações.";reloaded();changed()}
+        }) {syncError=false;conflictProfile=null;status="Backup restaurado neste perfil. Sincronize para publicar novas alterações.";reloaded();changed()}
     }
     private fun copySensitive(label:String,text:String) {
         val clip=android.content.ClipData.newPlainText(label,text)
@@ -336,4 +349,21 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
         }.setNegativeButton("Fechar",null).show()
     }}
     fun close(){stop();closed=true;running=false;progress?.dismiss();progress=null;handler.removeCallbacksAndMessages(null);worker.shutdown()}
+
+    companion object {
+        fun resolveSyncStatus(
+            signedIn: Boolean,
+            linked: Boolean,
+            hasConflict: Boolean,
+            hasSyncError: Boolean,
+            pending: Boolean
+        ): AccountSyncStatus = when {
+            !signedIn -> AccountSyncStatus("Estante offline", isOffline = true)
+            !linked -> AccountSyncStatus("Vincular estante", isError = true)
+            hasConflict -> AccountSyncStatus("Conflito de sincronização · Toque para resolver", isError = true)
+            hasSyncError -> AccountSyncStatus("Erro ao sincronizar · Toque para resolver", isError = true)
+            pending -> AccountSyncStatus("Sincronizando…", isPending = true)
+            else -> AccountSyncStatus("Sincronizado")
+        }
+    }
 }

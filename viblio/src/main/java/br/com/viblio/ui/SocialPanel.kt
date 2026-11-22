@@ -53,7 +53,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         }
     }
     private val dialogs=mutableSetOf<Dialog>();private val invited=mutableSetOf<String>()
-    private val friends=FriendsPanel(activity,ui,accounts,onDiscover=::discover,embedded=true){if(active && tab=="friends" && !people)changed()}
+    private val friends=FriendsPanel(activity,ui,accounts,onDiscover=::discover,embedded=true,sharedImages={images}){if(active && tab=="friends" && !people)changed()}
     private fun discover(){friends.hide(resetSelection=true);people=true;inviteClub=null;reset();changed()}
     val canReplaceLibrary get()=draft.isBlank() && dialogs.isEmpty() && !busy
     val displayTheme get()=if(tab=="friends" && !people)friends.displayTheme else ui
@@ -78,9 +78,9 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         tag=tagName;setPadding(ui.dp(14),ui.dp(12),ui.dp(14),ui.dp(12));background=palette.outlined(palette.surface,palette.lineColor,0)
         parent.addView(this,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
     }
-    private fun stripeCard(parent:LinearLayout,tagName:String="",palette:DisplayUi=ui,stripeDp:Int=3,bgColor:Int=palette.surface,borderColor:Int=palette.lineColor,padH:Int=14,padV:Int=12):LinearLayout=ui.column().apply {
+    private fun stripeCard(parent:LinearLayout,tagName:String="",palette:DisplayUi=ui,stripeDp:Int=0,bgColor:Int=palette.surface,borderColor:Int=palette.lineColor,padH:Int=14,padV:Int=12):LinearLayout=ui.column().apply {
         tag=tagName;setPadding(ui.dp(padH),ui.dp(padV),ui.dp(padH),ui.dp(padV))
-        background=StripeCardDrawable(bgColor,borderColor,palette.accent,ui.dp(1).coerceAtLeast(1),ui.dp(stripeDp).coerceAtLeast(1))
+        background=palette.outlined(bgColor,borderColor,0)
         parent.addView(this,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
     }
     private fun section(parent:LinearLayout,label:String,palette:DisplayUi=ui){
@@ -166,8 +166,8 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     private val tick=Runnable {scheduled=false;if(active && !closed && tab!="friends" && !people && clubPage!="books" && !busy && loaded && dialogs.isEmpty() && stage==null && SystemClock.elapsedRealtime()-editedAt>=3000){load(poll=true)};arm()}
     private fun arm(){if(active && !closed && !scheduled){scheduled=true;handler.postDelayed(tick,delay)}}
     private fun reset(preserveClub:Boolean=false){stopLive();generation++;clubFeedEpoch++;requestConnection?.cancel();requestConnection=null;clubFeedConnection?.cancel();clubFeedConnection=null;clubFeedBusy=false;busy=false;loaded=false;error="";rows=emptyList();cursor=null;messageBefore=null;if(!preserveClub){data=JsonObject();clubFeed=emptyList();clubFeedCursor=null};if(images==null)images=api?.let {FriendCoverLoader(it::thumbnail)}}
-    fun hide(resetSelection:Boolean=false){active=false;stopLive();clearBackdrop();generation++;clubFeedEpoch++;requestConnection?.cancel();requestConnection=null;clubFeedConnection?.cancel();clubFeedConnection=null;clubFeedBusy=false;busy=false;loaded=false;scheduled=false;coverRedrawScheduled=false;handler.removeCallbacksAndMessages(null);api?.cancel();images?.close();images=null;feedColors.clear();dialogs.toList().forEach {it.dismiss()};dialogs.clear();rows=emptyList();data=JsonObject();identity="";friends.hide(resetSelection);if(resetSelection){club=null;stage=null;round=null;clubPage="home";people=false;inviteClub=null;draft="";replyToId=null;replyToUser="";invited.clear()}}
-    fun close(){hide();closed=true;api?.close();api=null;apiIdentity="";friends.close();worker.shutdownNow();liveWorker.shutdownNow();messagesWorker.shutdownNow();backdropWorker.shutdownNow();clubFeedWorker.shutdownNow()}
+    fun hide(resetSelection:Boolean=false){active=false;stopLive();clearBackdrop();generation++;clubFeedEpoch++;requestConnection?.cancel();requestConnection=null;clubFeedConnection?.cancel();clubFeedConnection=null;clubFeedBusy=false;busy=false;loaded=false;scheduled=false;coverRedrawScheduled=false;handler.removeCallbacksAndMessages(null);api?.cancel();images?.detach();dialogs.toList().forEach {it.dismiss()};dialogs.clear();rows=emptyList();data=JsonObject();friends.hide(resetSelection);if(resetSelection){club=null;stage=null;round=null;clubPage="home";people=false;inviteClub=null;draft="";replyToId=null;replyToUser="";invited.clear()}}
+    fun close(){hide();closed=true;images?.close();images=null;feedColors.clear();identity="";api?.close();api=null;apiIdentity="";friends.close();worker.shutdownNow();liveWorker.shutdownNow();messagesWorker.shutdownNow();backdropWorker.shutdownNow();clubFeedWorker.shutdownNow()}
     private fun draftOwner()=java.security.MessageDigest.getInstance("SHA-256").digest(who().toByteArray()).joinToString(""){"%02x".format(it.toInt() and 255)}
     fun save(out:Bundle){friends.save(out);out.putString("social.tab",tab);out.putString("social.club",club);out.putString("social.round",round);out.putString("social.stage",stage);out.putString("social.clubPage",clubPage);out.putString("social.draft",draft.take(2000));out.putString("social.draftOwner",draftOwner())}
     fun restore(state:Bundle?){friends.restore(state);tab=state?.getString("social.tab").takeIf {it in listOf("feed","friends","clubs")} ?: "feed";club=state?.getString("social.club")?.let(::id);round=state?.getString("social.round")?.let(::id);stage=state?.getString("social.stage")?.let(::id);clubPage=state?.getString("social.clubPage").takeIf {it in listOf("home","history","settings","members")} ?: "home";draft=if(state?.getString("social.draftOwner")==draftOwner())state.getString("social.draft").orEmpty().take(2000) else "";replyToId=null;replyToUser=""}
@@ -245,14 +245,15 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         val currentWho=who()
         if(identity!=currentWho) {
             if(identity.isNotBlank()){dialogs.toList().forEach {it.dismiss()};friends.hide(resetSelection=true);club=null;round=null;stage=null;people=false;inviteClub=null;draft="";replyToId=null;replyToUser="";invited.clear()}
+            feedColors.clear();images?.close();images=null
             reset()
             identity=currentWho
-            if(api==null || apiIdentity!=currentWho){api?.close();api=AccountApi(accounts.address,accounts.catalogToken().orEmpty());apiIdentity=currentWho;images?.close();images=null}
+            if(api==null || apiIdentity!=currentWho){api?.close();api=AccountApi(accounts.address,accounts.catalogToken().orEmpty());apiIdentity=currentWho}
             if(images==null)images=FriendCoverLoader(api!!::thumbnail)
         }else if(images==null && api!=null){
             images=FriendCoverLoader(api!!::thumbnail)
         }
-        if(!accounts.signedIn){title(parent,"AMIGOS",30);text(parent,"Entre para ver seus amigos.",14,ui.muted);return}
+        if(!accounts.signedIn){feedColors.clear();images?.close();images=null;identity="";title(parent,"AMIGOS",30);text(parent,"Entre para ver seus amigos.",14,ui.muted);return}
         updateTheme()
         arm()
         if(tab=="friends" && !people && friends.inDetail){friends.render(parent);return}
@@ -333,9 +334,9 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         parent.addView(image,LinearLayout.LayoutParams(ui.dp(width),ui.dp(height)).apply {marginEnd=ui.dp(marginEndDp)});images?.bind(image,path);return image
     }
     private fun consult(book:JsonObject,owner:String){
-        val client=api ?: return;val loader=FriendCoverLoader(client::thumbnail)
-        val dialog=BookInfoDialog.show(activity,ui,BookInfoDialog.Info(book.s("title"),book.s("author"),book.s("publisher"),book.s("genre"),book.n("pages").takeIf {it>0}?.toInt(),page=book.n("page").toInt(),owner=owner),bind={image,root->loader.attach(root);loader.bind(image,book.s("cover"))},onClose={loader.close()})
-        dialogs.add(dialog);dialog.setOnDismissListener {loader.close();dialogs.remove(dialog)}
+        val loader=images ?: return
+        val dialog=BookInfoDialog.show(activity,ui,BookInfoDialog.Info(book.s("title"),book.s("author"),book.s("publisher"),book.s("genre"),book.n("pages").takeIf {it>0}?.toInt(),page=book.n("page").toInt(),owner=owner),bind={image,_->loader.bind(image,book.s("cover"))},onClose={})
+        dialogs.add(dialog);dialog.setOnDismissListener {dialogs.remove(dialog)}
     }
     private fun shouldRedrawCoverCards():Boolean {
         if(!active || people || stage!=null)return false
@@ -360,7 +361,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 feedColors[path]=color
                 if(shouldRedrawCoverCards() && !coverRedrawScheduled){
                     coverRedrawScheduled=true
-                    handler.postDelayed(coverRedraw,60)
+                    handler.postDelayed(coverRedraw,180)
                 }
             }}
         }
@@ -1155,7 +1156,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         val banner=ui.row().apply {
             gravity=Gravity.CENTER_VERTICAL
             setPadding(ui.dp(10),ui.dp(5),ui.dp(8),ui.dp(5))
-            background=StripeCardDrawable(alphaColor(ui.activeSurface,230),borderColor,ui.accent,ui.dp(1).coerceAtLeast(1),ui.dp(2).coerceAtLeast(1))
+            background=ui.outlined(alphaColor(ui.activeSurface,230),borderColor,0)
             visibility=View.GONE
         }
         composerCard.addView(banner,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(6)})
@@ -1238,8 +1239,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             val message=ui.column().apply {
                 tag="club-discussion-message:${m.n("id")}"
                 setPadding(ui.dp(12),ui.dp(10),ui.dp(12),ui.dp(10))
-                background=if(hasReply)StripeCardDrawable(cardBg,borderColor,ui.accent,ui.dp(1).coerceAtLeast(1),ui.dp(2).coerceAtLeast(1))
-                else ui.outlined(cardBg,borderColor,0)
+                background=ui.outlined(cardBg,borderColor,0)
             }
             parent.addView(message,LinearLayout.LayoutParams(-1,-2).apply {
                 bottomMargin=ui.dp(8)
@@ -1298,31 +1298,6 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             }
         }
     }
-}
-
-/** Rectilinear surface with 1px hairline border and left accent stripe, safe from API 21+. */
-private class StripeCardDrawable(
-    private val fill:Int,
-    private val border:Int,
-    private val stripe:Int,
-    private val borderWidth:Int,
-    private val stripeWidth:Int,
-):Drawable(){
-    private val paint=Paint()
-    override fun draw(canvas:Canvas){
-        if(bounds.isEmpty)return
-        val l=bounds.left.toFloat();val t=bounds.top.toFloat();val r=bounds.right.toFloat();val b=bounds.bottom.toFloat()
-        paint.style=Paint.Style.FILL;paint.color=fill
-        canvas.drawRect(l,t,r,b,paint)
-        paint.style=Paint.Style.STROKE;paint.strokeWidth=borderWidth.toFloat();paint.color=border
-        val half=borderWidth/2f
-        canvas.drawRect(l+half,t+half,r-half,b-half,paint)
-        paint.style=Paint.Style.FILL;paint.color=stripe
-        canvas.drawRect(l,t,(l+stripeWidth).coerceAtMost(r),b,paint)
-    }
-    override fun setAlpha(alpha:Int){paint.alpha=alpha;invalidateSelf()}
-    override fun setColorFilter(colorFilter:ColorFilter?){paint.colorFilter=colorFilter;invalidateSelf()}
-    @Deprecated("Drawable opacity") override fun getOpacity()=PixelFormat.TRANSLUCENT
 }
 
 /** Enlarged CoverBlur backdrop centered across width with a tinted readability scrim. */

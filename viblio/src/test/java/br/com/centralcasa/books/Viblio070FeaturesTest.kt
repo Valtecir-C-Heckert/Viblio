@@ -284,4 +284,35 @@ class Viblio070FeaturesTest {
         assertEquals(400, sparse[0].sumOf { it.widthPx })
         assertEquals(170, sparse[1].sumOf { it.widthPx })
     }
+
+    @Test
+    fun friendCoverBoundsAndAccountSyncStatus() {
+        // Accepts both legacy 160x240 and sharp 360x540 friend/club thumbnails while rejecting oversized payloads.
+        assertTrue(br.com.viblio.ui.FriendCoverLoader.validDimensions(160, 240))
+        assertTrue(br.com.viblio.ui.FriendCoverLoader.validDimensions(360, 540))
+        assertTrue(br.com.viblio.ui.FriendCoverLoader.validDimensions(480, 720))
+        assertFalse(br.com.viblio.ui.FriendCoverLoader.validDimensions(0, 240))
+        assertFalse(br.com.viblio.ui.FriendCoverLoader.validDimensions(481, 540))
+        assertFalse(br.com.viblio.ui.FriendCoverLoader.validDimensions(360, 721))
+
+        // Clean Account card sync badge states (no JSON/backup jargon; clear sync error/conflict alerts).
+        val ok = br.com.viblio.account.AccountManager.resolveSyncStatus(signedIn = true, linked = true, hasConflict = false, hasSyncError = false, pending = false)
+        assertEquals("Sincronizado", ok.label)
+        assertFalse(ok.isError || ok.isPending || ok.isOffline)
+
+        val err = br.com.viblio.account.AccountManager.resolveSyncStatus(signedIn = true, linked = true, hasConflict = false, hasSyncError = true, pending = false)
+        assertTrue(err.isError)
+        assertTrue(err.label.contains("Erro ao sincronizar"))
+
+        val conflict = br.com.viblio.account.AccountManager.resolveSyncStatus(signedIn = true, linked = true, hasConflict = true, hasSyncError = false, pending = false)
+        assertTrue(conflict.isError)
+        assertTrue(conflict.label.contains("Conflito"))
+
+        val pending = br.com.viblio.account.AccountManager.resolveSyncStatus(signedIn = true, linked = true, hasConflict = false, hasSyncError = false, pending = true)
+        assertTrue(pending.isPending)
+
+        val offline = br.com.viblio.account.AccountManager.resolveSyncStatus(signedIn = false, linked = false, hasConflict = false, hasSyncError = false, pending = false)
+        assertTrue(offline.isOffline)
+        assertEquals("Estante offline", offline.label)
+    }
 }

@@ -128,7 +128,7 @@ class ViblioActivity : Activity() {
         library.catalog=catalog
         search=makeSearch()
         friends=makeFriends()
-        account=AccountPanel(this,ui,accounts,changed={render()},shelf={switchTab("shelf")})
+        account=AccountPanel(this,ui,accounts,changed={render()},shelf={switchTab("shelf")},backup={library.backupSettings()})
         offline=state?.getBoolean("viblio.offline",false) ?: false
         scanTarget=state?.getString("scan.target");scanProfile=state?.getString("scan.profile");scanEditor=state?.getString("scan.editor")
         library.restoreState(state)
@@ -188,6 +188,18 @@ class ViblioActivity : Activity() {
     }
     private fun makeLibrary()=BooksPanel(this,ui,{homeAssistant.changed();accounts.localChanged();refreshWidgetsAsync();if(tab=="shelf")render()}).apply {
         onAccount={switchTab("account")}
+        accountMenuBadge={
+            val s=accounts.syncStatus()
+            val initial=accounts.username.ifBlank {accounts.email}.firstOrNull()?.uppercaseChar()?.toString() ?: "V"
+            BooksPanel.AccountMenuBadge(
+                title="Sua conta",
+                initial=initial,
+                statusLabel=s.label,
+                isError=s.isError,
+                isPending=s.isPending,
+                isOffline=s.isOffline
+            )
+        }
         jsonAllowed={accounts.signedIn && accounts.admin};useGroupedReadingHistory=true;useContrastCoverBorders=true;useSpineLayout=true;useCollectionInventory=true;useAsyncShelfImages=true;useCoverProgressColor=true;useManualShelfOrder=true;usePersonalArchive=true;separateShelfStatistics=true;pinchStep=1.4
     }
     private fun reloadProfile() {
@@ -279,7 +291,7 @@ class ViblioActivity : Activity() {
         }
         val hideNav=tab=="friends" && friends.hideNavigation
         navigation.visibility=if(hideNav)android.view.View.GONE else android.view.View.VISIBLE
-        val navUi=if(tab=="friends")friends.displayTheme else ui
+        val navUi=if(tab=="friends")friends.displayTheme else if(tab=="shelf" && library.isEditor)library.displayTheme() else ui
         applyBackground(navUi)
         scroll.pinchStep=1.4
         scroll.moveBook = if(tab=="shelf" && (library.isDetail || library.isCollection)) library::moveBook else null

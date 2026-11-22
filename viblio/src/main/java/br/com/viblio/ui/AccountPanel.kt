@@ -11,7 +11,7 @@ import br.com.centralcasa.ui.DisplayUi
 import br.com.centralcasa.R
 import br.com.centralcasa.books.*
 import br.com.viblio.account.AccountManager
-class AccountPanel(private val activity:Activity,private val ui:DisplayUi,private val accounts:AccountManager,private val changed:()->Unit,private val shelf:()->Unit) {
+class AccountPanel(private val activity:Activity,private val ui:DisplayUi,private val accounts:AccountManager,private val changed:()->Unit,private val shelf:()->Unit,private val backup:(()->Unit)?=null) {
     private var mode="login";private var serverExpanded=false;private var bootstrapExpanded=false;private val form=mutableMapOf<String,String>()
     fun renderLogin(parent:LinearLayout,offline:()->Unit) {
         val page=object:LinearLayout(activity){
@@ -39,7 +39,8 @@ class AccountPanel(private val activity:Activity,private val ui:DisplayUi,privat
             ui.label(card,accounts.status.ifBlank {if(accounts.linked)"Estante vinculada neste aparelho." else "Escolha como vincular sua Estante."},13,ui.muted).apply {setPadding(0,ui.dp(14),0,ui.dp(8))}
             if(!accounts.linked)ui.action(card,"Vincular minha Estante",true,accounts::link)
             else {ui.label(card,"As alterações são sincronizadas automaticamente ao usar o app conectado.",12,ui.muted);ui.action(card,"Conferir sincronização",onClick=accounts::sync);ui.action(card,"Backups e restauração",onClick=accounts::backups)}
-            if(accounts.admin){ui.label(card,"ADMINISTRAÇÃO",11,ui.muted).apply {setPadding(0,ui.dp(18),0,ui.dp(6))};ui.action(card,"Gerar convite",onClick=accounts::createInvitation);ui.action(card,"Gerenciar convites",onClick=accounts::manageInvitations);ui.action(card,"Recuperar acesso de uma conta",onClick=accounts::recoverUser)}
+            if(accounts.admin){ui.label(card,"ADMINISTRAÇÃO",11,ui.muted).apply {setPadding(0,ui.dp(18),0,ui.dp(6))};ui.action(card,"Gerar convite",onClick=accounts::createInvitation);ui.action(card,"Gerenciar convites",onClick=accounts::manageInvitations);ui.action(card,"Recuperar acesso de uma conta",onClick=accounts::recoverUser);backup?.let {ui.action(card,"Importar / exportar arquivo e servidor",onClick=it)}}
+            else backup?.let {ui.action(card,"Catálogo do servidor",onClick=it)}
             ui.action(card,"Sair da conta",onClick=accounts::logout)
         }else if(login) {
             ui.label(card,when(mode){"create"->"Criar conta por convite";"recover"->"Recuperar acesso";else->"Sua próxima leitura começa aqui"},24,bold=true)

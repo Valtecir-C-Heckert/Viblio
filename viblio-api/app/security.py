@@ -34,6 +34,14 @@ def client_peer(peer, headers=None):
                 pass
     return host
 
+def is_private_cover_get(path, method):
+    if method != 'GET':
+        return False
+    return (
+        (path.startswith('/v1/friends/') and path.endswith('/cover'))
+        or (path.startswith('/v1/clubs/') and (path.endswith('/cover') or path.endswith('/library-cover')))
+    )
+
 class RateLimits:
     def __init__(self, maximum=8192, clock=time.monotonic):
         self.maximum=maximum; self.clock=clock; self.buckets=OrderedDict(); self.lock=threading.Lock()
@@ -49,10 +57,10 @@ class RateLimits:
         path=request.url.path
         group,limit=(
             ('club-live',12) if is_discussion_stream(path,request.method)
+            else ('friend-cover',240) if is_private_cover_get(path,request.method)
             else ('club-write',30) if path.startswith('/v1/clubs') and request.method!='GET'
             else ('clubs',60) if path.startswith('/v1/clubs')
             else ('friend-write',20) if path.startswith('/v1/friends') and request.method!='GET'
-            else ('friend-cover',90) if path.startswith('/v1/friends/') and path.endswith('/cover')
             else ('friends',60) if path.startswith('/v1/friends')
             else ('media-write',180) if path.startswith('/v1/me/media') and request.method!='GET'
             else ('media-read',300) if path.startswith('/v1/me/media')
@@ -76,7 +84,8 @@ class SecurityGate:
         path=scope.get('path','');raw_peer=(scope.get('client') or ('local',0))[0]
         peer=client_peer(raw_peer, scope.get('headers', []))
         stream=is_discussion_stream(path,scope['method'])
-        group,limit=('live',120) if stream else ('auth',120) if path.startswith('/v1/auth/') else ('bulk',120) if path.startswith(('/v1/friends','/v1/clubs')) else ('bulk',60) if path.endswith('/library/sync') or (path=='/v1/books' and scope['method']=='POST') else ('read',600)
+        cover_get=is_private_cover_get(path,scope['method'])
+        group,limit=('live',120) if stream else ('auth',120) if path.startswith('/v1/auth/') else ('read',600) if cover_get else ('bulk',120) if path.startswith(('/v1/friends','/v1/clubs')) else ('bulk',60) if path.endswith('/library/sync') or (path=='/v1/books' and scope['method']=='POST') else ('read',600)
         key=hashlib.sha256(peer.encode()).hexdigest()
         async def reject(status,message):
             import json
