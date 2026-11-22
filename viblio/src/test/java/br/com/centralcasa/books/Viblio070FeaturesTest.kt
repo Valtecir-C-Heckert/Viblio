@@ -232,12 +232,20 @@ class Viblio070FeaturesTest {
         assertEquals(SpineGenreTheme.DEFAULT, SpineThemes.resolveGenre("Culinária"))
         assertEquals(SpineGenreTheme.DEFAULT, SpineThemes.resolveGenre(""))
 
-        // Deterministic A/B/C variant: same ID is always stable; across IDs all 3 variants appear.
+        // Deterministic A/B/C variant: same ID is stable; same saga always gets the exact same art regardless of bookId/case/accents.
         val v1 = SpineThemes.deterministicVariant("book-fixed-id-42")
         assertEquals(v1, SpineThemes.deterministicVariant("book-fixed-id-42"))
         assertTrue(v1 in 0..2)
         val seen = (1..40).map { SpineThemes.deterministicVariant("book-$it") }.toSet()
         assertEquals(setOf(0, 1, 2), seen)
+        assertEquals(
+            SpineThemes.assetName(SpineGenreTheme.FANTASIA, "vol-1", saga = "A Crônica do Matador do Rei"),
+            SpineThemes.assetName(SpineGenreTheme.FANTASIA, "vol-2", saga = "a cronica do matador do rei")
+        )
+        assertEquals(
+            SpineThemes.assetName(SpineGenreTheme.MANGA, "m-1", collectionId = "col-99"),
+            SpineThemes.assetName(SpineGenreTheme.MANGA, "m-2", collectionId = "col-99")
+        )
 
         // Asset names match shipped WebP files for all 10 genres and return null for DEFAULT.
         val asset = requireNotNull(SpineThemes.assetName(SpineGenreTheme.FANTASIA, "book-fixed-id-42"))
@@ -252,13 +260,28 @@ class Viblio070FeaturesTest {
             assertTrue(CoverColors.contrast(lightCover, SpineThemes.foilColor(lightCover, theme)) >= 3.0)
         }
 
-        // Organic editorial height variation stays bounded 0..12 dp and deterministic.
-        val off = SpineThemes.organicHeightOffsetDp("book-fixed-id-42", 240)
-        assertEquals(off, SpineThemes.organicHeightOffsetDp("book-fixed-id-42", 240))
-        assertTrue(off in 0..12)
+        // Bookcase styles & 4 independent spine modes (with backward compatibility for "standard").
         assertEquals(ShelfWoodStyle.EDITORIAL, ShelfWoodStyle.of("editorial"))
         assertEquals(ShelfWoodStyle.COLLECTOR, ShelfWoodStyle.of("unknown"))
-        assertEquals(SpineDesignMode.STANDARD, SpineDesignMode.of("standard"))
+        assertEquals(SpineDesignMode.ORIGINAL, SpineDesignMode.of("original"))
+        assertEquals(SpineDesignMode.ANTIQUE_BROWN, SpineDesignMode.of("antique"))
+        assertEquals(SpineDesignMode.ANTIQUE_BROWN, SpineDesignMode.of("standard"))
+        assertEquals(SpineDesignMode.EDITORIAL, SpineDesignMode.of("editorial"))
         assertEquals(SpineDesignMode.BY_GENRE, SpineDesignMode.of(null))
+
+        // Wall-to-wall ShelfRowPacker: full rows absorb remaining pixels across ALL books in the row so sum == innerWidth exactly.
+        val packed = ShelfRowPacker.pack(listOf(120, 140, 100, 110, 130, 90), innerWidthPx = 400)
+        assertEquals(2, packed.size)
+        assertEquals(3, packed[0].size) // 120+140+100=360 <= 400, next (110) moves to row 2
+        assertEquals(400, packed[0].sumOf { it.widthPx }) // absorbed 40px across all 3 books!
+        assertTrue(packed[0][1].widthPx > packed[0][0].widthPx && packed[0][0].widthPx > packed[0][2].widthPx)
+        // Last row is 110+130+90=330 (82.5% of 400) -> also closes wall-to-wall cleanly!
+        assertEquals(400, packed[1].sumOf { it.widthPx })
+
+        // Half-empty last row (< 82% of innerWidth) keeps natural book widths instead of stretching 2 books giant.
+        val sparse = ShelfRowPacker.pack(listOf(200, 150, 80, 90), innerWidthPx = 400)
+        assertEquals(2, sparse.size)
+        assertEquals(400, sparse[0].sumOf { it.widthPx })
+        assertEquals(170, sparse[1].sumOf { it.widthPx })
     }
 }

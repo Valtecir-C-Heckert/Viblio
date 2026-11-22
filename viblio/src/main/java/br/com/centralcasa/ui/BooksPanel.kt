@@ -971,7 +971,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
         fun radioGroup(title: String, items: List<Pair<String, String>>, selectedKey: () -> String, onPick: (String) -> Unit) {
             ui.label(body, title, 12, ui.muted, bold = true).apply {
                 (layoutParams as LinearLayout.LayoutParams).topMargin = ui.dp(8)
-                (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(6)
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(4)
             }
             val group = android.widget.RadioGroup(activity)
             items.forEachIndexed { idx, (key, label) ->
@@ -980,7 +980,7 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
                     text = label
                     setTextColor(ui.text)
                     textSize = 14f
-                    setPadding(ui.dp(6), ui.dp(8), ui.dp(6), ui.dp(8))
+                    setPadding(ui.dp(6), ui.dp(7), ui.dp(6), ui.dp(7))
                     isChecked = selectedKey() == key
                     setOnClickListener { onPick(key) }
                 }
@@ -991,8 +991,8 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
         radioGroup(
             "Estante",
             listOf(
-                ShelfWoodStyle.EDITORIAL.key to "Editorial Moderna",
-                ShelfWoodStyle.COLLECTOR.key to "Colecionador Iluminada"
+                ShelfWoodStyle.COLLECTOR.key to ShelfWoodStyle.COLLECTOR.label,
+                ShelfWoodStyle.EDITORIAL.key to ShelfWoodStyle.EDITORIAL.label
             ),
             { wood.key },
             { wood = ShelfWoodStyle.of(it) }
@@ -1000,8 +1000,10 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
         radioGroup(
             "Lombadas",
             listOf(
-                SpineDesignMode.STANDARD.key to "Lombada padrão",
-                SpineDesignMode.BY_GENRE.key to "Lombadas por gênero"
+                SpineDesignMode.ORIGINAL.key to SpineDesignMode.ORIGINAL.label,
+                SpineDesignMode.ANTIQUE_BROWN.key to SpineDesignMode.ANTIQUE_BROWN.label,
+                SpineDesignMode.EDITORIAL.key to SpineDesignMode.EDITORIAL.label,
+                SpineDesignMode.BY_GENRE.key to SpineDesignMode.BY_GENRE.label
             ),
             { design.key },
             { design = SpineDesignMode.of(it) }
@@ -1018,53 +1020,60 @@ class BooksPanel(private val activity: Activity, private val ui: DisplayUi, priv
             .show()
     }
     private fun renderSpines(grid:LinearLayout,books:List<LibraryBook>,collections:List<CollectionTitle>,volumes:List<LibraryBook>,available:Float,all:List<LibraryBook>){
+        if(books.isEmpty())return
         val counts=volumes.groupingBy {it.collectionId}.eachCount()
         val collectionIds=collections.map {it.id}.toSet()
         val woodStyle=settings.shelfWoodStyle()
         val spineDesign=settings.shelfSpineDesign()
-        val currentBookId=repository.currentId()
-        val baseRowHeightDp=(220*spineZoom).toInt()
-        val topPaddingDp=if(woodStyle==ShelfWoodStyle.COLLECTOR) (14*spineZoom).toInt().coerceAtLeast(8) else (8*spineZoom).toInt().coerceAtLeast(5)
-        var width=0;var line:LinearLayout?=null
-        fun nextRow():LinearLayout {
-            val group=ui.column();grid.addView(group,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(18)})
-            val cabinet=ui.column().apply {
-                background=ShelfRowBackdropDrawable(woodStyle,activity.resources.displayMetrics.density)
-                setPadding(0,ui.dp(topPaddingDp),0,0)
-            }
-            group.addView(cabinet,LinearLayout.LayoutParams(-1,-2))
-            val row=row(cabinet).apply {gravity=Gravity.BOTTOM;tag="spine-row"}
-            row.layoutParams=LinearLayout.LayoutParams(-1,ui.dp(baseRowHeightDp)).apply {marginStart=ui.dp(5);marginEnd=ui.dp(5)}
-            group.addView(ShelfWoodView(activity,shelfMaterials,woodStyle).apply {tag="shelf-wood";importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO},LinearLayout.LayoutParams(-1,ui.dp((18*spineZoom).toInt())))
-            width=0;return row
-        }
-        books.forEachIndexed {index,book->
+        val sideW=ui.dp((10*spineZoom).toInt().coerceIn(7,14))
+        val plankH=ui.dp((14*spineZoom).toInt().coerceIn(10,18))
+        val ceilingH=if(woodStyle==ShelfWoodStyle.COLLECTOR) ui.dp((24*spineZoom).toInt().coerceIn(16,32)) else ui.dp((10*spineZoom).toInt().coerceIn(6,14))
+        val rowHeightPx=ui.dp((210*spineZoom).toInt().coerceAtLeast(110))
+        val totalPx=if(grid.width>0) grid.width else ui.dp(available.toInt().coerceAtLeast(160))
+        val innerWidthPx=(totalPx-2*sideW).coerceAtLeast(ui.dp(100))
+
+        val naturalWidths=books.map {book->
             val collection=book.id in collectionIds
-            val count=counts[book.id] ?: 0
-            val dpWidth=(ShelfSpines.width(book.totalPages,book.pagesKnown,collection)*spineZoom).toInt().coerceIn(1,(available-10).toInt().coerceAtLeast(1))
-            if(line==null || width+dpWidth>available-10)line=nextRow()
-            val heightTrimDp=if(woodStyle==ShelfWoodStyle.EDITORIAL) (SpineThemes.organicHeightOffsetDp(book.id,book.totalPages)*spineZoom).toInt() else 0
-            val cellHeightPx=ui.dp((baseRowHeightDp-heightTrimDp).coerceAtLeast(80))
-            val cell=ui.column().apply {tag="shelf-cover:${book.id}";contentDescription=listOf(book.title,book.author).filter(String::isNotBlank).joinToString(", ")+(if(collection)", $count volumes" else "");isFocusable=true;setTag(br.com.centralcasa.R.id.shelf_cover_order,index)}
-            line!!.addView(cell,LinearLayout.LayoutParams(ui.dp(dpWidth),cellHeightPx))
-            val spine=ShelfSpineView(
-                activity,
-                book.title,
-                if(collection)"$count volumes" else "",
-                author=book.author,
-                materials=shelfMaterials,
-                bookId=book.id,
-                genre=book.genre,
-                kind=book.kind,
-                woodStyle=woodStyle,
-                spineDesign=spineDesign,
-                isCurrentReading=!collection && book.id==currentBookId
-            ).apply {tag="shelf-spine:${book.id}";importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO}
-            cell.addView(spine,LinearLayout.LayoutParams(-1,-1))
-            shelfThumbnails.bind(spine,book.cover)
-            cell.setOnClickListener {if(collection){selectedCollection=book.id;historyExpanded=false;shownSessions=4;show("collection")}else {selectedCollection=null;open(book.id)}}
-            if(useManualShelfOrder)cell.setOnLongClickListener {beginManualOrder(all);true}
-            width+=dpWidth
+            ui.dp((ShelfSpines.width(book.totalPages,book.pagesKnown,collection)*spineZoom).toInt().coerceAtLeast(14))
+        }
+        val packedRows=ShelfRowPacker.pack(naturalWidths,innerWidthPx)
+
+        val cabinet=ShelfCabinetLayout(activity,shelfMaterials,woodStyle,sideW,plankH,ceilingH)
+        grid.addView(cabinet,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
+
+        packedRows.forEachIndexed {rowIdx,rowSlots->
+            val line=cabinet.addNiche(rowHeightPx)
+            val isClosedRow=(rowIdx<packedRows.lastIndex) || (rowSlots.sumOf {it.widthPx}>=innerWidthPx)
+            rowSlots.forEach {slot->
+                val book=books[slot.index]
+                val collection=book.id in collectionIds
+                val count=counts[book.id] ?: 0
+                val cell=ui.column().apply {
+                    tag="shelf-cover:${book.id}"
+                    contentDescription=listOf(book.title,book.author).filter(String::isNotBlank).joinToString(", ")+(if(collection)", $count volumes" else "")
+                    isFocusable=true
+                    setTag(br.com.centralcasa.R.id.shelf_cover_order,slot.index)
+                }
+                val lp=if(isClosedRow) LinearLayout.LayoutParams(0,-1,slot.widthPx.toFloat()) else LinearLayout.LayoutParams(slot.widthPx,-1)
+                line.addView(cell,lp)
+                val spine=ShelfSpineView(
+                    activity,
+                    book.title,
+                    if(collection)"$count volumes" else "",
+                    author=book.author,
+                    materials=shelfMaterials,
+                    bookId=book.id,
+                    saga=book.saga,
+                    collectionId=book.collectionId,
+                    genre=book.genre,
+                    kind=book.kind,
+                    spineDesign=spineDesign
+                ).apply {tag="shelf-spine:${book.id}";importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO}
+                cell.addView(spine,LinearLayout.LayoutParams(-1,-1))
+                shelfThumbnails.bind(spine,book.cover)
+                cell.setOnClickListener {if(collection){selectedCollection=book.id;historyExpanded=false;shownSessions=4;show("collection")}else {selectedCollection=null;open(book.id)}}
+                if(useManualShelfOrder)cell.setOnLongClickListener {beginManualOrder(all);true}
+            }
         }
     }
 
