@@ -368,4 +368,22 @@ class Viblio070FeaturesTest {
         val za = ShelfFilters(order = listOf(ShelfOrder(ShelfField.TITLE, descending = true))).select(listOf(shortBook, midBook, longBook), null)
         assertEquals(listOf("Romance", "Épico", "Conto"), za.map { it.title })
     }
+
+    @Test
+    fun galleryCoverPaletteTintAndContrast() {
+        val base = 0xFF1A242E.toInt()
+        assertEquals(0x901A242E.toInt(), br.com.centralcasa.ui.DisplayUi.tint(base, 0x90))
+        assertEquals(0x001A242E, br.com.centralcasa.ui.DisplayUi.tint(base, -5))
+        assertEquals(0xFF1A242E.toInt(), br.com.centralcasa.ui.DisplayUi.tint(base, 300))
+
+        // Active pills use cover accent with dark background ink; verify WCAG contrast across diverse cover hues.
+        val darkBackgrounds = listOf(0xFF050709.toInt(), 0xFF050907.toInt(), 0xFF090506.toInt(), 0xFF090705.toInt())
+        val covers = listOf(0xFF1B4F82.toInt(), 0xFF1C6B48.toInt(), 0xFF8B2635.toInt(), 0xFFA66A24.toInt(), 0xFF222222.toInt())
+        covers.forEachIndexed { idx, cover ->
+            val bg = darkBackgrounds[idx % darkBackgrounds.size]
+            val accent = CoverColors.border(cover, 0xFF1A242E.toInt(), 4.6)
+            assertTrue("Cover accent must maintain strong legibility on dark ink", CoverColors.contrast(accent, bg) >= 5.5)
+        }
+    }
 }
+

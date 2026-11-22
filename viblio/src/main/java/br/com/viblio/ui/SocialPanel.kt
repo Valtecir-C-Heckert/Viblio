@@ -281,15 +281,15 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             if(people || club!=null)ui.icon(header,"back","Voltar",40){back()}.apply {layoutParams=LinearLayout.LayoutParams(ui.dp(40),ui.dp(40)).apply {marginEnd=ui.dp(4)}}
             if(gallery && !people && club==null){
                 header.addView(
-                    gText("Amigos",26f,Color.WHITE,serif=true).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},
+                    gText("Amigos",26f,ui.text,serif=true).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},
                     LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)},
                 )
                 val pillLabel=if(tab=="clubs")"+ Clube" else "+ Pessoa"
-                val pillBtn=gText(pillLabel,12f,0xD9FFFFFF.toInt(),medium=true).apply {
+                val pillBtn=gText(pillLabel,12f,ui.accent,medium=true).apply {
                     tag=if(tab=="clubs")"club-create" else "friends-discover"
                     gravity=Gravity.CENTER
                     setPadding(ui.dp(12),ui.dp(7),ui.dp(12),ui.dp(7))
-                    background=ui.pillRipple(0x14FFFFFF,18)
+                    background=ui.pillRipple(ui.surface,18,ui.galleryHairline(145))
                     contentDescription=if(tab=="clubs")"Criar clube" else "Adicionar amigo"
                     isFocusable=true
                     setOnClickListener {if(tab=="clubs") createClub() else discover()}
@@ -334,7 +334,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                     }
                     tabs.addView(cell,LinearLayout.LayoutParams(-2,-2).apply {if(idx>0)marginStart=ui.dp(20)})
                     cell.addView(
-                        gText(label,12.5f,if(on)Color.WHITE else 0x80FFFFFF.toInt(),medium=on).apply {
+                        gText(label,12.5f,if(on)ui.accent else ui.muted,medium=on).apply {
                             setPadding(0,ui.dp(4),0,ui.dp(8))
                         },
                         LinearLayout.LayoutParams(-2,-2),
@@ -344,7 +344,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                         LinearLayout.LayoutParams(-1,ui.dp(2).coerceAtLeast(2)),
                     )
                 }
-                tabWrap.addView(View(activity).apply {setBackgroundColor(0x14FFFFFF)},LinearLayout.LayoutParams(-1,1))
+                tabWrap.addView(View(activity).apply {setBackgroundColor(ui.galleryHairline(115))},LinearLayout.LayoutParams(-1,1))
             }else {
                 val tabs=ui.row();parent.addView(tabs,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
                 listOf("feed" to "Feed","clubs" to "Clubes","friends" to "Meus amigos").forEach {(key,label)->
@@ -441,9 +441,9 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             val chip=TextView(activity).apply {
                 tag="feed-filter:$key";text=label;textSize=11f;gravity=Gravity.CENTER;maxLines=1;includeFontPadding=false
                 if(gallery){
-                    setTextColor(if(on) 0xFF0B1014.toInt() else 0xB3FFFFFF.toInt())
+                    setTextColor(if(on) ui.background else ui.muted)
                     typeface=Typeface.create(if(on)"sans-serif-medium" else "sans-serif",Typeface.NORMAL)
-                    background=ui.pillRipple(if(on) Color.WHITE else 0x0FFFFFFF,18)
+                    background=if(on) ui.pillRipple(ui.accent,18,darkRipple=true) else ui.pillRipple(ui.surface,18,ui.galleryHairline(135))
                     setPadding(ui.dp(13),ui.dp(7),ui.dp(13),ui.dp(7))
                 }else {
                     setTextColor(if(on)ui.accent else ui.muted)
@@ -515,7 +515,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
 
                 // Line 2: serif book title.
                 col.addView(
-                    gText(book.s("title"),15f,Color.WHITE,serif=true).apply {
+                    gText(book.s("title"),15f,ui.text,serif=true).apply {
                         maxLines=1;ellipsize=TextUtils.TruncateAt.END
                     },
                     LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)},
@@ -535,7 +535,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                     else -> FeedGrouping.actionBadge(entry)
                 }
                 col.addView(
-                    gText(narrativeText,12f,if(accentNarrative) palette.accent else 0xCCFFFFFF.toInt()).apply {
+                    gText(narrativeText,12f,if(accentNarrative) palette.accent else ui.tint(ui.text,215)).apply {
                         maxLines=1;ellipsize=TextUtils.TruncateAt.END
                     },
                     LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)},
@@ -561,7 +561,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
 
                 val nextSameDay=shown.getOrNull(idx+1)?.dayKey==day
                 if(nextSameDay){
-                    parent.addView(View(activity).apply {setBackgroundColor(0x10FFFFFF)},LinearLayout.LayoutParams(-1,1))
+                    parent.addView(View(activity).apply {setBackgroundColor(ui.galleryHairline(105))},LinearLayout.LayoutParams(-1,1))
                 }
                 return@forEachIndexed
             }
@@ -736,7 +736,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 val cardRow=ui.row().apply {
                     tag="club-card:$identifier"
                     gravity=Gravity.CENTER_VERTICAL
-                    background=ui.pillShape(0x0EFFFFFF,16)
+                    background=ui.pillShape(palette.surface,16,palette.galleryHairline(150))
                     setPadding(ui.dp(16),ui.dp(16),ui.dp(16),ui.dp(16))
                     isFocusable=true
                     setOnClickListener {openClub(identifier)}
@@ -746,16 +746,16 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                     picture(cardRow,cover,56,84,palette,marginEndDp=14,roundedDp=5)
                 }else {
                     val voteThumb=ImageView(activity).apply {
-                        background=ui.pillShape(0x0FFFFFFF,5)
+                        background=ui.pillShape(palette.activeSurface,5)
                         clipToOutline=true
-                        setImageDrawable(ViblioBookMarkDrawable(palette.accent,0xD9FFFFFF.toInt(),scale=0.46f,backgroundColor=Color.TRANSPARENT))
+                        setImageDrawable(ViblioBookMarkDrawable(palette.accent,palette.text,scale=0.46f,backgroundColor=Color.TRANSPARENT))
                     }
                     cardRow.addView(voteThumb,LinearLayout.LayoutParams(ui.dp(56),ui.dp(84)).apply {marginEnd=ui.dp(14)})
                 }
                 val info=ui.column()
                 cardRow.addView(info,LinearLayout.LayoutParams(0,-2,1f))
                 info.addView(
-                    gText(entry.s("name"),18f,Color.WHITE,serif=true).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},
+                    gText(entry.s("name"),18f,palette.text,serif=true).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},
                     LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(5)},
                 )
                 val line2Text=if(!isVoting && bookTitle.isNotBlank()) "Lendo: $bookTitle" else {
@@ -763,7 +763,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                     if(proposals>0) "Em votação · ${ClubFormatting.countLabel(proposals,"indicação","indicações")}" else "Em votação"
                 }
                 info.addView(
-                    gText(line2Text,12f,if(!isVoting && bookTitle.isNotBlank()) 0xCCFFFFFF.toInt() else ui.muted).apply {
+                    gText(line2Text,12f,if(!isVoting && bookTitle.isNotBlank()) palette.tint(palette.text,215) else palette.muted).apply {
                         maxLines=1;ellipsize=TextUtils.TruncateAt.END
                     },
                     LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(5)},

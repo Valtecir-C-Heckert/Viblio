@@ -99,6 +99,10 @@ class ViblioActivity : Activity() {
 
     private fun updatePullTheme(theme: DisplayUi) {
         if (!::pullBadge.isInitialized) return
+        (pullBadge.background as? android.graphics.drawable.GradientDrawable)?.apply {
+            setColor(theme.galleryPill(242))
+            setStroke(theme.dp(1).coerceAtLeast(1), theme.lineColor)
+        }
         pullIcon.setImageDrawable(theme.symbol("refresh", theme.accent, 18))
         pullSpinner.indeterminateTintList = android.content.res.ColorStateList.valueOf(theme.accent)
     }
@@ -145,8 +149,8 @@ class ViblioActivity : Activity() {
         pullBadge = FrameLayout(this).apply {
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(0xEB14181E.toInt())
-                setStroke(ui.dp(1).coerceAtLeast(1), 0x26FFFFFF)
+                setColor(ui.galleryPill(242))
+                setStroke(ui.dp(1).coerceAtLeast(1), ui.lineColor)
             }
             elevation = ui.dp(8).toFloat()
             visibility = android.view.View.GONE
@@ -394,7 +398,7 @@ class ViblioActivity : Activity() {
         }
         val hideNav=tab=="friends" && friends.hideNavigation
         navigation.visibility=if(hideNav)android.view.View.GONE else android.view.View.VISIBLE
-        val navUi=if(tab=="friends")friends.displayTheme else if(tab=="shelf" && library.isEditor)library.displayTheme() else ui
+        val navUi=if(tab=="friends")friends.displayTheme else if(tab=="shelf" && (library.isEditor || library.isDetail || library.isCollection))library.displayTheme() else ui
         applyBackground(navUi)
         updatePullTheme(navUi)
         if (pullSpinning && (tab != "friends" || !friends.isRefreshing)) {

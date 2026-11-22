@@ -254,7 +254,7 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
             }
             requests.forEach {pending->val id=uuid(pending.str("id")) ?: return@forEach;val incoming=pending.get("incoming")?.asBoolean==true
                 val card=if(gallery) ui.column().apply {
-                    background=ui.pillShape(0x0EFFFFFF,16)
+                    background=ui.pillShape(ui.surface,16,ui.galleryHairline(145))
                     setPadding(ui.dp(16),ui.dp(14),ui.dp(16),ui.dp(14))
                     rows.addView(this,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
                 } else ui.panel(rows,12)
@@ -276,9 +276,9 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
                     }
                     rows.addView(card,LinearLayout.LayoutParams(-1,-2))
                     val img=ImageView(activity).apply {
-                        setImageDrawable(ViblioBookMarkDrawable(rowUi.accent,android.graphics.Color.WHITE,scale=0.46f,backgroundColor=ui.activeSurface))
+                        setImageDrawable(ViblioBookMarkDrawable(rowUi.accent,android.graphics.Color.WHITE,scale=0.46f,backgroundColor=rowUi.activeSurface))
                         scaleType=ImageView.ScaleType.CENTER_CROP
-                        background=ui.pillShape(ui.activeSurface,5)
+                        background=ui.pillShape(rowUi.activeSurface,5)
                         clipToOutline=true
                         elevation=ui.dp(6).toFloat()
                         importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
@@ -288,14 +288,14 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
                     val labels=ui.column()
                     card.addView(labels,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(10)})
                     labels.addView(
-                        gText("@${entry.str("username").take(32)}",14f,android.graphics.Color.WHITE,medium=true).apply {
+                        gText("@${entry.str("username").take(32)}",14f,ui.text,medium=true).apply {
                             maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END
                         },
                         LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)},
                     )
                     val bookTitle=reading?.str("title")?.take(500)?.takeIf(String::isNotBlank)
                     labels.addView(
-                        gText(bookTitle ?: "Sem livro atual",12.5f,if(bookTitle!=null) 0xCCFFFFFF.toInt() else ui.muted,serif=bookTitle!=null).apply {
+                        gText(bookTitle ?: "Sem livro atual",12.5f,if(bookTitle!=null) ui.tint(ui.text,215) else ui.muted,serif=bookTitle!=null).apply {
                             maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END
                         },
                         LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)},
@@ -315,12 +315,12 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
                         )
                     }
                     card.addView(
-                        gText("›",18f,0x66FFFFFF),
+                        gText("›",18f,ui.muted),
                         LinearLayout.LayoutParams(-2,-2),
                     )
                     card.setOnClickListener {focusedInput=null;friend=id;friendName=entry.str("username");readingCover=path;readingBookId=reading?.str("id").orEmpty();readingResolved=true;collection="";kind="all";query="";reset();load()}
                     if(idx<items.lastIndex){
-                        rows.addView(View(activity).apply {setBackgroundColor(0x10FFFFFF)},LinearLayout.LayoutParams(-1,1))
+                        rows.addView(View(activity).apply {setBackgroundColor(ui.galleryHairline(105))},LinearLayout.LayoutParams(-1,1))
                     }
                 }else {
                     val card=ui.row().apply {background=rowUi.outlined();setPadding(ui.dp(12),ui.dp(12),ui.dp(12),ui.dp(12));isFocusable=true;contentDescription="Estante de @${entry.str("username")}";tag="friend:$id"};rows.addView(card,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})

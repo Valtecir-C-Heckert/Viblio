@@ -836,13 +836,13 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             val header = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
             parent.addView(header, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(14) })
             header.addView(
-                gText("Estante", 26f, Color.WHITE, serif = true).apply { maxLines = 1 },
+                gText("Estante", 26f, ui.text, serif = true).apply { maxLines = 1 },
                 LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(10) },
             )
-            val kindPill = gText("${CollectionKinds.labels[shelfType]} ▾", 11.5f, 0xD9FFFFFF.toInt(), medium = true).apply {
+            val kindPill = gText("${CollectionKinds.labels[shelfType]} ▾", 11.5f, ui.text, medium = true).apply {
                 gravity = Gravity.CENTER
                 setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(6))
-                background = ui.pillRipple(0x14FFFFFF, 18)
+                background = ui.pillRipple(ui.surface, 18, ui.galleryHairline(145))
                 isFocusable = true
                 contentDescription = "Tipo na estante: ${CollectionKinds.labels[shelfType]}"
                 setOnClickListener { openTypePicker() }
@@ -851,17 +851,17 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             header.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f))
             if (!separateShelfStatistics) ui.icon(header, "stats", "Estatísticas", 38) { show("stats") }
             ui.icon(header, "add", "Adicionar à estante", 38) { openAddMenu() }.apply {
-                setImageDrawable(ui.symbol("add", 0xD9FFFFFF.toInt(), 20))
+                setImageDrawable(ui.symbol("add", ui.accent, 20))
                 setPadding(ui.dp(9), ui.dp(9), ui.dp(9), ui.dp(9))
                 background = ui.pillRipple(Color.TRANSPARENT, 19)
             }
             if (useSpineLayout) {
-                val modePill = gText(if (spineMode()) "Capas" else "Lombadas", 11f, 0xE6FFFFFF.toInt(), medium = true).apply {
+                val modePill = gText(if (spineMode()) "Capas" else "Lombadas", 11f, ui.accent, medium = true).apply {
                     tag = "shelf-view-toggle"
                     isSelected = spineMode()
                     gravity = Gravity.CENTER
                     setPadding(ui.dp(11), ui.dp(6), ui.dp(11), ui.dp(6))
-                    background = ui.pillRipple(0x14FFFFFF, 18)
+                    background = ui.pillRipple(ui.surface, 18, ui.galleryHairline(145))
                     contentDescription = if (spineMode()) "Mostrar capas" else "Mostrar lombadas"
                     isFocusable = true
                     setOnClickListener {
@@ -873,7 +873,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 header.addView(modePill, LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(4); marginEnd = ui.dp(2) })
             }
             ui.icon(header, "more", "Opções da estante", 36) { shelfMenuSheet(all, useManual) }.apply {
-                setImageDrawable(ui.symbol("more", 0xD9FFFFFF.toInt(), 20))
+                setImageDrawable(ui.symbol("more", ui.accent, 20))
                 setPadding(ui.dp(8), ui.dp(8), ui.dp(8), ui.dp(8))
                 background = ui.pillRipple(Color.TRANSPARENT, 18)
             }
@@ -882,23 +882,23 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             if (arranging) {
                 val arrangeCard = ui.row().apply {
                     gravity = Gravity.CENTER_VERTICAL
-                    background = ui.pillShape(0x0EFFFFFF, 16)
+                    background = ui.pillShape(ui.surface, 16, ui.galleryHairline(145))
                     setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(12))
                 }
                 parent.addView(arrangeCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(12) })
                 val aCol = ui.column()
                 arrangeCard.addView(aCol, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(10) })
-                aCol.addView(gText("Organizando estante", 12.5f, Color.WHITE, medium = true), LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(2) })
+                aCol.addView(gText("Organizando estante", 12.5f, ui.text, medium = true), LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(2) })
                 aCol.addView(gText("Arraste as capas para reordenar", 11f, ui.muted), LinearLayout.LayoutParams(-1, -2))
-                val cancelBtn = gText("Cancelar", 11f, 0xCCFFFFFF.toInt(), medium = true).apply {
+                val cancelBtn = gText("Cancelar", 11f, ui.text, medium = true).apply {
                     gravity = Gravity.CENTER; setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8))
-                    background = ui.pillRipple(0x14FFFFFF, 18); isFocusable = true
+                    background = ui.pillRipple(ui.activeSurface, 18, ui.galleryHairline(145)); isFocusable = true
                     setOnClickListener { cancelManualOrder() }
                 }
                 arrangeCard.addView(cancelBtn, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) })
-                val saveBtn = gText("Salvar", 11f, 0xFF0B1014.toInt(), medium = true).apply {
+                val saveBtn = gText("Salvar", 11f, ui.background, medium = true).apply {
                     gravity = Gravity.CENTER; setPadding(ui.dp(14), ui.dp(8), ui.dp(14), ui.dp(8))
-                    background = ui.pillRipple(Color.WHITE, 18); isFocusable = true
+                    background = ui.pillRipple(ui.accent, 18, darkRipple = true); isFocusable = true
                     setOnClickListener {
                         val order = ManualShelfOrder.reconcile(manualDraft.orEmpty(), all.map { it.id })
                         settings.set("SHELF_MANUAL_ORDER:$shelfType", org.json.JSONArray(if (usePersonalArchive) ManualShelfOrder.withHidden(savedManualOrder(), order) else order).toString())
@@ -909,17 +909,17 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 arrangeCard.addView(saveBtn, LinearLayout.LayoutParams(-2, -2))
             }
 
-            // Frosted pill search with embedded count.
+            // Cover-tinted pill search with embedded count.
             val searchWrap = ui.row().apply {
                 gravity = Gravity.CENTER_VERTICAL
-                background = ui.pillShape(0x0EFFFFFF, 22)
+                background = ui.pillShape(ui.surface, 22, ui.galleryHairline(145))
                 setPadding(ui.dp(14), 0, ui.dp(10), 0)
                 visibility = if (arranging) View.GONE else View.VISIBLE
             }
             parent.addView(searchWrap, LinearLayout.LayoutParams(-1, ui.dp(42)).apply { bottomMargin = ui.dp(10) })
             searchWrap.addView(
                 ImageView(activity).apply {
-                    setImageDrawable(ui.symbol("search", 0x99FFFFFF.toInt(), 15))
+                    setImageDrawable(ui.symbol("search", ui.muted, 15))
                     importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 },
                 LinearLayout.LayoutParams(ui.dp(16), ui.dp(16)).apply { marginEnd = ui.dp(10) },
@@ -932,8 +932,8 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             query = EditText(activity).apply {
                 hint = "Buscar entre ${all.size} $countUnit…"
                 setText(shelfFilters.query)
-                setTextColor(Color.WHITE)
-                setHintTextColor(0x73FFFFFF)
+                setTextColor(ui.text)
+                setHintTextColor(ui.muted)
                 textSize = 13f
                 isSingleLine = true
                 background = null
@@ -941,7 +941,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 setPadding(0, 0, 0, 0)
             }
             searchWrap.addView(query, LinearLayout.LayoutParams(0, -1, 1f))
-            val clearBtn = gText("✕", 12f, 0x99FFFFFF.toInt()).apply {
+            val clearBtn = gText("✕", 12f, ui.muted).apply {
                 gravity = Gravity.CENTER
                 setPadding(ui.dp(8), ui.dp(6), ui.dp(6), ui.dp(6))
                 contentDescription = "Limpar busca"
@@ -952,7 +952,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             galleryClearSearch = clearBtn
             searchWrap.addView(clearBtn, LinearLayout.LayoutParams(-2, -2))
 
-            // 1-tap quick chips (identical visual language to Amigos Feed).
+            // 1-tap quick chips driven by the current book's cover palette.
             val chipScroll = HorizontalScrollView(activity).apply {
                 isHorizontalScrollBarEnabled = false
                 visibility = if (arranging) View.GONE else View.VISIBLE
@@ -961,17 +961,13 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             chipScroll.addView(chipRow)
             parent.addView(chipScroll, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
 
-            fun addChip(label: String, active: Boolean, accentActive: Boolean = false, onClick: () -> Unit): TextView {
-                val bg = when {
-                    accentActive && active -> ui.accent
-                    active -> Color.WHITE
-                    else -> 0x0FFFFFFF
-                }
-                val fg = if (active) 0xFF0B1014.toInt() else 0xB3FFFFFF.toInt()
+            fun addChip(label: String, active: Boolean, onClick: () -> Unit): TextView {
+                val fg = if (active) ui.background else ui.muted
+                val bg = if (active) ui.pillRipple(ui.accent, 18, darkRipple = true) else ui.pillRipple(ui.surface, 18, ui.galleryHairline(135))
                 return gText(label, 11f, fg, medium = active).apply {
                     gravity = Gravity.CENTER; maxLines = 1
                     setPadding(ui.dp(13), ui.dp(7), ui.dp(13), ui.dp(7))
-                    background = ui.pillRipple(bg, 18)
+                    background = bg
                     isFocusable = true
                     setOnClickListener { onClick() }
                     chipRow.addView(this, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(7) })
@@ -979,7 +975,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             }
 
             val filterLabel = if (shelfFilters.activeCount > 0) "Filtros (${shelfFilters.activeCount}) ▾" else "Filtros ▾"
-            galleryFilterChip = addChip(filterLabel, shelfFilters.activeCount > 0, accentActive = true) { filterDialog(all) }
+            galleryFilterChip = addChip(filterLabel, shelfFilters.activeCount > 0) { filterDialog(all) }
 
             val isAz = !useManual && shelfFilters.order == listOf(ShelfOrder(ShelfField.TITLE, false))
             val isZa = !useManual && shelfFilters.order == listOf(ShelfOrder(ShelfField.TITLE, true))
@@ -2337,9 +2333,10 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             }
         })
     }
-    /** Editorial "Galeria" style (Direction C) — pixel-faithful to the approved mockup. */
+    /** Editorial "Galeria" style (Direction C) — driven by the book's cover palette. */
     private fun detailGallery(parent: LinearLayout, b: LibraryBook) {
-        val accent = readingAccent(b)
+        val palette = if (repository.currentId() == b.id) ui else bookPalette(b)
+        val accent = palette.accent
         fun galleryText(
             value: CharSequence,
             sp: Float,
@@ -2360,14 +2357,14 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
 
         val header = row(parent)
         ui.action(header, "") { show(if (selectedCollection != null) "collection" else "library") }.apply {
-            setCompoundDrawables(ui.symbol("back"), null, null, null)
+            setCompoundDrawables(palette.symbol("back", accent), null, null, null)
             contentDescription = "Voltar à estante"
             layoutParams = LinearLayout.LayoutParams(ui.dp(44), ui.dp(44))
             background = ui.ripple(Color.TRANSPARENT)
         }
         stars(header, b.rating) { value -> repository.setRating(b.id, value) }
         ui.action(header, "") { bookMenu(b) }.apply {
-            setCompoundDrawables(null, null, ui.symbol("more"), null)
+            setCompoundDrawables(null, null, palette.symbol("more", accent), null)
             contentDescription = "Opções do livro"
             layoutParams = LinearLayout.LayoutParams(ui.dp(44), ui.dp(44))
             background = ui.ripple(Color.TRANSPARENT)
@@ -2389,13 +2386,13 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         (coverView.layoutParams as LinearLayout.LayoutParams).apply {
             marginEnd = 0; gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = ui.dp(14)
         }
-        coverView.background = ui.pillShape(ui.activeSurface, 6)
+        coverView.background = palette.pillShape(palette.activeSurface, 6)
         coverView.clipToOutline = true
         coverView.elevation = ui.dp(14).toFloat()
         (coverView as? ImageView)?.scaleType = ImageView.ScaleType.CENTER_CROP
 
         hero.addView(
-            galleryText(b.title, 25f, Color.WHITE, serif = true).apply {
+            galleryText(b.title, 25f, palette.text, serif = true).apply {
                 gravity = Gravity.CENTER
                 setLineSpacing(0f, 1.08f)
             },
@@ -2404,7 +2401,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         val metaLine = listOf(b.author, b.publisher, b.genre).map { it.trim() }.filter { it.isNotBlank() }.joinToString(" · ")
         if (metaLine.isNotBlank()) {
             hero.addView(
-                galleryText(metaLine, 12f, ui.muted).apply {
+                galleryText(metaLine, 12f, palette.muted).apply {
                     gravity = Gravity.CENTER
                     maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
                 },
@@ -2414,43 +2411,43 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         if (b.saga.isNotBlank()) {
             val sagaLabel = b.saga + (b.sequenceNumber?.let { if (b.kind == "book" && b.collectionId.isBlank()) " · Livro $it" else " · Vol. $it" } ?: "")
             hero.addView(
-                galleryText(sagaLabel, 11f, Color.argb(180, Color.red(ui.muted), Color.green(ui.muted), Color.blue(ui.muted))).apply {
+                galleryText(sagaLabel, 11f, palette.tint(palette.muted, 185)).apply {
                     gravity = Gravity.CENTER
                 },
                 LinearLayout.LayoutParams(-1, -2),
             )
         }
 
-        // Unified translucent reading card (rgba(255,255,255,0.055) == 0x0EFFFFFF, rounded 16dp).
+        // Unified translucent reading card tinted with the book's cover palette.
         val unifiedCard = ui.column().apply {
             tag = "gallery-reading-card"
-            background = ui.pillShape(0x0EFFFFFF, 16)
+            background = palette.pillShape(palette.gallerySurface(196), 16, palette.galleryHairline(145))
             setPadding(ui.dp(16), ui.dp(16), ui.dp(16), ui.dp(16))
         }
         parent.addView(unifiedCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(22) })
 
         if (!b.pagesKnown) {
             unifiedCard.addView(
-                galleryText(if (b.complete) "Volume lido" else "Ainda não lido", 19f, Color.WHITE, serif = true),
+                galleryText(if (b.complete) "Volume lido" else "Ainda não lido", 19f, palette.text, serif = true),
                 LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(4) },
             )
             unifiedCard.addView(
-                galleryText("Total de páginas não informado.", 12f, ui.muted),
+                galleryText("Total de páginas não informado.", 12f, palette.muted),
                 LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(14) },
             )
             val actions = ui.row()
             unifiedCard.addView(actions, LinearLayout.LayoutParams(-1, -2))
-            val primaryBtn = galleryText(if (b.complete) "Marcar não lido" else "Marcar lido", 12f, 0xFF0B1014.toInt(), medium = true).apply {
+            val primaryBtn = galleryText(if (b.complete) "Marcar não lido" else "Marcar lido", 12f, palette.background, medium = true).apply {
                 gravity = Gravity.CENTER
-                background = ui.pillRipple(Color.WHITE, 24)
+                background = palette.pillRipple(accent, 24, darkRipple = true)
                 setPadding(ui.dp(18), ui.dp(10), ui.dp(18), ui.dp(10))
                 isFocusable = true
                 setOnClickListener { repository.markVolumeRead(b.id, !b.complete); changed() }
             }
             actions.addView(primaryBtn, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(10) })
-            val editBtn = galleryText("Informar páginas", 12f, Color.WHITE).apply {
+            val editBtn = galleryText("Informar páginas", 12f, palette.text).apply {
                 gravity = Gravity.CENTER
-                background = ui.pillRipple(0x18FFFFFF, 24)
+                background = palette.pillRipple(palette.galleryPill(195), 24, palette.galleryHairline(145))
                 setPadding(ui.dp(14), ui.dp(10), ui.dp(14), ui.dp(10))
                 isFocusable = true
                 setOnClickListener { fields.clear(); editor = b; newBook = false; show("editor") }
@@ -2467,13 +2464,13 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             val lead = page.toString()
             val tail = " de ${b.totalPages} págs"
             return android.text.SpannableStringBuilder(lead + tail).apply {
-                setSpan(android.text.style.ForegroundColorSpan(Color.WHITE), 0, lead.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(android.text.style.ForegroundColorSpan(palette.text), 0, lead.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 setSpan(android.text.style.RelativeSizeSpan(1.15f), 0, lead.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                setSpan(android.text.style.ForegroundColorSpan(ui.muted), lead.length, lead.length + tail.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(android.text.style.ForegroundColorSpan(palette.muted), lead.length, lead.length + tail.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
         }
 
-        // Side-by-side layout: progress stack on left, single white/accent pill button on right.
+        // Side-by-side layout: progress stack on left, cover-accented pill button on right.
         val mainRow = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
         unifiedCard.addView(mainRow, LinearLayout.LayoutParams(-1, -2))
 
@@ -2482,7 +2479,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
 
         val topNums = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
         progressCol.addView(topNums, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(6) })
-        val pagesLabel = galleryText(formatPagesSpan(b.currentPage), 12f, ui.muted, medium = true)
+        val pagesLabel = galleryText(formatPagesSpan(b.currentPage), 12f, palette.muted, medium = true)
         topNums.addView(pagesLabel, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(6) })
         val percentLabel = galleryText("${shownPercent(b.currentPage)}%", 12f, accent, medium = true)
         topNums.addView(percentLabel, LinearLayout.LayoutParams(-2, -2))
@@ -2491,18 +2488,18 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             max = b.totalPages; progress = b.currentPage
             contentDescription = "Página atual de ${b.title}"
         }
-        ui.styleGallerySlider(slider, accent)
+        palette.styleGallerySlider(slider, accent, palette.galleryHairline(130))
         progressCol.addView(slider, LinearLayout.LayoutParams(-1, ui.dp(20)).apply { bottomMargin = ui.dp(5) })
 
         val footerNums = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
         progressCol.addView(footerNums, LinearLayout.LayoutParams(-1, -2))
         val remainingLabel = galleryText(
             if (b.complete) "Concluído" else "Faltam ${b.totalPages - b.currentPage} páginas",
-            10.5f, ui.muted,
+            10.5f, palette.muted,
         ).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
         footerNums.addView(remainingLabel, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) })
         val totalStr = if (records.isEmpty()) "0 min" else "Total: ${compactReadingTime(summary.durationMs)}"
-        val totalLabel = galleryText(totalStr, 10.5f, ui.muted).apply {
+        val totalLabel = galleryText(totalStr, 10.5f, palette.muted).apply {
             tag = "book-reading-total"
             maxLines = 1
         }
@@ -2510,13 +2507,21 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
 
         val d = repository.draft()
         val ownSession = d?.bookId == b.id
-        fun pillAction(label: String, bgColor: Int, txtColor: Int, onClick: () -> Unit) {
+        fun pillAction(
+            label: String,
+            bgColor: Int,
+            txtColor: Int,
+            strokeColor: Int = Color.TRANSPARENT,
+            strokeDp: Float = 1f,
+            darkRipple: Boolean = false,
+            onClick: () -> Unit,
+        ) {
             val btn = galleryText(label, 12f, txtColor, medium = true).apply {
                 gravity = Gravity.CENTER
                 minWidth = ui.dp(64)
                 minHeight = ui.dp(38)
                 setPadding(ui.dp(18), ui.dp(10), ui.dp(18), ui.dp(10))
-                background = ui.pillRipple(bgColor, 24)
+                background = palette.pillRipple(bgColor, 24, strokeColor, strokeDp, darkRipple = darkRipple)
                 contentDescription = label
                 isFocusable = true
                 setOnClickListener { onClick() }
@@ -2524,11 +2529,11 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             mainRow.addView(btn, LinearLayout.LayoutParams(-2, -2))
         }
         when {
-            d != null && !ownSession -> pillAction("Abrir", Color.WHITE, 0xFF0B1014.toInt()) { open(d.bookId) }
-            ownSession && d!!.runningSince != null -> pillAction("Pausar", accent, 0xFF0B1014.toInt()) { attempt { pauseAndSaveReading(b) } }
-            ownSession -> pillAction("Continuar", Color.WHITE, 0xFF0B1014.toInt()) { attempt { repository.start(b.id); changed() } }
-            !b.complete -> pillAction("Ler", Color.WHITE, 0xFF0B1014.toInt()) { attempt { repository.start(b.id); changed() } }
-            else -> pillAction("Concluído", 0x18FFFFFF, accent) { toast("Leitura concluída") }
+            d != null && !ownSession -> pillAction("Abrir", accent, palette.background, darkRipple = true) { open(d.bookId) }
+            ownSession && d!!.runningSince != null -> pillAction("Pausar", palette.tint(accent, 46), accent, strokeColor = accent, strokeDp = 1.5f) { attempt { pauseAndSaveReading(b) } }
+            ownSession -> pillAction("Continuar", accent, palette.background, darkRipple = true) { attempt { repository.start(b.id); changed() } }
+            !b.complete -> pillAction("Ler", accent, palette.background, darkRipple = true) { attempt { repository.start(b.id); changed() } }
+            else -> pillAction("Concluído", palette.tint(accent, 36), accent, strokeColor = palette.galleryHairline(160)) { toast("Leitura concluída") }
         }
 
         fun preview(page: Int) {
@@ -2540,7 +2545,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
 
         if (ownSession) {
             unifiedCard.addView(
-                View(activity).apply { setBackgroundColor(0x12FFFFFF) },
+                View(activity).apply { setBackgroundColor(palette.galleryHairline(110)) },
                 LinearLayout.LayoutParams(-1, 1).apply { topMargin = ui.dp(12); bottomMargin = ui.dp(10) },
             )
             timerBookId = b.id
@@ -2552,14 +2557,14 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 },
                 LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) },
             )
-            timerLabel = galleryText(readingTime(repository.elapsed(d)), 13f, Color.WHITE, medium = true).apply {
+            timerLabel = galleryText(readingTime(repository.elapsed(d)), 13f, palette.text, medium = true).apply {
                 typeface = Typeface.MONOSPACE
                 fontFeatureSettings = "tnum"
                 maxLines = 1
             }
             liveRow.addView(timerLabel, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(10) })
             liveRow.addView(
-                galleryText("Concluir", 11f, ui.muted, medium = true).apply {
+                galleryText("Concluir", 11f, palette.muted, medium = true).apply {
                     setPadding(ui.dp(6), ui.dp(4), ui.dp(2), ui.dp(4))
                     isFocusable = true
                     setOnClickListener { concludeBook(b) }
@@ -2568,11 +2573,11 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             )
         } else if (d != null) {
             unifiedCard.addView(
-                View(activity).apply { setBackgroundColor(0x12FFFFFF) },
+                View(activity).apply { setBackgroundColor(palette.galleryHairline(110)) },
                 LinearLayout.LayoutParams(-1, 1).apply { topMargin = ui.dp(12); bottomMargin = ui.dp(10) },
             )
             unifiedCard.addView(
-                galleryText("Sessão ativa em outro livro · toque em Abrir para pausar", 11f, ui.muted),
+                galleryText("Sessão ativa em outro livro · toque em Abrir para pausar", 11f, palette.muted),
                 LinearLayout.LayoutParams(-1, -2),
             )
         }
@@ -2590,11 +2595,11 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         val histHeader = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
         history.addView(histHeader, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(6) })
         histHeader.addView(
-            galleryText("Sessões recentes", 16f, 0xF2FFFFFF.toInt(), serif = true),
+            galleryText("Sessões recentes", 16f, palette.text, serif = true),
             LinearLayout.LayoutParams(0, -2, 1f),
         )
         histHeader.addView(
-            galleryText("+ Data", 11f, ui.muted).apply {
+            galleryText("+ Data", 11f, palette.muted).apply {
                 setPadding(ui.dp(6), ui.dp(4), ui.dp(6), ui.dp(4))
                 contentDescription = "Adicionar datas de leitura"
                 isFocusable = true
@@ -2604,7 +2609,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         )
         if (days.size > shownSessions) {
             histHeader.addView(
-                galleryText("Ver todas", 11f, ui.muted).apply {
+                galleryText("Ver todas", 11f, palette.muted).apply {
                     setPadding(ui.dp(6), ui.dp(4), 0, ui.dp(4))
                     isFocusable = true
                     setOnClickListener { shownSessions = days.size; changed() }
@@ -2615,7 +2620,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
 
         if (days.isEmpty()) {
             history.addView(
-                galleryText("Ainda sem sessões registradas.", 12f, ui.muted),
+                galleryText("Ainda sem sessões registradas.", 12f, palette.muted),
                 LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(4) },
             )
         } else {
@@ -2651,11 +2656,11 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 val leftCol = ui.column()
                 dayRow.addView(leftCol, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(12) })
                 leftCol.addView(
-                    galleryText(line1, 12.5f, 0xE6FFFFFF.toInt()),
+                    galleryText(line1, 12.5f, palette.text),
                     LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(2) },
                 )
                 leftCol.addView(
-                    galleryText(line2, 11f, ui.muted),
+                    galleryText(line2, 11f, palette.muted),
                     LinearLayout.LayoutParams(-1, -2),
                 )
 
@@ -2671,7 +2676,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
 
                 if (idx < shown.lastIndex) {
                     history.addView(
-                        View(activity).apply { setBackgroundColor(0x10FFFFFF) },
+                        View(activity).apply { setBackgroundColor(palette.galleryHairline(110)) },
                         LinearLayout.LayoutParams(-1, 1),
                     )
                 }

@@ -15,6 +15,7 @@ class DisplayUi(private val context: Context) {
     private data class ReadingPalette(val background:Int,val surface:Int,val active:Int,val text:Int,val muted:Int,val accent:Int)
     companion object {
         @Volatile private var readingPalette=palette(null)
+        fun tint(color: Int, alpha: Int): Int = (color and 0x00FFFFFF) or (alpha.coerceIn(0, 255) shl 24)
         private fun palette(color:Int?):ReadingPalette {
             val hsv=FloatArray(3)
             if(color!=null)Color.colorToHSV(color,hsv)
@@ -43,6 +44,10 @@ class DisplayUi(private val context: Context) {
     }
     val accent get()=if(rectilinear)currentPalette.accent else Color.rgb(230,230,230)
     val lineColor get()=if(rectilinear)mix(surface,accent,.25f) else 0xff393939.toInt()
+    fun tint(color: Int, alpha: Int): Int = DisplayUi.tint(color, alpha)
+    fun gallerySurface(alpha: Int = 255): Int = tint(surface, alpha)
+    fun galleryPill(alpha: Int = 255): Int = tint(activeSurface, alpha)
+    fun galleryHairline(alpha: Int = 140): Int = tint(lineColor, alpha)
     fun readingColor(color:Int?):Boolean {
         if(!rectilinear)return false
         val next=palette(color)
@@ -67,10 +72,10 @@ class DisplayUi(private val context: Context) {
         slider.progressDrawable.level = (slider.progress.toLong() * 10000 / slider.max.coerceAtLeast(1)).toInt()
     }
     /** Thin rounded gallery slider matching the editorial mockup (6dp rounded track + subtle 12dp thumb). */
-    fun styleGallerySlider(slider: SeekBar, color: Int) {
+    fun styleGallerySlider(slider: SeekBar, color: Int, trackColor: Int = galleryHairline(130)) {
         val trackHeight = dp(6).coerceAtLeast(4)
         val radius = dp(4).toFloat()
-        val bgTrack = GradientDrawable().apply { setColor(0x1EFFFFFF); cornerRadius = radius }
+        val bgTrack = GradientDrawable().apply { setColor(trackColor); cornerRadius = radius }
         val fgTrack = GradientDrawable().apply { setColor(color); cornerRadius = radius }
         val clip = android.graphics.drawable.ClipDrawable(fgTrack, android.view.Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL)
         val layers = object : android.graphics.drawable.LayerDrawable(arrayOf(bgTrack, clip)) {
@@ -93,8 +98,24 @@ class DisplayUi(private val context: Context) {
         slider.progressTintList = null; slider.progressBackgroundTintList = null
         slider.progressDrawable.level = (slider.progress.toLong() * 10000 / slider.max.coerceAtLeast(1)).toInt()
     }
-    fun pillShape(color: Int, radiusDp: Int = 24) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radiusDp).toFloat() }
-    fun pillRipple(color: Int, radiusDp: Int = 24): Drawable = RippleDrawable(ColorStateList.valueOf(0x28000000), pillShape(color, radiusDp), pillShape(Color.WHITE, radiusDp))
+    fun pillShape(color: Int, radiusDp: Int = 24, strokeColor: Int = Color.TRANSPARENT, strokeDp: Float = 1f) = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(radiusDp).toFloat()
+        if (strokeColor != Color.TRANSPARENT) {
+            setStroke((strokeDp * context.resources.displayMetrics.density).toInt().coerceAtLeast(1), strokeColor)
+        }
+    }
+    fun pillRipple(
+        color: Int,
+        radiusDp: Int = 24,
+        strokeColor: Int = Color.TRANSPARENT,
+        strokeDp: Float = 1f,
+        darkRipple: Boolean = false,
+    ): Drawable = RippleDrawable(
+        ColorStateList.valueOf(if (darkRipple) 0x28000000 else 0x28FFFFFF),
+        pillShape(color, radiusDp, strokeColor, strokeDp),
+        pillShape(Color.WHITE, radiusDp),
+    )
     fun ripple(color: Int, radius: Int = 14): Drawable = RippleDrawable(ColorStateList.valueOf(0x28FFFFFF), shape(color, radius), shape(Color.WHITE, radius))
     // Raster icons follow the same path already used by the navigation bar on MIUI.
     fun symbol(name: String, color: Int = text, size: Int = 18): Drawable {
