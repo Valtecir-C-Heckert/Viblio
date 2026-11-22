@@ -542,11 +542,11 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 )
 
                 // Line 4: quiet context line (page X of Y or author).
-                val curPage=entry.endPage ?: book.n("page").toInt()
-                val totalPages=book.n("pages").toInt()
+                val curPage=entry.endPage ?: book.n("page")
+                val totalPages=book.n("pages")
                 val author=book.s("author")
                 val contextLine=when {
-                    entry.primaryType!="finished" && entry.primaryType!="added" && entry.pagesKnown && curPage>0 && totalPages>0 -> "Página $curPage de $totalPages"
+                    entry.primaryType!="finished" && entry.primaryType!="added" && entry.pagesKnown && curPage>0L && totalPages>0L -> "Página $curPage de $totalPages"
                     author.isNotBlank() -> author
                     else -> ""
                 }
