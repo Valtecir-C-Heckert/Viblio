@@ -801,79 +801,319 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         }
         val currentShelfId = repository.current()?.let { it.collectionId.ifBlank { it.id } }
         renderPlanSelectionBanner(parent)
-        val header = row(parent)
-        ui.label(header, if(ui.rectilinear)"ESTANTE" else "Estante", if(ui.rectilinear)30 else 36, bold = true).apply {
-            typeface = Typeface.create("serif", if(ui.rectilinear)Typeface.NORMAL else Typeface.BOLD); layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        val gallery = baseUi.rectilinear && settings.galleryUiStyle()
+        fun gText(value: String, sp: Float, color: Int, serif: Boolean = false, medium: Boolean = false) = TextView(activity).apply {
+            text = value; textSize = sp; setTextColor(color); includeFontPadding = false
+            typeface = when {
+                serif -> Typeface.create("serif", Typeface.NORMAL)
+                medium -> Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                else -> Typeface.create("sans-serif", Typeface.NORMAL)
+            }
         }
-        ui.action(header, "${CollectionKinds.labels[shelfType]} ▾") {
+        fun openTypePicker() {
             val types = CollectionKinds.labels.keys.toList()
             AlertDialog.Builder(activity).setTitle("Mostrar na estante").setSingleChoiceItems(types.map { CollectionKinds.labels[it] }.toTypedArray(), types.indexOf(shelfType)) { dialog, index ->
-                persistShelfFilters(); shelfType = types[index];manualView=false; shelfFilters = loadShelfFilters(); settings.set("SHELF_TYPE", shelfType); selectedCollection = null; shelfScroll = 0; dialog.dismiss(); changed()
+                persistShelfFilters(); shelfType = types[index]; manualView = false; shelfFilters = loadShelfFilters(); settings.set("SHELF_TYPE", shelfType); selectedCollection = null; shelfScroll = 0; dialog.dismiss(); changed()
             }.setNegativeButton("Cancelar", null).show()
-        }.apply { textSize = 10f; minWidth = 0; setPadding(ui.dp(6), 0, ui.dp(6), 0); layoutParams = LinearLayout.LayoutParams(ui.dp(72), ui.dp(36)) }
-        if(!separateShelfStatistics) ui.icon(header, "stats", "Estatísticas", 40) { show("stats") }
-        ui.icon(header, "add", "Adicionar à estante", 40) {
+        }
+        fun openAddMenu() {
             if (shelfType in listOf("manga", "comic")) editCollection(null)
             else AlertDialog.Builder(activity).setTitle("Adicionar").setItems(arrayOf("Livro", "Mangá", "Quadrinho")) { _, which ->
                 if (which == 0) { fields.clear(); selected = null; selectedCollection = null; editor = LibraryBook(title = "", totalPages = 0); newBook = true; show("editor") }
                 else editCollection(null, if (which == 1) "manga" else "comic")
             }.show()
         }
-        if(useSpineLayout)ui.icon(header,if(spineMode())"book-spines" else "shelf-covers",if(spineMode())"Mostrar capas" else "Mostrar lombadas",40){
-            settings.set("SHELF_SPINE_VIEW:$shelfType",(!spineMode()).toString());shelfScroll=0;changed()
-        }.apply {tag="shelf-view-toggle";isSelected=spineMode()}
-        ui.icon(header, "more", "Opções da estante", 36) {
-            if (baseUi.rectilinear) {
-                shelfMenuSheet(all, useManual)
-            } else {
-                val options = mutableListOf(
-                    "Livro atual",
-                    if (jsonAllowed()) "Backup / importar" else "Catálogo do servidor",
-                    "Capas por linha · ${CollectionKinds.labels[shelfType]}",
-                    "Cores por gênero"
-                )
-                if (useManualShelfOrder) options.addAll(listOf("Organizar estante", "Minha ordem · limpar filtros"))
-                if (onAccount != null) options.add("Conta")
-                AlertDialog.Builder(activity).setTitle("Estante").setItems(options.toTypedArray()) { _, index ->
-                    when (options[index]) {
-                        "Livro atual" -> openCurrent()
-                        "Backup / importar", "Catálogo do servidor" -> backupMenu()
-                        "Cores por gênero" -> customizeGenreColors()
-                        "Organizar estante" -> beginManualOrder(all)
-                        "Minha ordem · limpar filtros" -> { shelfFilters = ShelfFilters(); manualView = true; shelfScroll = 0; persistShelfFilters(); changed() }
-                        "Conta" -> onAccount?.invoke()
-                        else -> AlertDialog.Builder(activity).setTitle("Capas por linha · ${CollectionKinds.labels[shelfType]}").setSingleChoiceItems((1..6).map { "$it" }.toTypedArray(), settings.shelfColumns(shelfType) - 1) { dialog, which -> settings.setShelfColumns(shelfType, which + 1); dialog.dismiss(); changed() }.setNegativeButton("Cancelar", null).show()
+
+        val query: EditText
+        var filterButton: TextView? = null
+        var resultInfo: TextView? = null
+        var gallerySummaryRow: LinearLayout? = null
+        var gallerySummaryText: TextView? = null
+        var galleryClearSearch: TextView? = null
+        var galleryFilterChip: TextView? = null
+
+        if (gallery) {
+            val header = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+            parent.addView(header, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(14) })
+            header.addView(
+                gText("Estante", 26f, Color.WHITE, serif = true).apply { maxLines = 1 },
+                LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(10) },
+            )
+            val kindPill = gText("${CollectionKinds.labels[shelfType]} ▾", 11.5f, 0xD9FFFFFF.toInt(), medium = true).apply {
+                gravity = Gravity.CENTER
+                setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(6))
+                background = ui.pillRipple(0x14FFFFFF, 18)
+                isFocusable = true
+                contentDescription = "Tipo na estante: ${CollectionKinds.labels[shelfType]}"
+                setOnClickListener { openTypePicker() }
+            }
+            header.addView(kindPill, LinearLayout.LayoutParams(-2, -2))
+            header.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f))
+            if (!separateShelfStatistics) ui.icon(header, "stats", "Estatísticas", 38) { show("stats") }
+            ui.icon(header, "add", "Adicionar à estante", 38) { openAddMenu() }.apply {
+                setImageDrawable(ui.symbol("add", 0xD9FFFFFF.toInt(), 20))
+                setPadding(ui.dp(9), ui.dp(9), ui.dp(9), ui.dp(9))
+                background = ui.pillRipple(Color.TRANSPARENT, 19)
+            }
+            if (useSpineLayout) {
+                val modePill = gText(if (spineMode()) "Capas" else "Lombadas", 11f, 0xE6FFFFFF.toInt(), medium = true).apply {
+                    tag = "shelf-view-toggle"
+                    isSelected = spineMode()
+                    gravity = Gravity.CENTER
+                    setPadding(ui.dp(11), ui.dp(6), ui.dp(11), ui.dp(6))
+                    background = ui.pillRipple(0x14FFFFFF, 18)
+                    contentDescription = if (spineMode()) "Mostrar capas" else "Mostrar lombadas"
+                    isFocusable = true
+                    setOnClickListener {
+                        settings.set("SHELF_SPINE_VIEW:$shelfType", (!spineMode()).toString())
+                        shelfScroll = 0
+                        changed()
                     }
-                }.show()
+                }
+                header.addView(modePill, LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(4); marginEnd = ui.dp(2) })
             }
-        }
-        if(arranging) for(index in 0 until header.childCount) header.getChildAt(index).isEnabled=false
-        ui.label(parent, "${all.size} " + (if (shelfType == "book") "livros" else "títulos"), 11, ui.muted)
-        if(arranging) {
-            ui.label(parent,"Segure uma capa e arraste para a posição desejada.",12,ui.muted)
-            val controls=row(parent)
-            weightedActionOn(controls,"Salvar como principal","Salvar organização principal") {
-                val order=ManualShelfOrder.reconcile(manualDraft.orEmpty(),all.map { it.id })
-                settings.set("SHELF_MANUAL_ORDER:$shelfType",org.json.JSONArray(if(usePersonalArchive)ManualShelfOrder.withHidden(savedManualOrder(),order) else order).toString())
-                settings.set("SHELF_MANUAL_DEFAULT:$shelfType","true")
-                manualDraft=null;manualView=true;shelfFilters=ShelfFilters();stopManualScroll();persistShelfFilters();changed();toast("Sua ordem foi salva como principal")
+            ui.icon(header, "more", "Opções da estante", 36) { shelfMenuSheet(all, useManual) }.apply {
+                setImageDrawable(ui.symbol("more", 0xD9FFFFFF.toInt(), 20))
+                setPadding(ui.dp(8), ui.dp(8), ui.dp(8), ui.dp(8))
+                background = ui.pillRipple(Color.TRANSPARENT, 18)
             }
-            weightedActionOn(controls,"Cancelar","Cancelar organização") { cancelManualOrder() }
+            if (arranging) for (index in 0 until header.childCount) header.getChildAt(index).isEnabled = false
+
+            if (arranging) {
+                val arrangeCard = ui.row().apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    background = ui.pillShape(0x0EFFFFFF, 16)
+                    setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(12))
+                }
+                parent.addView(arrangeCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(12) })
+                val aCol = ui.column()
+                arrangeCard.addView(aCol, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(10) })
+                aCol.addView(gText("Organizando estante", 12.5f, Color.WHITE, medium = true), LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(2) })
+                aCol.addView(gText("Arraste as capas para reordenar", 11f, ui.muted), LinearLayout.LayoutParams(-1, -2))
+                val cancelBtn = gText("Cancelar", 11f, 0xCCFFFFFF.toInt(), medium = true).apply {
+                    gravity = Gravity.CENTER; setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8))
+                    background = ui.pillRipple(0x14FFFFFF, 18); isFocusable = true
+                    setOnClickListener { cancelManualOrder() }
+                }
+                arrangeCard.addView(cancelBtn, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) })
+                val saveBtn = gText("Salvar", 11f, 0xFF0B1014.toInt(), medium = true).apply {
+                    gravity = Gravity.CENTER; setPadding(ui.dp(14), ui.dp(8), ui.dp(14), ui.dp(8))
+                    background = ui.pillRipple(Color.WHITE, 18); isFocusable = true
+                    setOnClickListener {
+                        val order = ManualShelfOrder.reconcile(manualDraft.orEmpty(), all.map { it.id })
+                        settings.set("SHELF_MANUAL_ORDER:$shelfType", org.json.JSONArray(if (usePersonalArchive) ManualShelfOrder.withHidden(savedManualOrder(), order) else order).toString())
+                        settings.set("SHELF_MANUAL_DEFAULT:$shelfType", "true")
+                        manualDraft = null; manualView = true; shelfFilters = ShelfFilters(); stopManualScroll(); persistShelfFilters(); changed(); toast("Sua ordem foi salva como principal")
+                    }
+                }
+                arrangeCard.addView(saveBtn, LinearLayout.LayoutParams(-2, -2))
+            }
+
+            // Frosted pill search with embedded count.
+            val searchWrap = ui.row().apply {
+                gravity = Gravity.CENTER_VERTICAL
+                background = ui.pillShape(0x0EFFFFFF, 22)
+                setPadding(ui.dp(14), 0, ui.dp(10), 0)
+                visibility = if (arranging) View.GONE else View.VISIBLE
+            }
+            parent.addView(searchWrap, LinearLayout.LayoutParams(-1, ui.dp(42)).apply { bottomMargin = ui.dp(10) })
+            searchWrap.addView(
+                ImageView(activity).apply {
+                    setImageDrawable(ui.symbol("search", 0x99FFFFFF.toInt(), 15))
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                },
+                LinearLayout.LayoutParams(ui.dp(16), ui.dp(16)).apply { marginEnd = ui.dp(10) },
+            )
+            val countUnit = when (shelfType) {
+                "book" -> "livros"
+                "all" -> "títulos"
+                else -> CollectionKinds.labels[shelfType]?.lowercase() ?: "títulos"
+            }
+            query = EditText(activity).apply {
+                hint = "Buscar entre ${all.size} $countUnit…"
+                setText(shelfFilters.query)
+                setTextColor(Color.WHITE)
+                setHintTextColor(0x73FFFFFF)
+                textSize = 13f
+                isSingleLine = true
+                background = null
+                contentDescription = "Buscar livros"
+                setPadding(0, 0, 0, 0)
+            }
+            searchWrap.addView(query, LinearLayout.LayoutParams(0, -1, 1f))
+            val clearBtn = gText("✕", 12f, 0x99FFFFFF.toInt()).apply {
+                gravity = Gravity.CENTER
+                setPadding(ui.dp(8), ui.dp(6), ui.dp(6), ui.dp(6))
+                contentDescription = "Limpar busca"
+                isFocusable = true
+                visibility = if (shelfFilters.query.isNotEmpty()) View.VISIBLE else View.GONE
+                setOnClickListener { query.setText("") }
+            }
+            galleryClearSearch = clearBtn
+            searchWrap.addView(clearBtn, LinearLayout.LayoutParams(-2, -2))
+
+            // 1-tap quick chips (identical visual language to Amigos Feed).
+            val chipScroll = HorizontalScrollView(activity).apply {
+                isHorizontalScrollBarEnabled = false
+                visibility = if (arranging) View.GONE else View.VISIBLE
+            }
+            val chipRow = ui.row()
+            chipScroll.addView(chipRow)
+            parent.addView(chipScroll, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
+
+            fun addChip(label: String, active: Boolean, accentActive: Boolean = false, onClick: () -> Unit): TextView {
+                val bg = when {
+                    accentActive && active -> ui.accent
+                    active -> Color.WHITE
+                    else -> 0x0FFFFFFF
+                }
+                val fg = if (active) 0xFF0B1014.toInt() else 0xB3FFFFFF.toInt()
+                return gText(label, 11f, fg, medium = active).apply {
+                    gravity = Gravity.CENTER; maxLines = 1
+                    setPadding(ui.dp(13), ui.dp(7), ui.dp(13), ui.dp(7))
+                    background = ui.pillRipple(bg, 18)
+                    isFocusable = true
+                    setOnClickListener { onClick() }
+                    chipRow.addView(this, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(7) })
+                }
+            }
+
+            val filterLabel = if (shelfFilters.activeCount > 0) "Filtros (${shelfFilters.activeCount}) ▾" else "Filtros ▾"
+            galleryFilterChip = addChip(filterLabel, shelfFilters.activeCount > 0, accentActive = true) { filterDialog(all) }
+
+            val isAz = !useManual && shelfFilters.order == listOf(ShelfOrder(ShelfField.TITLE, false))
+            val isZa = !useManual && shelfFilters.order == listOf(ShelfOrder(ShelfField.TITLE, true))
+            val pagesCriterion = if (!useManual) shelfFilters.order.firstOrNull()?.takeIf { it.field == ShelfField.PAGES } else null
+            val isPages = pagesCriterion != null
+            val isManualChip = useManualShelfOrder && useManual && shelfFilters.status == ShelfStatus.ALL
+
+            if (useManualShelfOrder) {
+                addChip("Minha ordem", isManualChip) {
+                    manualView = true
+                    shelfFilters = shelfFilters.copy(order = emptyList(), status = ShelfStatus.ALL)
+                    shelfScroll = 0; persistShelfFilters(); changed()
+                }
+            }
+            addChip("A–Z", isAz) {
+                manualView = false
+                shelfFilters = shelfFilters.copy(order = listOf(ShelfOrder(ShelfField.TITLE, false)))
+                shelfScroll = 0; persistShelfFilters(); changed()
+            }
+            addChip("Z–A", isZa) {
+                manualView = false
+                shelfFilters = shelfFilters.copy(order = listOf(ShelfOrder(ShelfField.TITLE, true)))
+                shelfScroll = 0; persistShelfFilters(); changed()
+            }
+            val pagesLabel = when {
+                pagesCriterion == null -> "Páginas"
+                pagesCriterion.descending -> "Págs ↓"
+                else -> "Págs ↑"
+            }
+            addChip(pagesLabel, isPages) {
+                val nextDesc = if (pagesCriterion != null) !pagesCriterion.descending else true
+                manualView = false
+                shelfFilters = shelfFilters.copy(order = listOf(ShelfOrder(ShelfField.PAGES, nextDesc), ShelfOrder(ShelfField.TITLE, false)))
+                shelfScroll = 0; persistShelfFilters(); changed()
+            }
+            addChip("Lendo", shelfFilters.status == ShelfStatus.READING) {
+                val next = if (shelfFilters.status == ShelfStatus.READING) ShelfStatus.ALL else ShelfStatus.READING
+                shelfFilters = shelfFilters.copy(status = next)
+                shelfScroll = 0; persistShelfFilters(); changed()
+            }
+            addChip("Concluídos", shelfFilters.status == ShelfStatus.COMPLETED) {
+                val next = if (shelfFilters.status == ShelfStatus.COMPLETED) ShelfStatus.ALL else ShelfStatus.COMPLETED
+                shelfFilters = shelfFilters.copy(status = next)
+                shelfScroll = 0; persistShelfFilters(); changed()
+            }
+
+            // Quiet contextual summary bar — hidden unless actively filtering or searching.
+            val summaryBar = ui.row().apply {
+                gravity = Gravity.CENTER_VERTICAL
+                visibility = View.GONE
+            }
+            parent.addView(summaryBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(8) })
+            val summaryTxt = gText("", 11f, ui.muted).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+            summaryBar.addView(summaryTxt, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) })
+            summaryBar.addView(
+                gText("Limpar", 11f, ui.accent, medium = true).apply {
+                    setPadding(ui.dp(6), ui.dp(2), ui.dp(2), ui.dp(2))
+                    isFocusable = true
+                    setOnClickListener {
+                        shelfFilters = ShelfFilters()
+                        manualView = useManualShelfOrder && manualIsDefault()
+                        shelfScroll = 0
+                        persistShelfFilters()
+                        changed()
+                    }
+                },
+                LinearLayout.LayoutParams(-2, -2),
+            )
+            gallerySummaryRow = summaryBar
+            gallerySummaryText = summaryTxt
+        } else {
+            val header = row(parent)
+            ui.label(header, if(ui.rectilinear)"ESTANTE" else "Estante", if(ui.rectilinear)30 else 36, bold = true).apply {
+                typeface = Typeface.create("serif", if(ui.rectilinear)Typeface.NORMAL else Typeface.BOLD); layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            }
+            ui.action(header, "${CollectionKinds.labels[shelfType]} ▾") { openTypePicker() }.apply { textSize = 10f; minWidth = 0; setPadding(ui.dp(6), 0, ui.dp(6), 0); layoutParams = LinearLayout.LayoutParams(ui.dp(72), ui.dp(36)) }
+            if(!separateShelfStatistics) ui.icon(header, "stats", "Estatísticas", 40) { show("stats") }
+            ui.icon(header, "add", "Adicionar à estante", 40) { openAddMenu() }
+            if(useSpineLayout)ui.icon(header,if(spineMode())"book-spines" else "shelf-covers",if(spineMode())"Mostrar capas" else "Mostrar lombadas",40){
+                settings.set("SHELF_SPINE_VIEW:$shelfType",(!spineMode()).toString());shelfScroll=0;changed()
+            }.apply {tag="shelf-view-toggle";isSelected=spineMode()}
+            ui.icon(header, "more", "Opções da estante", 36) {
+                if (baseUi.rectilinear) {
+                    shelfMenuSheet(all, useManual)
+                } else {
+                    val options = mutableListOf(
+                        "Livro atual",
+                        if (jsonAllowed()) "Backup / importar" else "Catálogo do servidor",
+                        "Capas por linha · ${CollectionKinds.labels[shelfType]}",
+                        "Cores por gênero"
+                    )
+                    if (useManualShelfOrder) options.addAll(listOf("Organizar estante", "Minha ordem · limpar filtros"))
+                    if (onAccount != null) options.add("Conta")
+                    AlertDialog.Builder(activity).setTitle("Estante").setItems(options.toTypedArray()) { _, index ->
+                        when (options[index]) {
+                            "Livro atual" -> openCurrent()
+                            "Backup / importar", "Catálogo do servidor" -> backupMenu()
+                            "Cores por gênero" -> customizeGenreColors()
+                            "Organizar estante" -> beginManualOrder(all)
+                            "Minha ordem · limpar filtros" -> { shelfFilters = ShelfFilters(); manualView = true; shelfScroll = 0; persistShelfFilters(); changed() }
+                            "Conta" -> onAccount?.invoke()
+                            else -> AlertDialog.Builder(activity).setTitle("Capas por linha · ${CollectionKinds.labels[shelfType]}").setSingleChoiceItems((1..6).map { "$it" }.toTypedArray(), settings.shelfColumns(shelfType) - 1) { dialog, which -> settings.setShelfColumns(shelfType, which + 1); dialog.dismiss(); changed() }.setNegativeButton("Cancelar", null).show()
+                        }
+                    }.show()
+                }
+            }
+            if(arranging) for(index in 0 until header.childCount) header.getChildAt(index).isEnabled=false
+            ui.label(parent, "${all.size} " + (if (shelfType == "book") "livros" else "títulos"), 11, ui.muted)
+            if(arranging) {
+                ui.label(parent,"Segure uma capa e arraste para a posição desejada.",12,ui.muted)
+                val controls=row(parent)
+                weightedActionOn(controls,"Salvar como principal","Salvar organização principal") {
+                    val order=ManualShelfOrder.reconcile(manualDraft.orEmpty(),all.map { it.id })
+                    settings.set("SHELF_MANUAL_ORDER:$shelfType",org.json.JSONArray(if(usePersonalArchive)ManualShelfOrder.withHidden(savedManualOrder(),order) else order).toString())
+                    settings.set("SHELF_MANUAL_DEFAULT:$shelfType","true")
+                    manualDraft=null;manualView=true;shelfFilters=ShelfFilters();stopManualScroll();persistShelfFilters();changed();toast("Sua ordem foi salva como principal")
+                }
+                weightedActionOn(controls,"Cancelar","Cancelar organização") { cancelManualOrder() }
+            }
+            query = input(parent, if (shelfType == "book") "Buscar livros" else if (shelfType == "all") "Buscar na estante" else "Buscar ${CollectionKinds.labels[shelfType]?.lowercase()}", shelfFilters.query, false).apply {
+                contentDescription = "Buscar livros"; minHeight = ui.dp(40);visibility=if(arranging) View.GONE else View.VISIBLE
+                if (theme != null) background = ui.outlined(shelfTint(theme, .13f), requireNotNull(themeStroke))
+                layoutParams = LinearLayout.LayoutParams(-1, ui.dp(42)).apply { topMargin = ui.dp(6); bottomMargin = ui.dp(8) }
+                setCompoundDrawables(ui.symbol("search", ui.muted, 16), null, null, null); compoundDrawablePadding = ui.dp(8)
+            }
+            filterButton = ui.action(parent, "Filtrar e ordenar") { filterDialog(all) }.apply {
+                contentDescription = "Filtrar livros"; minHeight = ui.dp(40);visibility=if(arranging) View.GONE else View.VISIBLE
+                background = if (theme != null) ui.outlined(shelfTint(theme, .13f), requireNotNull(themeStroke)) else ui.outlined()
+                gravity = Gravity.CENTER_VERTICAL
+                setCompoundDrawables(ui.symbol("filter"), null, ui.symbol("chevron"), null); compoundDrawablePadding = ui.dp(8)
+                layoutParams = LinearLayout.LayoutParams(-1, ui.dp(42)).apply { bottomMargin = ui.dp(8) }
+            }
+            resultInfo = ui.label(parent, "", 10, ui.muted).apply { gravity = Gravity.CENTER; setPadding(0, ui.dp(2), 0, ui.dp(4)) }
         }
-        val query = input(parent, if (shelfType == "book") "Buscar livros" else if (shelfType == "all") "Buscar na estante" else "Buscar ${CollectionKinds.labels[shelfType]?.lowercase()}", shelfFilters.query, false).apply {
-            contentDescription = "Buscar livros"; minHeight = ui.dp(40);visibility=if(arranging) View.GONE else View.VISIBLE
-            if (theme != null) background = ui.outlined(shelfTint(theme, .13f), requireNotNull(themeStroke))
-            layoutParams = LinearLayout.LayoutParams(-1, ui.dp(42)).apply { topMargin = ui.dp(6); bottomMargin = ui.dp(8) }
-            setCompoundDrawables(ui.symbol("search", ui.muted, 16), null, null, null); compoundDrawablePadding = ui.dp(8)
-        }
-        val filterButton = ui.action(parent, "Filtrar e ordenar") { filterDialog(all) }.apply {
-            contentDescription = "Filtrar livros"; minHeight = ui.dp(40);visibility=if(arranging) View.GONE else View.VISIBLE
-            background = if (theme != null) ui.outlined(shelfTint(theme, .13f), requireNotNull(themeStroke)) else ui.outlined()
-            gravity = Gravity.CENTER_VERTICAL
-            setCompoundDrawables(ui.symbol("filter"), null, ui.symbol("chevron"), null); compoundDrawablePadding = ui.dp(8)
-            layoutParams = LinearLayout.LayoutParams(-1, ui.dp(42)).apply { bottomMargin = ui.dp(8) }
-        }
-        val resultInfo = ui.label(parent, "", 10, ui.muted).apply { gravity = Gravity.CENTER; setPadding(0, ui.dp(2), 0, ui.dp(4)) }
         val grid = ui.column().apply { tag = "shelf-pinch-grid" }
         if(arranging)grid.setOnDragListener {view,event->
             when(event.action){
@@ -895,10 +1135,21 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             }
             val filtered=shelfFilters.select(candidates,currentShelfId)
             val matches=if(useManual) ManualShelfOrder.select(if(arranging) all else filtered,manualDraft ?: savedManualOrder()) else filtered
-            filterButton.text = (if(useManual) "Filtrar · Minha ordem" else "Filtrar e ordenar · ${shelfFilters.order.size} critérios") + if (shelfFilters.activeCount > 0) " · ${shelfFilters.activeCount} filtros" else ""
             val active = listOfNotNull(shelfFilters.collectionCompletion.takeIf {it!=CollectionCompletion.ALL}?.label,shelfFilters.status.takeIf { it != ShelfStatus.ALL }?.label, shelfFilters.genre, shelfFilters.subgenre, shelfFilters.saga, shelfFilters.author, shelfFilters.covers.takeIf { it != ShelfCovers.ALL }?.label)
-            resultInfo.text = (if(useManual) "Minha ordem" else shelfFilters.order.joinToString(" › ") { it.label }) + if (active.isEmpty() && shelfFilters.query.isBlank()) "" else "\n${matches.size} de ${all.size} livros" + if (active.isEmpty()) "" else " · ${active.joinToString(" · ")}"
-            if (matches.isEmpty()) { ui.label(grid, if (all.isEmpty()) "Sua biblioteca começa aqui" else "Nenhum livro com esses filtros", 20, bold = true); ui.label(grid, "Adicione um livro ou importe seu JSON pelo botão de backup.", 12, ui.muted) }
+            if (gallery) {
+                galleryClearSearch?.visibility = if (shelfFilters.query.isNotEmpty()) View.VISIBLE else View.GONE
+                galleryFilterChip?.text = if (shelfFilters.activeCount > 0) "Filtros (${shelfFilters.activeCount}) ▾" else "Filtros ▾"
+                val showSummary = !arranging && (active.isNotEmpty() || shelfFilters.query.isNotBlank())
+                gallerySummaryRow?.visibility = if (showSummary) View.VISIBLE else View.GONE
+                if (showSummary) {
+                    val unit = if (shelfType == "book") "livros" else "títulos"
+                    gallerySummaryText?.text = "${matches.size} de ${all.size} $unit" + if (active.isEmpty()) "" else " · ${active.joinToString(" · ")}"
+                }
+            } else {
+                filterButton?.text = (if(useManual) "Filtrar · Minha ordem" else "Filtrar e ordenar · ${shelfFilters.order.size} critérios") + if (shelfFilters.activeCount > 0) " · ${shelfFilters.activeCount} filtros" else ""
+                resultInfo?.text = (if(useManual) "Minha ordem" else shelfFilters.order.joinToString(" › ") { it.label }) + if (active.isEmpty() && shelfFilters.query.isBlank()) "" else "\n${matches.size} de ${all.size} livros" + if (active.isEmpty()) "" else " · ${active.joinToString(" · ")}"
+            }
+            if (matches.isEmpty()) { ui.label(grid, if (all.isEmpty()) "Sua biblioteca começa aqui" else "Nenhum livro com esses filtros", 20, bold = true); ui.label(grid, if (all.isEmpty()) "Adicione um livro pelo botão + no topo." else "Toque em Limpar ou ajuste os filtros.", 12, ui.muted) }
             val currentBookId = currentShelfId
             val availableWidth = if (grid.width > 0) grid.width / activity.resources.displayMetrics.density else (activity.resources.configuration.screenWidthDp - 40).toFloat()
             if(spineMode() && !arranging){
@@ -1185,6 +1436,32 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         val palette = baseUi
         showBottomSheet(palette) { body, dialog ->
             addAccountSheetCard(body, palette, dialog)
+
+            sheetSectionHeader(body, palette, "Visual do app")
+            val isGallery = settings.galleryUiStyle()
+            val styleRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+            listOf(false to "Clássico", true to "Galeria (novo)").forEachIndexed { idx, (enableGallery, label) ->
+                val active = isGallery == enableGallery
+                val pill = TextView(activity).apply {
+                    text = label; textSize = 12f; gravity = Gravity.CENTER; maxLines = 1
+                    setTextColor(if (active) palette.accent else palette.muted)
+                    typeface = Typeface.create(if (active) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
+                    background = sheetCardBg(if (active) palette.activeSurface else palette.surface, if (active) palette.accent else palette.lineColor, 10)
+                    setPadding(palette.dp(10), palette.dp(10), palette.dp(10), palette.dp(10))
+                    isFocusable = true
+                    setOnClickListener {
+                        if (settings.galleryUiStyle() != enableGallery) {
+                            settings.setGalleryUiStyle(enableGallery)
+                            dialog.dismiss()
+                            changed()
+                        } else {
+                            dialog.dismiss()
+                        }
+                    }
+                }
+                styleRow.addView(pill, LinearLayout.LayoutParams(0, -2, 1f).apply { if (idx == 0) marginEnd = palette.dp(7) })
+            }
+            body.addView(styleRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = palette.dp(10) })
 
             val inSpines = spineMode() && useSpineLayout
             sheetSectionHeader(body, palette, "Visual da estante", if (inSpines) "Modo lombadas" else "Modo capas")
@@ -2436,7 +2713,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         showBottomSheet(palette) { body, dialog ->
             addAccountSheetCard(body, palette, dialog)
 
-            sheetSectionHeader(body, palette, "Visual (Livro atual e Amigos)")
+            sheetSectionHeader(body, palette, "Visual do app")
             val isGallery = settings.galleryUiStyle()
             val styleRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
             listOf(false to "Clássico", true to "Galeria (novo)").forEachIndexed { idx, (enableGallery, label) ->
