@@ -15,7 +15,6 @@ class DisplayUi(private val context: Context) {
     private data class ReadingPalette(val background:Int,val surface:Int,val active:Int,val text:Int,val muted:Int,val accent:Int)
     companion object {
         @Volatile private var readingPalette=palette(null)
-        fun tint(color: Int, alpha: Int): Int = (color and 0x00FFFFFF) or (alpha.coerceIn(0, 255) shl 24)
         private fun palette(color:Int?):ReadingPalette {
             val hsv=FloatArray(3)
             if(color!=null)Color.colorToHSV(color,hsv)
@@ -44,7 +43,7 @@ class DisplayUi(private val context: Context) {
     }
     val accent get()=if(rectilinear)currentPalette.accent else Color.rgb(230,230,230)
     val lineColor get()=if(rectilinear)mix(surface,accent,.25f) else 0xff393939.toInt()
-    fun tint(color: Int, alpha: Int): Int = DisplayUi.tint(color, alpha)
+    fun tint(color: Int, alpha: Int): Int = br.com.centralcasa.books.CoverColors.tint(color, alpha)
     fun gallerySurface(alpha: Int = 255): Int = tint(surface, alpha)
     fun galleryPill(alpha: Int = 255): Int = tint(activeSurface, alpha)
     fun galleryHairline(alpha: Int = 140): Int = tint(lineColor, alpha)

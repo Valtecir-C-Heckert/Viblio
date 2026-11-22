@@ -372,9 +372,9 @@ class Viblio070FeaturesTest {
     @Test
     fun galleryCoverPaletteTintAndContrast() {
         val base = 0xFF1A242E.toInt()
-        assertEquals(0x901A242E.toInt(), br.com.centralcasa.ui.DisplayUi.tint(base, 0x90))
-        assertEquals(0x001A242E, br.com.centralcasa.ui.DisplayUi.tint(base, -5))
-        assertEquals(0xFF1A242E.toInt(), br.com.centralcasa.ui.DisplayUi.tint(base, 300))
+        assertEquals(0x901A242E.toInt(), CoverColors.tint(base, 0x90))
+        assertEquals(0x001A242E, CoverColors.tint(base, -5))
+        assertEquals(0xFF1A242E.toInt(), CoverColors.tint(base, 300))
 
         // Active pills use cover accent with dark background ink; verify WCAG contrast across diverse cover hues.
         val darkBackgrounds = listOf(0xFF050709.toInt(), 0xFF050907.toInt(), 0xFF090506.toInt(), 0xFF090705.toInt())

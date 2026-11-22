@@ -73,5 +73,6 @@ object CoverColors {
         }
         return listOfNotNull(candidate(0.0),candidate(1.0)).minByOrNull {it.second}?.first ?: accent(base)
     }
+    fun tint(color: Int, alpha: Int): Int = (color and 0x00FFFFFF) or (alpha.coerceIn(0, 255) shl 24)
     private fun rgb(r: Int, g: Int, b: Int) = (255 shl 24) or (r shl 16) or (g shl 8) or b
 }
