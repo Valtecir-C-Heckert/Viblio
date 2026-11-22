@@ -56,6 +56,10 @@ class LocalSettings(context: Context) {
     fun setShelfSpineDesign(mode: br.com.centralcasa.books.SpineDesignMode) {
         prefs.edit().putString("SHELF_SPINE_DESIGN", mode.key).apply()
     }
+    fun galleryUiStyle(): Boolean = prefs.getString("SHELF_UI_STYLE", "classic") == "gallery"
+    fun setGalleryUiStyle(enabled: Boolean) {
+        prefs.edit().putString("SHELF_UI_STYLE", if (enabled) "gallery" else "classic").apply()
+    }
     fun lightFavorite(entityId: String, slot: Int): br.com.centralcasa.services.Rgb {
         require(slot in 0..5)
         val fallback = lightColorDefaults[slot].second

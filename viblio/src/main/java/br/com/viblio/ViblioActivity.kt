@@ -87,6 +87,21 @@ class ViblioActivity : Activity() {
         if(android.os.Build.VERSION.SDK_INT >= 31){
             splashScreen.setOnExitAnimationListener { it.remove() }
         }
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false)
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                    android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                )
+        }
         ui = DisplayUi(this).apply {readingColor(null)}
         root = FrameLayout(this)
         content = ui.column().apply { setPadding(ui.dp(20), ui.dp(12), ui.dp(20), ui.dp(24)) }
@@ -102,24 +117,24 @@ class ViblioActivity : Activity() {
         host.addView(composerDock,LinearLayout.LayoutParams(-1,-2))
         navigation=ui.row().apply { setPadding(ui.dp(12),ui.dp(6),ui.dp(12),ui.dp(6));background=ui.shape(ui.background,0) }
         host.addView(navigation,LinearLayout.LayoutParams(-1,ui.dp(72)))
-        root.setOnApplyWindowInsetsListener { view, insets ->
+        root.setOnApplyWindowInsetsListener { _, insets ->
             if (android.os.Build.VERSION.SDK_INT >= 30) {
-                val bars = insets.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.ime())
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+                val bars = insets.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout() or android.view.WindowInsets.Type.ime())
+                host.setPadding(bars.left, bars.top, bars.right, bars.bottom)
                 if (insets.isVisible(android.view.WindowInsets.Type.ime()) && composerDock.visibility == android.view.View.VISIBLE) {
                     scroll.post { scroll.fullScroll(android.view.View.FOCUS_DOWN) }
                 }
                 android.view.WindowInsets.CONSUMED
             } else {
                 @Suppress("DEPRECATION")
-                view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop,
+                host.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop,
                     insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
                 @Suppress("DEPRECATION")
                 insets.consumeSystemWindowInsets()
             }
         }
-        window.statusBarColor = ui.background
-        window.navigationBarColor = ui.background
+        window.statusBarColor = Color.TRANSPARENT
+        window.navigationBarColor = Color.TRANSPARENT
         setContentView(root)
         accounts=br.com.viblio.account.AccountManager(this,changed={if(!accounts.signedIn)offline=false;if(needsLogin() || navigation.visibility==android.view.View.GONE || tab=="account")render()},reloaded=::reloadProfile,canReplace={::library.isInitialized && library.canReplaceLibrary && (statistics?.canReplaceLibrary ?: true) && (!::friends.isInitialized || friends.canReplaceLibrary)})
         homeAssistant=br.com.viblio.homeassistant.HomeAssistantBridge(this)
@@ -128,7 +143,7 @@ class ViblioActivity : Activity() {
         library.catalog=catalog
         search=makeSearch()
         friends=makeFriends()
-        account=AccountPanel(this,ui,accounts,changed={render()},shelf={switchTab("shelf")},backup={library.backupSettings()})
+        account=AccountPanel(this,ui,accounts,changed={accounts.localChanged();render()},shelf={switchTab("shelf")},backup={library.backupSettings()})
         offline=state?.getBoolean("viblio.offline",false) ?: false
         scanTarget=state?.getString("scan.target");scanProfile=state?.getString("scan.profile");scanEditor=state?.getString("scan.editor")
         library.restoreState(state)
@@ -345,8 +360,8 @@ class ViblioActivity : Activity() {
         }
         root.background=backdrop ?: theme.shape(color,0)
         navigation.setBackgroundColor(color)
-        window.statusBarColor=color
-        window.navigationBarColor=color
+        window.statusBarColor=Color.TRANSPARENT
+        window.navigationBarColor=Color.TRANSPARENT
     }
     private fun openShelfTab(){
         if(library.isShelf){switchTab("shelf");return}

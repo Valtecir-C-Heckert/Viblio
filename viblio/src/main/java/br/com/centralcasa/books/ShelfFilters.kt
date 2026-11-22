@@ -6,10 +6,10 @@ import java.util.Locale
 enum class ShelfStatus(val label: String) { ALL("Todos"), UNREAD("Não iniciados"), READING("Em leitura"), COMPLETED("Concluídos"), CURRENT("Livro atual") }
 enum class ShelfRatings { ALL, RATED, UNRATED }
 enum class ShelfCovers(val label: String) { ALL("Todas"), WITH("Com capa"), WITHOUT("Sem capa") }
-enum class ShelfSort(val label: String) { TITLE("Título A–Z"), TITLE_REVERSE("Título Z–A"), AUTHOR("Autor A–Z"), PROGRESS_HIGH("Maior progresso"), PROGRESS_LOW("Menor progresso"), RECENT("Atualizados recentemente"), SEQUENCE("Número na saga"), GENRE("Gênero A–Z"), SAGA("Saga A–Z"), RATING_HIGH("Maior nota"), RATING_LOW("Menor nota") }
+enum class ShelfSort(val label: String) { TITLE("Título A–Z"), TITLE_REVERSE("Título Z–A"), AUTHOR("Autor A–Z"), PROGRESS_HIGH("Maior progresso"), PROGRESS_LOW("Menor progresso"), RECENT("Atualizados recentemente"), SEQUENCE("Número na saga"), GENRE("Gênero A–Z"), SAGA("Saga A–Z"), RATING_HIGH("Maior nota"), RATING_LOW("Menor nota"), PAGES_LOW("Menos páginas"), PAGES_HIGH("Mais páginas") }
 
 enum class ShelfField(val label: String, val numeric: Boolean = false) {
-    GENRE("Gênero"), SUBGENRE("Subgênero"), SAGA("Saga"), SEQUENCE("Número na saga", true), TITLE("Título"), AUTHOR("Autor"), PROGRESS("Progresso", true), UPDATED("Atualização", true), RATING("Nota", true)
+    GENRE("Gênero"), SUBGENRE("Subgênero"), SAGA("Saga"), SEQUENCE("Número na saga", true), TITLE("Título"), AUTHOR("Autor"), PAGES("Número de páginas", true), PROGRESS("Progresso", true), UPDATED("Atualização", true), RATING("Nota", true)
 }
 data class ShelfOrder(val field: ShelfField, val descending: Boolean = false) {
     val direction get() = if (field.numeric) { if (descending) "Decrescente" else "Crescente" } else { if (descending) "Z–A" else "A–Z" }
@@ -69,6 +69,8 @@ data class ShelfFilters(
             ShelfSort.RATING_HIGH -> compareBy<LibraryBook> { it.rating == null }.thenByDescending { it.rating ?: 0.0 }.then(title)
             ShelfSort.RATING_LOW -> compareBy<LibraryBook> { it.rating == null }.thenBy { it.rating ?: 0.0 }.then(title)
             ShelfSort.SEQUENCE -> compareBy<LibraryBook> { it.sequenceNumber ?: Int.MAX_VALUE }.then(title)
+            ShelfSort.PAGES_LOW -> compareBy<LibraryBook> { !it.pagesKnown || it.totalPages <= 0 }.thenBy { it.totalPages }.then(title)
+            ShelfSort.PAGES_HIGH -> compareBy<LibraryBook> { !it.pagesKnown || it.totalPages <= 0 }.thenByDescending { it.totalPages }.then(title)
         }
         val priorities = this.order.distinctBy { it.field }
         if (priorities.isEmpty()) return matches.sortedWith(order)
@@ -79,6 +81,7 @@ data class ShelfFilters(
                 fun missing(book: LibraryBook) = when (field) {
                     ShelfField.SUBGENRE -> book.selectedSubgenres.isEmpty(); ShelfField.GENRE -> book.genre.isBlank(); ShelfField.SAGA -> book.saga.isBlank()
                     ShelfField.RATING -> book.rating == null; ShelfField.AUTHOR -> book.author.isBlank(); ShelfField.SEQUENCE -> book.sequenceNumber == null
+                    ShelfField.PAGES -> !book.pagesKnown || book.totalPages <= 0
                     else -> false
                 }
                 result = missing(a).compareTo(missing(b))
@@ -89,6 +92,7 @@ data class ShelfFilters(
                     ShelfField.SAGA -> key(a.saga).compareTo(key(b.saga))
                     ShelfField.TITLE -> key(a.title).compareTo(key(b.title))
                     ShelfField.AUTHOR -> key(a.author).compareTo(key(b.author))
+                    ShelfField.PAGES -> a.totalPages.compareTo(b.totalPages)
                     ShelfField.SEQUENCE -> (a.sequenceNumber ?: 0).compareTo(b.sequenceNumber ?: 0)
                     ShelfField.PROGRESS -> (a.currentPage.toDouble() / a.totalPages.coerceAtLeast(1)).compareTo(b.currentPage.toDouble() / b.totalPages.coerceAtLeast(1))
                     ShelfField.RATING -> (a.rating ?: 0.0).compareTo(b.rating ?: 0.0)

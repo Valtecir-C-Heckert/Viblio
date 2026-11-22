@@ -235,29 +235,107 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
         }
         if(error.isNotBlank()){ui.label(parent,error,14,ui.muted);ui.action(parent,"Tentar novamente"){load(retryMore)}}
         val rows=ui.column();parent.addView(rows);coverLoader()?.attach(rows)
+        val gallery = br.com.centralcasa.data.LocalSettings(activity).galleryUiStyle()
         if(friend==null){
-            if(requests.isNotEmpty())ui.label(rows,"Pedidos de amizade",18,bold=true)
+            if(requests.isNotEmpty()){
+                if(gallery) ui.label(rows,"PEDIDOS DE AMIZADE",10,ui.muted).apply {letterSpacing=0.10f;(layoutParams as LinearLayout.LayoutParams).apply {topMargin=ui.dp(10);bottomMargin=ui.dp(6)}}
+                else ui.label(rows,"Pedidos de amizade",18,bold=true)
+            }
             requests.forEach {pending->val id=uuid(pending.str("id")) ?: return@forEach;val incoming=pending.get("incoming")?.asBoolean==true
-                val card=ui.panel(rows,12);ui.label(card,"@${pending.str("username").take(32)}",16,bold=true)
+                val card=if(gallery) ui.column().apply {
+                    background=android.graphics.drawable.GradientDrawable().apply {setColor(0x12FFFFFF);cornerRadius=ui.dp(14).toFloat()}
+                    setPadding(ui.dp(14),ui.dp(12),ui.dp(14),ui.dp(12))
+                    rows.addView(this,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
+                } else ui.panel(rows,12)
+                ui.label(card,"@${pending.str("username").take(32)}",16,bold=true)
                 val controls=ui.row();card.addView(controls)
                 if(incoming)ui.action(controls,"Aceitar"){action("/v1/friends/$id/accept")}.apply {isEnabled=!busy;layoutParams=LinearLayout.LayoutParams(0,-2,1f);tag="friend-accept:$id"}
                 ui.action(controls,if(incoming)"Recusar" else "Cancelar pedido"){action("/v1/friends/$id","DELETE")}.apply {isEnabled=!busy;layoutParams=LinearLayout.LayoutParams(0,-2,1f)}
             }
-            if(items.isNotEmpty())ui.label(rows,"Meus amigos",18,bold=true)
-            items.forEach {entry->val id=uuid(entry.str("id")) ?: return@forEach;val reading=entry.get("current")?.takeUnless {it.isJsonNull}?.asJsonObject
+            if(items.isNotEmpty()){
+                if(gallery) ui.label(rows,"MEUS AMIGOS",10,ui.muted).apply {letterSpacing=0.10f;(layoutParams as LinearLayout.LayoutParams).apply {topMargin=ui.dp(10);bottomMargin=ui.dp(4)}}
+                else ui.label(rows,"Meus amigos",18,bold=true)
+            }
+            items.forEachIndexed {idx,entry->val id=uuid(entry.str("id")) ?: return@forEachIndexed;val reading=entry.get("current")?.takeUnless {it.isJsonNull}?.asJsonObject
                 val path=reading?.str("cover").orEmpty()
                 val rowUi=DisplayUi(activity).apply {scopedReadingColor(friendColors[path])}
                 coverLoader()?.color(path){color->if(!friendColors.containsKey(path) || friendColors[path]!=color){friendColors[path]=color;if(active && !colorRedrawScheduled){colorRedrawScheduled=true;handler.postDelayed(colorRedraw,180)}}}
-                val card=ui.row().apply {background=rowUi.outlined();setPadding(ui.dp(12),ui.dp(12),ui.dp(12),ui.dp(12));isFocusable=true;contentDescription="Estante de @${entry.str("username")}";tag="friend:$id"};rows.addView(card,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
-                cover(card,reading?.str("cover").orEmpty(),46,66)
-                val labels=ui.column();card.addView(labels,LinearLayout.LayoutParams(0,-2,1f))
-                rowUi.label(labels,"@${entry.str("username").take(32)}",19,rowUi.accent,bold=true)
-                ui.label(labels,reading?.str("title")?.take(500)?.takeIf(String::isNotBlank)?.let {"Lendo · $it"} ?: "Sem livro atual",12,ui.muted).apply {maxLines=2;ellipsize=android.text.TextUtils.TruncateAt.END}
-                reading?.get("page")?.takeUnless {it.isJsonNull}?.asInt?.let {page->
-                    val total=reading.get("pages")?.takeUnless {it.isJsonNull}?.asInt
-                    ui.label(labels,if(total!=null && total>0)"$page / $total páginas · ${(page.toLong()*100/total).coerceIn(0,100)}%" else "$page páginas",12,rowUi.accent).tag="friend-current-page:$id"
+                if(gallery){
+                    val card=ui.row().apply {
+                        gravity=Gravity.CENTER_VERTICAL
+                        setPadding(ui.dp(2),ui.dp(12),ui.dp(2),ui.dp(12))
+                        isFocusable=true;contentDescription="Estante de @${entry.str("username")}";tag="friend:$id"
+                    }
+                    rows.addView(card,LinearLayout.LayoutParams(-1,-2))
+                    val img=ImageView(activity).apply {
+                        setImageDrawable(ViblioBookMarkDrawable(rowUi.accent,android.graphics.Color.WHITE,scale=0.48f,backgroundColor=ui.activeSurface))
+                        scaleType=ImageView.ScaleType.CENTER_CROP
+                        background=android.graphics.drawable.GradientDrawable().apply {setColor(ui.activeSurface);cornerRadius=ui.dp(5).toFloat()}
+                        clipToOutline=true
+                        elevation=ui.dp(4).toFloat()
+                        importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    }
+                    card.addView(img,LinearLayout.LayoutParams(ui.dp(48),ui.dp(72)).apply {marginEnd=ui.dp(14)})
+                    coverLoader()?.bind(img,path)
+                    val labels=ui.column();card.addView(labels,LinearLayout.LayoutParams(0,-2,1f))
+                    ui.label(labels,"@${entry.str("username").take(32)}",12,ui.muted).apply {
+                        typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                        (layoutParams as LinearLayout.LayoutParams).bottomMargin=ui.dp(2)
+                    }
+                    val bookTitle=reading?.str("title")?.take(500)?.takeIf(String::isNotBlank)
+                    if(bookTitle!=null){
+                        ui.label(labels,bookTitle,16,ui.text).apply {
+                            typeface=Typeface.create("serif",Typeface.NORMAL)
+                            maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END
+                            (layoutParams as LinearLayout.LayoutParams).bottomMargin=ui.dp(4)
+                        }
+                    }else {
+                        ui.label(labels,"Sem livro atual",13,ui.muted).apply {
+                            (layoutParams as LinearLayout.LayoutParams).bottomMargin=0
+                        }
+                    }
+                    reading?.get("page")?.takeUnless {it.isJsonNull}?.asInt?.let {page->
+                        val total=reading.get("pages")?.takeUnless {it.isJsonNull}?.asInt
+                        if(total!=null && total>0){
+                            val pct=(page.toLong()*100/total).coerceIn(0,100).toInt()
+                            val progRow=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+                            labels.addView(progRow,LinearLayout.LayoutParams(-1,-2))
+                            val track=FrameLayout(activity).apply {
+                                background=android.graphics.drawable.GradientDrawable().apply {setColor(0x1EFFFFFF);cornerRadius=ui.dp(2).toFloat()}
+                                clipToOutline=true
+                            }
+                            val fill=View(activity).apply {
+                                background=android.graphics.drawable.GradientDrawable().apply {setColor(rowUi.accent);cornerRadius=ui.dp(2).toFloat()}
+                            }
+                            val barRow=ui.row()
+                            barRow.addView(fill,LinearLayout.LayoutParams(0,-1,pct.toFloat().coerceAtLeast(1f)))
+                            if(pct<100)barRow.addView(View(activity),LinearLayout.LayoutParams(0,-1,(100-pct).toFloat()))
+                            track.addView(barRow,FrameLayout.LayoutParams(-1,-1))
+                            progRow.addView(track,LinearLayout.LayoutParams(0,ui.dp(3).coerceAtLeast(3),1f).apply {marginEnd=ui.dp(8)})
+                            ui.label(progRow,"$page/$total · $pct%",11,rowUi.accent).apply {
+                                maxLines=1;tag="friend-current-page:$id"
+                                (layoutParams as LinearLayout.LayoutParams).bottomMargin=0
+                            }
+                        }else {
+                            ui.label(labels,"$page páginas",11,rowUi.accent).apply {tag="friend-current-page:$id";(layoutParams as LinearLayout.LayoutParams).bottomMargin=0}
+                        }
+                    }
+                    card.setOnClickListener {focusedInput=null;friend=id;friendName=entry.str("username");readingCover=path;readingBookId=reading?.str("id").orEmpty();readingResolved=true;collection="";kind="all";query="";reset();load()}
+                    if(idx<items.lastIndex){
+                        rows.addView(View(activity).apply {setBackgroundColor(0x16FFFFFF)},LinearLayout.LayoutParams(-1,1))
+                    }
+                }else {
+                    val card=ui.row().apply {background=rowUi.outlined();setPadding(ui.dp(12),ui.dp(12),ui.dp(12),ui.dp(12));isFocusable=true;contentDescription="Estante de @${entry.str("username")}";tag="friend:$id"};rows.addView(card,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
+                    cover(card,reading?.str("cover").orEmpty(),46,66)
+                    val labels=ui.column();card.addView(labels,LinearLayout.LayoutParams(0,-2,1f))
+                    rowUi.label(labels,"@${entry.str("username").take(32)}",19,rowUi.accent,bold=true)
+                    ui.label(labels,reading?.str("title")?.take(500)?.takeIf(String::isNotBlank)?.let {"Lendo · $it"} ?: "Sem livro atual",12,ui.muted).apply {maxLines=2;ellipsize=android.text.TextUtils.TruncateAt.END}
+                    reading?.get("page")?.takeUnless {it.isJsonNull}?.asInt?.let {page->
+                        val total=reading.get("pages")?.takeUnless {it.isJsonNull}?.asInt
+                        ui.label(labels,if(total!=null && total>0)"$page / $total páginas · ${(page.toLong()*100/total).coerceIn(0,100)}%" else "$page páginas",12,rowUi.accent).tag="friend-current-page:$id"
+                    }
+                    card.setOnClickListener {focusedInput=null;friend=id;friendName=entry.str("username");readingCover=path;readingBookId=reading?.str("id").orEmpty();readingResolved=true;collection="";kind="all";query="";reset();load()}
                 }
-                card.setOnClickListener {focusedInput=null;friend=id;friendName=entry.str("username");readingCover=path;readingBookId=reading?.str("id").orEmpty();readingResolved=true;collection="";kind="all";query="";reset();load()}
             }
             if(loaded && !busy && error.isBlank() && items.isEmpty())ui.label(rows,"Nenhum amigo.",14,ui.muted)
         }else {
@@ -276,7 +354,7 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
                     card.contentDescription=listOf(model.title,book.str("author"),if(group)"${book.get("volumes")?.asInt ?: 0} volumes" else "${model.percent}%").joinToString(", ")
                     val frame=ShelfCoverFrame(activity,model,!group && model.id==readingBookId,ui.lineColor).apply {background=ui.shape(ui.surface,0)}
                     card.addView(frame,LinearLayout.LayoutParams(-1,-2))
-                    val image=ShelfCoverView(activity).apply {setImageDrawable(ui.symbol("books",ui.muted,48));scaleType=ImageView.ScaleType.FIT_CENTER;background=ui.shape(ui.activeSurface,0);importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO}
+                    val image=ShelfCoverView(activity).apply {setImageDrawable(ViblioBookMarkDrawable(ui.accent,android.graphics.Color.WHITE,scale=0.45f,backgroundColor=ui.activeSurface));scaleType=ImageView.ScaleType.FIT_CENTER;background=ui.shape(ui.activeSurface,0);importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO}
                     frame.addView(image,FrameLayout.LayoutParams(-1,-2));coverLoader()?.bind(image,book.str("cover"))
                     ui.label(card,model.title,11).apply {maxLines=2;minLines=2;gravity=Gravity.CENTER_HORIZONTAL;ellipsize=android.text.TextUtils.TruncateAt.END;visibility=View.GONE}
                     if(group)ui.label(card,"${book.get("volumes")?.asInt ?: 0} volumes",10,ui.muted).gravity=Gravity.CENTER_HORIZONTAL
@@ -305,7 +383,7 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
         columns=next;changed();return true
     }
     private fun cover(row:LinearLayout,path:String,width:Int,height:Int){
-        val image=ImageView(activity).apply {setImageDrawable(ui.symbol("books",ui.muted,48));scaleType=ImageView.ScaleType.FIT_CENTER;background=ui.shape(ui.surface,4);importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO}
+        val image=ImageView(activity).apply {setImageDrawable(ViblioBookMarkDrawable(ui.accent,android.graphics.Color.WHITE,scale=0.48f,backgroundColor=ui.activeSurface));scaleType=ImageView.ScaleType.FIT_CENTER;background=ui.shape(ui.surface,4);importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO}
         row.addView(image,LinearLayout.LayoutParams(ui.dp(width),ui.dp(height)).apply {marginEnd=ui.dp(12)});coverLoader()?.bind(image,path)
     }
 }

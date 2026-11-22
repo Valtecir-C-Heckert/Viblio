@@ -13,7 +13,7 @@ android {
     namespace = "br.com.centralcasa"
     compileSdk = 35
     buildToolsVersion = "35.0.0"
-    defaultConfig { applicationId = "br.com.viblio"; minSdk = 21; targetSdk = 35; versionCode = 62; versionName = "0.8.3"; testInstrumentationRunner = "br.com.viblio.CatalogInstrumentation" }
+    defaultConfig { applicationId = "br.com.viblio"; minSdk = 21; targetSdk = 35; versionCode = 63; versionName = "0.8.4"; testInstrumentationRunner = "br.com.viblio.CatalogInstrumentation" }
     signingConfigs {
         val releaseStore = System.getenv("VIBLIO_KEYSTORE_PATH")?.trim().orEmpty()
         if (releaseStore.isNotEmpty()) {

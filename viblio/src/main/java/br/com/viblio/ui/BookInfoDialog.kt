@@ -14,7 +14,7 @@ object BookInfoDialog {
     fun show(activity:Activity,ui:DisplayUi,info:Info,bind:(ImageView,View)->Unit,onClose:()->Unit,add:(()->Unit)?=null):AlertDialog {
         val body=ui.column().apply {tag="book-info";setPadding(ui.dp(20),ui.dp(16),ui.dp(20),ui.dp(20))}
         if(info.owner.isNotBlank())ui.label(body,"@${info.owner.take(32)}",13,ui.accent).gravity=Gravity.CENTER_HORIZONTAL
-        val image=ImageView(activity).apply {setImageDrawable(ui.symbol("books",ui.muted,48));scaleType=ImageView.ScaleType.FIT_CENTER;background=ui.shape(ui.activeSurface,0);contentDescription="Capa de ${info.title.take(500)}"}
+        val image=ImageView(activity).apply {setImageDrawable(ViblioBookMarkDrawable(ui.accent,android.graphics.Color.WHITE,scale=0.45f,backgroundColor=ui.activeSurface));scaleType=ImageView.ScaleType.FIT_CENTER;background=ui.shape(ui.activeSurface,0);contentDescription="Capa de ${info.title.take(500)}"}
         body.addView(image,LinearLayout.LayoutParams(ui.dp(140),ui.dp(210)).apply {gravity=Gravity.CENTER_HORIZONTAL;bottomMargin=ui.dp(16)})
         ui.label(body,info.title.take(500),26).apply {typeface=Typeface.create("serif",Typeface.NORMAL);gravity=Gravity.CENTER_HORIZONTAL}
         if(info.author.isNotBlank())ui.label(body,info.author.take(200),14,ui.muted).gravity=Gravity.CENTER_HORIZONTAL

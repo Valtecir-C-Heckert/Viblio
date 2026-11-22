@@ -533,7 +533,7 @@ class SearchPanel(
             rail.addView(card, LinearLayout.LayoutParams(cardW, -2).apply { marginEnd = gapPx })
 
             val cover = ImageView(activity).apply {
-                setImageDrawable(ui.symbol("book_nav", ui.muted, 30))
+                setImageDrawable(ViblioBookMarkDrawable(ui.accent, Color.WHITE, scale = 0.48f, backgroundColor = ui.activeSurface))
                 scaleType = ImageView.ScaleType.CENTER_CROP
                 background = ui.shape(ui.activeSurface, 0)
                 contentDescription = "Capa de ${book.title}"
@@ -702,7 +702,7 @@ class SearchPanel(
             target.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(8) })
 
             val cover = ImageView(activity).apply {
-                setImageDrawable(ui.symbol("book_nav", ui.muted, 28))
+                setImageDrawable(ViblioBookMarkDrawable(ui.accent, Color.WHITE, scale = 0.48f, backgroundColor = ui.activeSurface))
                 scaleType = ImageView.ScaleType.CENTER_CROP
                 background = ui.shape(ui.activeSurface, 0)
                 contentDescription = "Capa de ${book.title}"
@@ -801,7 +801,7 @@ class SearchPanel(
             }
             target.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(12) })
             val cover = ImageView(activity).apply {
-                setImageDrawable(ui.symbol("book_nav", ui.muted, 40))
+                setImageDrawable(ViblioBookMarkDrawable(ui.accent, Color.WHITE, scale = 0.45f, backgroundColor = ui.activeSurface))
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 background = ui.shape(ui.surface, 7)
                 clipToOutline = true

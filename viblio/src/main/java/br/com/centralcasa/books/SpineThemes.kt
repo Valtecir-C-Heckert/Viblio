@@ -113,11 +113,70 @@ object SpineThemes {
     }
 
     /** Asset path under assets/ for the book's thematic stamp, or null for fallback. */
-    fun assetName(theme: SpineGenreTheme, bookId: String, saga: String = "", collectionId: String = ""): String? {
+    fun assetName(
+        theme: SpineGenreTheme,
+        bookId: String,
+        saga: String = "",
+        collectionId: String = "",
+        overrideVariant: Int? = null
+    ): String? {
         val prefix = theme.assetPrefix ?: return null
-        val seed = variantSeed(bookId, saga, collectionId)
-        val letter = ('a'.code + deterministicVariant(seed)).toChar()
+        val variant = overrideVariant?.coerceIn(0, 2) ?: deterministicVariant(variantSeed(bookId, saga, collectionId))
+        val letter = ('a'.code + variant).toChar()
         return "spines/${prefix}_$letter.webp"
+    }
+
+    /**
+     * Assigns deterministic A/B/C variant indices (0..2) across an ordered shelf list:
+     * - Books sharing the same saga/collection ALWAYS receive the exact same variant.
+     * - Two adjacent different series/standalone books of the SAME genre never repeat the same variant
+     *   (even when filters or sort order change and bring two same-genre books side by side).
+     */
+    fun assignVariants(books: List<LibraryBook>): Map<String, Int> {
+        if (books.isEmpty()) return emptyMap()
+        data class Run(val seed: String, val theme: SpineGenreTheme, val bookIds: MutableList<String>)
+        val runs = mutableListOf<Run>()
+        for (book in books) {
+            val seed = variantSeed(book.id, book.saga, book.collectionId)
+            val theme = resolveGenre(book.genre, book.kind)
+            val last = runs.lastOrNull()
+            if (last != null && last.seed == seed && last.theme == theme) {
+                last.bookIds.add(book.id)
+            } else {
+                runs.add(Run(seed, theme, mutableListOf(book.id)))
+            }
+        }
+        val seedChoice = mutableMapOf<String, Int>()
+        val runChoice = IntArray(runs.size)
+        for (i in runs.indices) {
+            val run = runs[i]
+            val prevRun = runs.getOrNull(i - 1)
+            val nextRun = runs.getOrNull(i + 1)
+            val prevForbidden = if (prevRun != null && run.theme != SpineGenreTheme.DEFAULT && prevRun.theme == run.theme && prevRun.seed != run.seed) {
+                runChoice[i - 1]
+            } else -1
+            val nextSameGenre = nextRun != null && run.theme != SpineGenreTheme.DEFAULT && nextRun.theme == run.theme && nextRun.seed != run.seed
+            val nextFixed = if (nextSameGenre) seedChoice[nextRun!!.seed] ?: -1 else -1
+            val existing = seedChoice[run.seed]
+            val chosen = if (existing != null) {
+                existing
+            } else {
+                val base = deterministicVariant(run.seed)
+                val candidates = listOf(base, (base + 1) % 3, (base + 2) % 3)
+                val nextAvoid = if (nextSameGenre) (seedChoice[nextRun!!.seed] ?: deterministicVariant(nextRun.seed)) else -1
+                (candidates.firstOrNull { it != prevForbidden && it != nextFixed && it != nextAvoid }
+                    ?: candidates.firstOrNull { it != prevForbidden && it != nextFixed }
+                    ?: candidates.first { it != prevForbidden })
+                    .also { seedChoice[run.seed] = it }
+            }
+            runChoice[i] = chosen
+        }
+        val result = HashMap<String, Int>(books.size)
+        for (i in runs.indices) {
+            val v = runChoice[i]
+            for (id in runs[i].bookIds) result[id] = v
+        }
+        return result
     }
 
     /** Single antique saddle-brown leather color with subtle ±6 organic hide patina per book. */

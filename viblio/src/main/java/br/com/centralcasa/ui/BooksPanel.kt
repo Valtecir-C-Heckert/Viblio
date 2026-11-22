@@ -781,7 +781,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             progressTintList=android.content.res.ColorStateList.valueOf(b?.let(::readingAccent) ?: ui.accent)
         }
     }
-    private fun shelfThemeColor(): Int? = shelfFilters.genre?.takeIf { it.isNotBlank() && it != "Sem gênero" }?.let(settings::genreColor)
+    private fun shelfThemeColor(): Int? = if (baseUi.rectilinear) null else shelfFilters.genre?.takeIf { it.isNotBlank() && it != "Sem gênero" }?.let(settings::genreColor)
     private fun shelfTint(color: Int, amount: Float): Int = Color.rgb(
         (Color.red(color) * amount + Color.red(ui.background) * (1 - amount)).toInt(),
         (Color.green(color) * amount + Color.green(ui.background) * (1 - amount)).toInt(),
@@ -1302,22 +1302,6 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 refreshCols()
             }
 
-            val swatches = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            listOf(0xFF8F3232.toInt(), 0xFF2E637A.toInt(), 0xFF4A7347.toInt(), 0xFFB58A3B.toInt()).forEachIndexed { idx, c ->
-                val dot = View(activity).apply {
-                    background = android.graphics.drawable.GradientDrawable().apply {
-                        shape = android.graphics.drawable.GradientDrawable.OVAL
-                        setColor(c)
-                        setStroke(palette.dp(1).coerceAtLeast(1), palette.surface)
-                    }
-                }
-                swatches.addView(dot, LinearLayout.LayoutParams(palette.dp(11), palette.dp(11)).apply { if (idx > 0) marginStart = -palette.dp(3) })
-            }
-            sheetRow(body, palette, "Cores por gênero", trailingView = swatches) {
-                dialog.dismiss()
-                customizeGenreColors()
-            }
-
             if (useManualShelfOrder) {
                 sheetSectionHeader(body, palette, "Organização")
                 sheetRow(body, palette, "Organizar estante", "Arrastar livros para definir sua ordem") {
@@ -1344,6 +1328,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         val collectionIds=collections.map {it.id}.toSet()
         val woodStyle=settings.shelfWoodStyle()
         val spineDesign=settings.shelfSpineDesign()
+        val variantMap=SpineThemes.assignVariants(books)
         val sideW=ui.dp((10*spineZoom).toInt().coerceIn(7,14))
         val plankH=ui.dp((14*spineZoom).toInt().coerceIn(10,18))
         val ceilingH=if(woodStyle==ShelfWoodStyle.COLLECTOR) ui.dp((24*spineZoom).toInt().coerceIn(16,32)) else ui.dp((10*spineZoom).toInt().coerceIn(6,14))
@@ -1386,7 +1371,8 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                     collectionId=book.collectionId,
                     genre=book.genre,
                     kind=book.kind,
-                    spineDesign=spineDesign
+                    spineDesign=spineDesign,
+                    resolvedVariant=variantMap[book.id]
                 ).apply {tag="shelf-spine:${book.id}";importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO}
                 cell.addView(spine,LinearLayout.LayoutParams(-1,-1))
                 shelfThumbnails.bind(spine,book.cover)
@@ -1429,10 +1415,45 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         ui.label(body, "Ordenar por prioridade", 20, bold = true).apply {
             typeface = Typeface.create("serif", Typeface.BOLD); (layoutParams as LinearLayout.LayoutParams).topMargin = ui.dp(12)
         }
-        ui.label(body, "Segure a alça e arraste. Toque no número para mover.", 10, ui.muted)
         val priorities = shelfFilters.order.ifEmpty { shelfOrderDefaults() }.toMutableList()
+        val quickScroll = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
+        val quickRow = ui.row()
+        quickScroll.addView(quickRow)
+        body.addView(quickScroll, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(4); bottomMargin = ui.dp(8) })
+        ui.label(body, "Segure a alça e arraste. Toque no número para mover.", 10, ui.muted)
         val priorityHost = ui.column(); body.addView(priorityHost)
         lateinit var drawPriorities: () -> Unit
+        val quickPresets = listOf(
+            "Padrão" to shelfOrderDefaults(),
+            "A–Z" to listOf(ShelfOrder(ShelfField.TITLE, false)),
+            "Z–A" to listOf(ShelfOrder(ShelfField.TITLE, true)),
+            "Menos págs" to listOf(ShelfOrder(ShelfField.PAGES, false), ShelfOrder(ShelfField.TITLE, false)),
+            "Mais págs" to listOf(ShelfOrder(ShelfField.PAGES, true), ShelfOrder(ShelfField.TITLE, false)),
+        )
+        val quickChips = mutableListOf<Pair<List<ShelfOrder>, TextView>>()
+        fun refreshQuickChips() {
+            quickChips.forEach { (preset, chip) ->
+                val active = priorities == preset
+                chip.setTextColor(if (active) ui.accent else ui.muted)
+                chip.background = ui.outlined(if (active) ui.activeSurface else ui.surface, if (active) ui.accent else ui.lineColor, 0)
+            }
+        }
+        quickPresets.forEach { (label, preset) ->
+            val chip = TextView(activity).apply {
+                text = label; textSize = 11f; gravity = Gravity.CENTER; maxLines = 1
+                setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(6))
+                isFocusable = true
+                setOnClickListener {
+                    priorities.clear()
+                    priorities.addAll(preset)
+                    drawPriorities()
+                    refreshQuickChips()
+                }
+            }
+            quickChips.add(preset to chip)
+            quickRow.addView(chip, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) })
+        }
+        refreshQuickChips()
         fun chooseField(index: Int?) {
             val choices = ShelfField.entries.filter { field -> (shelfType !in listOf("manga", "comic") || field !in listOf(ShelfField.SAGA, ShelfField.SEQUENCE)) && (priorities.none { it.field == field } || index?.let { priorities[it].field == field } == true) }
             if (choices.isEmpty()) { toast("Todos os critérios já foram adicionados."); return }
@@ -1440,6 +1461,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 .setItems(choices.map { it.label }.toTypedArray()) { _, which ->
                     if (index == null) priorities.add(ShelfOrder(choices[which])) else priorities[index] = ShelfOrder(choices[which], priorities[index].descending)
                     drawPriorities()
+                    refreshQuickChips()
                 }.setNegativeButton("Cancelar", null).show()
         }
         drawPriorities = {
@@ -1814,6 +1836,10 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     private fun detail(parent: LinearLayout) {
         val b = selected?.let(repository::book)
         if (b == null) { screen = "library"; library(parent); return }
+        if (baseUi.rectilinear && settings.galleryUiStyle()) {
+            detailGallery(parent, b)
+            return
+        }
         val header = row(parent)
         ui.action(header, "") { show(if (selectedCollection != null) "collection" else "library") }.apply {
             setCompoundDrawables(ui.symbol("back"), null, null, null)
@@ -1871,86 +1897,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             percent.text = "${shownPercent(page)}%"
             remaining.text = "Faltam ${b.totalPages - page} páginas"
         }
-        slider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            private var dragging = false
-            override fun onStartTrackingTouch(seekBar: SeekBar?) { dragging = true; seekBar?.parent?.requestDisallowInterceptTouchEvent(true) }
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                preview(progress)
-                // Accessibility changes do not emit touch-start/stop callbacks.
-                if (fromUser && !dragging) persist(progress)
-            }
-            override fun onStopTrackingTouch(seekBar: SeekBar?) { dragging = false; seekBar?.parent?.requestDisallowInterceptTouchEvent(false); persist(slider.progress) }
-            private fun persist(page:Int){
-                if(progressDialog?.isShowing==true)return
-                if(!ui.rectilinear){attempt {repository.updateProgress(b.id,page)};return}
-                val current=repository.book(b.id) ?: return
-                if(current.currentPage==page)return
-                fun refresh(){val scroll=activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll);val position=scroll.scrollY;changed();scroll.post {scroll.scrollTo(0,position)}}
-                val body=ui.column().apply {setPadding(ui.dp(20),ui.dp(8),ui.dp(20),0)}
-                ui.label(body,"Página atual",12,ui.muted)
-                val destination=EditText(activity).apply {
-                    tag="reading-page";inputType=InputType.TYPE_CLASS_NUMBER;isSingleLine=true
-                    filters=arrayOf(android.text.InputFilter.LengthFilter(6));setText(page.toString());setSelectAllOnFocus(true)
-                    setTextColor(ui.text);setHintTextColor(ui.muted)
-                }
-                body.addView(destination,LinearLayout.LayoutParams(-1,ui.dp(52)))
-                fun chosenPage():Int? {
-                    val value=destination.text.toString().toIntOrNull()
-                    if(value==null || value !in 0..current.totalPages){destination.error="Use uma página entre 0 e ${current.totalPages}";return null}
-                    destination.error=null;return value
-                }
-                fun correctPage(value:Int){
-                    val latest=requireNotNull(repository.book(b.id)){"Livro não encontrado."}
-                    require(latest.currentPage==current.currentPage && latest.totalPages==current.totalPages){"A página mudou. Confira o progresso antes de corrigir."}
-                    repository.updateProgress(b.id,value)
-                }
-                fun showDialog(dialog:AlertDialog){
-                    progressDialog=dialog;dialog.setOnDismissListener {if(progressDialog===dialog)progressDialog=null};dialog.show()
-                }
-                if(page<current.currentPage){
-                    fun restore(){val latestPage=repository.book(b.id)?.currentPage ?: current.currentPage;slider.progress=latestPage;preview(latestPage)}
-                    val dialog=AlertDialog.Builder(activity).setTitle("Corrigir página").setView(body)
-                        .setPositiveButton("Só corrigir página",null).setNegativeButton("Cancelar"){_,_->restore()}.create()
-                    dialog.setOnCancelListener {restore()}
-                    dialog.setOnShowListener {dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                        val target=chosenPage() ?: return@setOnClickListener
-                        try {correctPage(target);dialog.dismiss();refresh()}catch(e:Exception){destination.error=e.message ?: "Não foi possível corrigir"}
-                    }}
-                    showDialog(dialog);return
-                }
-                val draft=repository.draft()?.takeIf {it.bookId==b.id}
-                if(draft?.runningSince!=null)repository.pause()
-                val interval=ui.label(body,"${draft?.startPage ?: current.currentPage} → $page páginas",16)
-                destination.addTextChangedListener(object:TextWatcher {
-                    override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
-                    override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){interval.text="${draft?.startPage ?: current.currentPage} → ${s?.toString().orEmpty()} páginas";destination.error=null}
-                    override fun afterTextChanged(s:Editable?){}
-                })
-                val time=ui.row();body.addView(time)
-                fun input(hint:String,max:Int)=EditText(activity).apply {this.hint=hint;inputType=InputType.TYPE_CLASS_NUMBER;filters=arrayOf(android.text.InputFilter.LengthFilter(max));setTextColor(ui.text);setHintTextColor(ui.muted);time.addView(this,LinearLayout.LayoutParams(0,ui.dp(52),1f))}
-                val hours=input("Horas",3).apply {tag="reading-hours"};val minutes=input("Minutos",2).apply {tag="reading-minutes"}
-                if(draft!=null){val total=(repository.elapsed(draft)+59999)/60000;hours.setText((total/60).toString());minutes.setText((total%60).toString())}
-                fun restore(){val latestPage=repository.book(b.id)?.currentPage ?: current.currentPage;slider.progress=latestPage;preview(latestPage);if(draft?.runningSince!=null){repository.start(b.id);refresh()}}
-                val dialog=AlertDialog.Builder(activity).setTitle("Registrar leitura").setView(body).setPositiveButton("Registrar leitura",null)
-                    .setNeutralButton("Só corrigir página",null).setNegativeButton("Cancelar"){_,_->restore()}.create()
-                dialog.setOnCancelListener {restore()}
-                dialog.setOnShowListener {
-                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                        val target=chosenPage() ?: return@setOnClickListener
-                        try {correctPage(target);if(draft?.runningSince!=null)repository.start(b.id);dialog.dismiss();refresh()}catch(e:Exception){destination.error=e.message ?: "Não foi possível corrigir"}
-                    }
-                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                        val target=chosenPage() ?: return@setOnClickListener
-                        if(target<=(draft?.startPage ?: current.currentPage)){destination.error="Para voltar a página, use Só corrigir página";return@setOnClickListener}
-                        val h=hours.text.toString().toIntOrNull() ?: 0;val m=minutes.text.toString().toIntOrNull() ?: 0
-                        if(m !in 0..59 || h*60+m<=0){minutes.error="Informe o tempo de leitura";return@setOnClickListener}
-                        try {repository.recordReading(b.id,current.currentPage,target,(h*60L+m)*60000);dialog.dismiss();refresh()}catch(e:Exception){destination.error=e.message ?: "Não foi possível registrar"}
-                    }
-                }
-                showDialog(dialog)
-            }
-
-        })
+        bindDetailProgressSlider(slider, b, ::preview)
         timerCard(parent, b)
         val records = repository.sessions(b.id); val summary = ReadingSummary.from(records)
         val metrics = genreDetailPanel(parent, b, 12)
@@ -2032,6 +1979,346 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             if (days.size > shownSessions) ui.action(if(useGroupedReadingHistory)historyCard else history, "Ver mais dias") { shownSessions += 4; changed() }
         }
     }
+    private fun bindDetailProgressSlider(slider: SeekBar, b: LibraryBook, preview: (Int) -> Unit) {
+        slider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            private var dragging = false
+            override fun onStartTrackingTouch(seekBar: SeekBar?) { dragging = true; seekBar?.parent?.requestDisallowInterceptTouchEvent(true) }
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                preview(progress)
+                // Accessibility changes do not emit touch-start/stop callbacks.
+                if (fromUser && !dragging) persist(progress)
+            }
+            override fun onStopTrackingTouch(seekBar: SeekBar?) { dragging = false; seekBar?.parent?.requestDisallowInterceptTouchEvent(false); persist(slider.progress) }
+            private fun persist(page:Int){
+                if(progressDialog?.isShowing==true)return
+                if(!ui.rectilinear){attempt {repository.updateProgress(b.id,page)};return}
+                val current=repository.book(b.id) ?: return
+                if(current.currentPage==page)return
+                fun refresh(){val scroll=activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll);val position=scroll.scrollY;changed();scroll.post {scroll.scrollTo(0,position)}}
+                val body=ui.column().apply {setPadding(ui.dp(20),ui.dp(8),ui.dp(20),0)}
+                ui.label(body,"Página atual",12,ui.muted)
+                val destination=EditText(activity).apply {
+                    tag="reading-page";inputType=InputType.TYPE_CLASS_NUMBER;isSingleLine=true
+                    filters=arrayOf(android.text.InputFilter.LengthFilter(6));setText(page.toString());setSelectAllOnFocus(true)
+                    setTextColor(ui.text);setHintTextColor(ui.muted)
+                }
+                body.addView(destination,LinearLayout.LayoutParams(-1,ui.dp(52)))
+                fun chosenPage():Int? {
+                    val value=destination.text.toString().toIntOrNull()
+                    if(value==null || value !in 0..current.totalPages){destination.error="Use uma página entre 0 e ${current.totalPages}";return null}
+                    destination.error=null;return value
+                }
+                fun correctPage(value:Int){
+                    val latest=requireNotNull(repository.book(b.id)){"Livro não encontrado."}
+                    require(latest.currentPage==current.currentPage && latest.totalPages==current.totalPages){"A página mudou. Confira o progresso antes de corrigir."}
+                    repository.updateProgress(b.id,value)
+                }
+                fun showDialog(dialog:AlertDialog){
+                    progressDialog=dialog;dialog.setOnDismissListener {if(progressDialog===dialog)progressDialog=null};dialog.show()
+                }
+                if(page<current.currentPage){
+                    fun restore(){val latestPage=repository.book(b.id)?.currentPage ?: current.currentPage;slider.progress=latestPage;preview(latestPage)}
+                    val dialog=AlertDialog.Builder(activity).setTitle("Corrigir página").setView(body)
+                        .setPositiveButton("Só corrigir página",null).setNegativeButton("Cancelar"){_,_->restore()}.create()
+                    dialog.setOnCancelListener {restore()}
+                    dialog.setOnShowListener {dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                        val target=chosenPage() ?: return@setOnClickListener
+                        try {correctPage(target);dialog.dismiss();refresh()}catch(e:Exception){destination.error=e.message ?: "Não foi possível corrigir"}
+                    }}
+                    showDialog(dialog);return
+                }
+                val draft=repository.draft()?.takeIf {it.bookId==b.id}
+                if(draft?.runningSince!=null)repository.pause()
+                val interval=ui.label(body,"${draft?.startPage ?: current.currentPage} → $page páginas",16)
+                destination.addTextChangedListener(object:TextWatcher {
+                    override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
+                    override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){interval.text="${draft?.startPage ?: current.currentPage} → ${s?.toString().orEmpty()} páginas";destination.error=null}
+                    override fun afterTextChanged(s:Editable?){}
+                })
+                val time=ui.row();body.addView(time)
+                fun input(hint:String,max:Int)=EditText(activity).apply {this.hint=hint;inputType=InputType.TYPE_CLASS_NUMBER;filters=arrayOf(android.text.InputFilter.LengthFilter(max));setTextColor(ui.text);setHintTextColor(ui.muted);time.addView(this,LinearLayout.LayoutParams(0,ui.dp(52),1f))}
+                val hours=input("Horas",3).apply {tag="reading-hours"};val minutes=input("Minutos",2).apply {tag="reading-minutes"}
+                if(draft!=null){val total=(repository.elapsed(draft)+59999)/60000;hours.setText((total/60).toString());minutes.setText((total%60).toString())}
+                fun restore(){val latestPage=repository.book(b.id)?.currentPage ?: current.currentPage;slider.progress=latestPage;preview(latestPage);if(draft?.runningSince!=null){repository.start(b.id);refresh()}}
+                val dialog=AlertDialog.Builder(activity).setTitle("Registrar leitura").setView(body).setPositiveButton("Registrar leitura",null)
+                    .setNeutralButton("Só corrigir página",null).setNegativeButton("Cancelar"){_,_->restore()}.create()
+                dialog.setOnCancelListener {restore()}
+                dialog.setOnShowListener {
+                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                        val target=chosenPage() ?: return@setOnClickListener
+                        try {correctPage(target);if(draft?.runningSince!=null)repository.start(b.id);dialog.dismiss();refresh()}catch(e:Exception){destination.error=e.message ?: "Não foi possível corrigir"}
+                    }
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                        val target=chosenPage() ?: return@setOnClickListener
+                        if(target<=(draft?.startPage ?: current.currentPage)){destination.error="Para voltar a página, use Só corrigir página";return@setOnClickListener}
+                        val h=hours.text.toString().toIntOrNull() ?: 0;val m=minutes.text.toString().toIntOrNull() ?: 0
+                        if(m !in 0..59 || h*60+m<=0){minutes.error="Informe o tempo de leitura";return@setOnClickListener}
+                        try {repository.recordReading(b.id,current.currentPage,target,(h*60L+m)*60000);dialog.dismiss();refresh()}catch(e:Exception){destination.error=e.message ?: "Não foi possível registrar"}
+                    }
+                }
+                showDialog(dialog)
+            }
+        })
+    }
+    /** Editorial "Galeria" style (Direction C) — toggleable test view for Livro atual. */
+    private fun detailGallery(parent: LinearLayout, b: LibraryBook) {
+        val accent = readingAccent(b)
+        val header = row(parent)
+        ui.action(header, "") { show(if (selectedCollection != null) "collection" else "library") }.apply {
+            setCompoundDrawables(ui.symbol("back"), null, null, null)
+            contentDescription = "Voltar à estante"
+            layoutParams = LinearLayout.LayoutParams(ui.dp(44), ui.dp(44))
+            background = ui.ripple(Color.TRANSPARENT)
+        }
+        stars(header, b.rating) { value -> repository.setRating(b.id, value) }
+        ui.action(header, "") { bookMenu(b) }.apply {
+            setCompoundDrawables(null, null, ui.symbol("more"), null)
+            contentDescription = "Opções do livro"
+            layoutParams = LinearLayout.LayoutParams(ui.dp(44), ui.dp(44))
+            background = ui.ripple(Color.TRANSPARENT)
+        }
+
+        val hero = ui.column().apply { gravity = Gravity.CENTER_HORIZONTAL; setPadding(0, ui.dp(8), 0, ui.dp(18)) }
+        parent.addView(hero, LinearLayout.LayoutParams(-1, -2))
+        val width = (detailCoverWidth() + 14).coerceAtMost(224)
+        cover(hero, b, width, width * 3 / 2)
+        val coverView = hero.getChildAt(0)
+        if (catalog != null) coverView.apply {
+            contentDescription = "Capa de ${b.title} · segure para trocar"
+            setOnLongClickListener { personalCover(b); true }
+        }
+        (coverView.layoutParams as LinearLayout.LayoutParams).apply {
+            marginEnd = 0; gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = ui.dp(16)
+        }
+        coverView.background = android.graphics.drawable.GradientDrawable().apply {
+            setColor(ui.activeSurface)
+            cornerRadius = ui.dp(6).toFloat()
+        }
+        coverView.clipToOutline = true
+        coverView.elevation = ui.dp(14).toFloat()
+        (coverView as? ImageView)?.scaleType = ImageView.ScaleType.CENTER_CROP
+
+        ui.label(hero, b.title, 24, ui.text).apply {
+            typeface = Typeface.create("serif", Typeface.NORMAL)
+            gravity = Gravity.CENTER
+            (layoutParams as LinearLayout.LayoutParams).apply { topMargin = 0; bottomMargin = ui.dp(4) }
+        }
+        val metaLine = listOf(b.author, b.publisher, b.genre).map { it.trim() }.filter { it.isNotBlank() }.joinToString(" · ")
+        if (metaLine.isNotBlank()) {
+            ui.label(hero, metaLine, 12, ui.muted).apply {
+                gravity = Gravity.CENTER
+                maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(3)
+            }
+        }
+        if (b.saga.isNotBlank()) {
+            val sagaLabel = b.saga + (b.sequenceNumber?.let { if (b.kind == "book" && b.collectionId.isBlank()) " · Livro $it" else " · Vol. $it" } ?: "")
+            ui.label(hero, sagaLabel, 11, accent).apply {
+                gravity = Gravity.CENTER
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
+            }
+        }
+
+        val unifiedCard = ui.column().apply {
+            tag = "gallery-reading-card"
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0x16FFFFFF)
+                cornerRadius = ui.dp(16).toFloat()
+            }
+            setPadding(ui.dp(16), ui.dp(15), ui.dp(16), ui.dp(15))
+        }
+        parent.addView(unifiedCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(20) })
+
+        if (!b.pagesKnown) {
+            ui.label(unifiedCard, if (b.complete) "Volume lido" else "Ainda não lido", 20, ui.text).apply {
+                typeface = Typeface.create("serif", Typeface.NORMAL)
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(4)
+            }
+            ui.label(unifiedCard, "Total de páginas não informado.", 12, ui.muted).apply {
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(12)
+            }
+            val actions = row(unifiedCard)
+            ui.action(actions, if (b.complete) "Marcar não lido" else "Marcar lido", primary = true) {
+                repository.markVolumeRead(b.id, !b.complete); changed()
+            }.apply {
+                background = ui.ripple(accent, 22); setTextColor(ui.background); textSize = 12f
+                minHeight = ui.dp(42); setPadding(ui.dp(16), ui.dp(6), ui.dp(16), ui.dp(6))
+                layoutParams = LinearLayout.LayoutParams(-2, ui.dp(42)).apply { marginEnd = ui.dp(10) }
+            }
+            ui.action(actions, "Informar páginas") { fields.clear(); editor = b; newBook = false; show("editor") }.apply {
+                background = ui.ripple(0x18FFFFFF, 22); setTextColor(ui.text); textSize = 12f
+                minHeight = ui.dp(42); setPadding(ui.dp(14), ui.dp(6), ui.dp(14), ui.dp(6))
+                layoutParams = LinearLayout.LayoutParams(-2, ui.dp(42))
+            }
+            collectionHistory(parent, b, listOf(b))
+            return
+        }
+
+        val records = repository.sessions(b.id)
+        val summary = ReadingSummary.from(records)
+        fun shownPercent(page: Int) = if (page == b.totalPages) 100 else Math.round(page * 100f / b.totalPages).coerceIn(0, 99)
+
+        val topNumbers = row(unifiedCard)
+        val pagesLabel = ui.label(topNumbers, "${b.currentPage} de ${b.totalPages} págs", 13, ui.text).apply {
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        }
+        val percentLabel = ui.label(topNumbers, "${shownPercent(b.currentPage)}%", 14, accent, bold = true).apply {
+            layoutParams = LinearLayout.LayoutParams(-2, -2)
+        }
+
+        val slider = SeekBar(activity).apply {
+            max = b.totalPages; progress = b.currentPage
+            contentDescription = "Página atual de ${b.title}"
+            progressTintList = android.content.res.ColorStateList.valueOf(accent)
+            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(0x33FFFFFF)
+            thumbTintList = android.content.res.ColorStateList.valueOf(accent)
+            setPadding(0, 0, 0, 0)
+        }
+        ui.styleSlider(slider, color = accent)
+        unifiedCard.addView(slider, LinearLayout.LayoutParams(-1, ui.dp(26)).apply { topMargin = ui.dp(6); bottomMargin = ui.dp(6) })
+
+        val bottomRow = row(unifiedCard).apply { gravity = Gravity.CENTER_VERTICAL }
+        val metaCol = ui.column()
+        bottomRow.addView(metaCol, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(12) })
+        val remainingLabel = ui.label(metaCol, if (b.complete) "Leitura concluída" else "Faltam ${b.totalPages - b.currentPage} páginas", 12, ui.muted).apply {
+            (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(2)
+        }
+        val rhythmText = when {
+            records.isEmpty() -> "Arraste a barra ou inicie a leitura"
+            summary.millisPerPage != null -> "${compactReadingTime(summary.durationMs)} · ${readingPace(summary.millisPerPage)}"
+            else -> "${compactReadingTime(summary.durationMs)} de leitura"
+        }
+        ui.label(metaCol, rhythmText, 11, ui.muted).apply {
+            tag = "book-reading-total"
+            maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+            (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
+        }
+
+        val d = repository.draft()
+        val ownSession = d?.bookId == b.id
+        fun pillButton(label: String, iconName: String?, filled: Boolean = true, onClick: () -> Unit) {
+            ui.action(bottomRow, label, onClick = onClick).apply {
+                minHeight = ui.dp(42); textSize = 12f
+                setTextColor(if (filled) ui.background else accent)
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setPadding(ui.dp(16), ui.dp(6), ui.dp(16), ui.dp(6))
+                background = ui.ripple(if (filled) accent else 0x22FFFFFF, 22)
+                if (iconName != null) {
+                    setCompoundDrawables(ui.symbol(iconName, if (filled) ui.background else accent, 14), null, null, null)
+                    compoundDrawablePadding = ui.dp(6)
+                }
+                layoutParams = LinearLayout.LayoutParams(-2, ui.dp(42))
+            }
+        }
+        when {
+            d != null && !ownSession -> pillButton("Abrir leitura", "book_nav") { open(d.bookId) }
+            ownSession -> pillButton(
+                if (d!!.runningSince != null) "Pausar" else "Continuar",
+                if (d.runningSince != null) "pause" else "play"
+            ) {
+                attempt {
+                    if (d.runningSince != null) pauseAndSaveReading(b) else { repository.start(b.id); changed() }
+                }
+            }
+            !b.complete -> pillButton("Ler", "play") { attempt { repository.start(b.id); changed() } }
+            else -> pillButton("Concluído", null, filled = false) { toast("Leitura concluída") }
+        }
+
+        fun preview(page: Int) {
+            pagesLabel.text = "$page de ${b.totalPages} págs"
+            percentLabel.text = "${shownPercent(page)}%"
+            remainingLabel.text = if (page >= b.totalPages) "Leitura concluída" else "Faltam ${b.totalPages - page} páginas"
+        }
+        bindDetailProgressSlider(slider, b, ::preview)
+
+        if (ownSession) {
+            unifiedCard.addView(View(activity).apply { setBackgroundColor(0x18FFFFFF) }, LinearLayout.LayoutParams(-1, 1).apply { topMargin = ui.dp(12); bottomMargin = ui.dp(10) })
+            timerBookId = b.id
+            val liveRow = row(unifiedCard).apply { gravity = Gravity.CENTER_VERTICAL }
+            timerLabel = ui.label(liveRow, readingTime(repository.elapsed(d!!)), 28, accent).apply {
+                typeface = Typeface.create("serif", Typeface.NORMAL)
+                fontFeatureSettings = "tnum"; maxLines = 1
+                layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            }
+            val status = if (d.runningSince != null) "● Lendo" else "● Pausado"
+            ui.label(liveRow, status, 10, accent).apply {
+                tag = "reading-status"
+                setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(0x22FFFFFF); cornerRadius = ui.dp(12).toFloat() }
+                layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) }
+            }
+            ui.action(liveRow, "Concluir") { concludeBook(b) }.apply {
+                textSize = 11f; setTextColor(ui.text); minHeight = ui.dp(36)
+                background = ui.ripple(Color.TRANSPARENT, 8)
+                setPadding(ui.dp(8), 0, ui.dp(4), 0)
+                layoutParams = LinearLayout.LayoutParams(-2, ui.dp(36))
+            }
+        } else if (d != null) {
+            unifiedCard.addView(View(activity).apply { setBackgroundColor(0x18FFFFFF) }, LinearLayout.LayoutParams(-1, 1).apply { topMargin = ui.dp(10); bottomMargin = ui.dp(8) })
+            ui.label(unifiedCard, "Sessão ativa em outro livro · toque em Abrir leitura para pausar.", 11, ui.muted).apply {
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
+            }
+        }
+
+        // Borderless editorial session history directly below the unified card.
+        val manualDates = repository.dates(b.id)
+        val grouped = records.groupBy { it.readingDay ?: ReadingDays.at(it.startedAt) }
+        val days = (grouped.keys + manualDates.map { it.day }).distinct().sortedDescending()
+        val history = ui.column().apply { tag = "book-history" }
+        parent.addView(history, LinearLayout.LayoutParams(-1, -2))
+        val histHeader = row(history).apply { gravity = Gravity.CENTER_VERTICAL }
+        ui.label(histHeader, "Sessões recentes", 19, ui.text).apply {
+            typeface = Typeface.create("serif", Typeface.NORMAL)
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        }
+        if (days.isNotEmpty()) {
+            ui.label(histHeader, "${days.size} dias", 11, ui.muted).apply {
+                layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) }
+            }
+        }
+        ui.icon(histHeader, "plus", "Adicionar datas de leitura", 40) { datesEditor.show(b) }
+        if (days.isEmpty()) {
+            ui.label(history, "Ainda sem leituras registradas.", 12, ui.muted).apply {
+                (layoutParams as LinearLayout.LayoutParams).topMargin = ui.dp(4)
+            }
+        } else {
+            val shown = days.take(shownSessions)
+            shown.forEachIndexed { idx, day ->
+                val sessions = grouped[day].orEmpty()
+                val manual = manualDates.filter { it.day == day }
+                val dayRow = row(history).apply {
+                    tag = "reading-history-day"
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(ui.dp(2), ui.dp(11), ui.dp(2), ui.dp(11))
+                    isFocusable = true
+                    setOnClickListener { datesEditor.editDay(day, sessions, manual) }
+                }
+                ui.label(dayRow, ReadingDays.label(day), 13, ui.text).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(10) }
+                }
+                val summaryStr = if (sessions.isNotEmpty()) {
+                    val daily = ReadingSummary.from(sessions)
+                    "${sessions.sumOf { it.pages }} págs · ${compactReadingTime(daily.durationMs)}"
+                } else {
+                    "Data registrada"
+                }
+                ui.label(dayRow, summaryStr, 12, accent).apply {
+                    maxLines = 1
+                    (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
+                }
+                if (idx < shown.lastIndex) {
+                    history.addView(View(activity).apply { setBackgroundColor(0x16FFFFFF) }, LinearLayout.LayoutParams(-1, 1))
+                }
+            }
+            if (days.size > shownSessions) {
+                ui.action(history, "Ver mais dias") { shownSessions += 4; changed() }.apply {
+                    background = ui.ripple(Color.TRANSPARENT, 8)
+                    setTextColor(accent); textSize = 12f; gravity = Gravity.START
+                }
+            }
+        }
+    }
     private fun detailCoverWidth(): Int {
         val config = activity.resources.configuration
         // Stable across reading state and expanded history; extra content scrolls instead.
@@ -2066,6 +2353,32 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         val palette = bookPalette(b)
         showBottomSheet(palette) { body, dialog ->
             addAccountSheetCard(body, palette, dialog)
+
+            sheetSectionHeader(body, palette, "Visual (Livro atual e Amigos)")
+            val isGallery = settings.galleryUiStyle()
+            val styleRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+            listOf(false to "Clássico", true to "Galeria (novo)").forEachIndexed { idx, (enableGallery, label) ->
+                val active = isGallery == enableGallery
+                val pill = TextView(activity).apply {
+                    text = label; textSize = 12f; gravity = Gravity.CENTER; maxLines = 1
+                    setTextColor(if (active) palette.accent else palette.muted)
+                    typeface = Typeface.create(if (active) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
+                    background = sheetCardBg(if (active) palette.activeSurface else palette.surface, if (active) palette.accent else palette.lineColor, 10)
+                    setPadding(palette.dp(10), palette.dp(10), palette.dp(10), palette.dp(10))
+                    isFocusable = true
+                    setOnClickListener {
+                        if (settings.galleryUiStyle() != enableGallery) {
+                            settings.setGalleryUiStyle(enableGallery)
+                            dialog.dismiss()
+                            changed()
+                        } else {
+                            dialog.dismiss()
+                        }
+                    }
+                }
+                styleRow.addView(pill, LinearLayout.LayoutParams(0, -2, 1f).apply { if (idx == 0) marginEnd = palette.dp(7) })
+            }
+            body.addView(styleRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = palette.dp(10) })
 
             fun tile(parent: LinearLayout, title: String, subtitle: String, warn: Boolean = false, marginEndDp: Int = 0, onClick: () -> Unit) {
                 val fill = if (warn) 0x26E08030 else palette.activeSurface
@@ -2857,7 +3170,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             val thumb=ImageView(activity).apply {
                 scaleType=ImageView.ScaleType.CENTER_CROP
                 background=ui.outlined(ui.activeSurface,ui.lineColor,0)
-                setImageDrawable(ui.symbol("book_nav",ui.muted,18))
+                setImageDrawable(if(ui.rectilinear) br.com.viblio.ui.ViblioBookMarkDrawable(ui.accent,Color.WHITE,scale=0.52f,backgroundColor=ui.activeSurface) else ui.symbol("book_nav",ui.muted,18))
                 if(book.cover.isNotBlank()) images.thumbnail(book.cover)?.let(::setImageBitmap)
             }
             itemRow.addView(thumb,LinearLayout.LayoutParams(ui.dp(34),ui.dp(50)).apply {marginEnd=ui.dp(10)})
@@ -2912,7 +3225,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             parent.addView(this,LinearLayout.LayoutParams(-1,-2))
             val line=row(this)
             heading(line,title,21).layoutParams=LinearLayout.LayoutParams(0,-2,1f)
-            if(icon!="pie")line.addView(ImageView(activity).apply {
+            if(!ui.rectilinear && icon!="pie")line.addView(ImageView(activity).apply {
                 setImageDrawable(DisplayIcon(icon,if(icon=="books")mint else ui.muted));importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
             },LinearLayout.LayoutParams(ui.dp(18),ui.dp(18)))
         }

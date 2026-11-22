@@ -315,4 +315,57 @@ class Viblio070FeaturesTest {
         assertTrue(offline.isOffline)
         assertEquals("Estante offline", offline.label)
     }
+
+    @Test
+    fun spineVariantNeighborDeduplicationAndPageSorting() {
+        // 1) Same saga volumes stay unified; adjacent different sagas/standalones of the same genre never repeat A/B/C.
+        val saga1a = LibraryBook(id = "s1a", title = "Mistborn 1", saga = "Mistborn", genre = "Fantasia", totalPages = 540)
+        val saga1b = LibraryBook(id = "s1b", title = "Mistborn 2", saga = "Mistborn", genre = "Fantasia", totalPages = 620)
+        val saga2a = LibraryBook(id = "s2a", title = "Stormlight 1", saga = "Stormlight", genre = "Fantasia", totalPages = 1007)
+        val saga2b = LibraryBook(id = "s2b", title = "Stormlight 2", saga = "Stormlight", genre = "Fantasia", totalPages = 1088)
+        val solo1 = LibraryBook(id = "solo1", title = "Elantris", genre = "Fantasia", totalPages = 638)
+        val solo2 = LibraryBook(id = "solo2", title = "Warbreaker", genre = "Fantasia", totalPages = 592)
+        val solo3 = LibraryBook(id = "solo3", title = "Tress", genre = "Fantasia", totalPages = 380)
+
+        for (order in listOf(
+            listOf(saga1a, saga1b, saga2a, saga2b, solo1, solo2, solo3),
+            listOf(solo3, saga2b, saga1a, solo1, saga2a, solo2, saga1b),
+            listOf(solo1, solo2, solo3, saga1a, saga1b, saga2a, saga2b),
+        )) {
+            val map = SpineThemes.assignVariants(order)
+            assertEquals(map[saga1a.id], map[saga1b.id])
+            assertEquals(map[saga2a.id], map[saga2b.id])
+            for (i in 1 until order.size) {
+                val prev = order[i - 1]
+                val curr = order[i]
+                val sameGroup = prev.saga.isNotBlank() && prev.saga.equals(curr.saga, ignoreCase = true)
+                if (!sameGroup) {
+                    assertNotEquals("Adjacent different books should not repeat spine variant", map[prev.id], map[curr.id])
+                }
+            }
+        }
+
+        // 2) Page-count sorting (ascending & descending) always places unknown-page books last.
+        val shortBook = LibraryBook(id = "p1", title = "Conto", totalPages = 120, pagesKnown = true)
+        val midBook = LibraryBook(id = "p2", title = "Romance", totalPages = 350, pagesKnown = true)
+        val longBook = LibraryBook(id = "p3", title = "Épico", totalPages = 980, pagesKnown = true)
+        val unknownBook = LibraryBook(id = "p4", title = "Sem páginas", totalPages = 0, pagesKnown = false)
+        val books = listOf(unknownBook, longBook, shortBook, midBook)
+
+        val asc = ShelfFilters(order = listOf(ShelfOrder(ShelfField.PAGES, descending = false))).apply(books)
+        assertEquals(listOf("p1", "p2", "p3", "p4"), asc.map { it.id })
+
+        val desc = ShelfFilters(order = listOf(ShelfOrder(ShelfField.PAGES, descending = true))).apply(books)
+        assertEquals(listOf("p3", "p2", "p1", "p4"), desc.map { it.id })
+
+        val bySortLow = ShelfFilters(sort = ShelfSort.PAGES_LOW).apply(books)
+        assertEquals(listOf("p1", "p2", "p3", "p4"), bySortLow.map { it.id })
+
+        val bySortHigh = ShelfFilters(sort = ShelfSort.PAGES_HIGH).apply(books)
+        assertEquals(listOf("p3", "p2", "p1", "p4"), bySortHigh.map { it.id })
+
+        // Quick Z-A alphabetical order.
+        val za = ShelfFilters(order = listOf(ShelfOrder(ShelfField.TITLE, descending = true))).apply(listOf(shortBook, midBook, longBook))
+        assertEquals(listOf("Romance", "Épico", "Conto"), za.map { it.title })
+    }
 }

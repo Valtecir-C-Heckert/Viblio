@@ -10,6 +10,8 @@ import android.graphics.drawable.Drawable
 class ViblioBookMarkDrawable(
     coverColor: Int,
     pageColor: Int = Color.WHITE,
+    private val scale: Float = 1f,
+    private val backgroundColor: Int = Color.TRANSPARENT,
 ) : Drawable() {
     private val coverPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
@@ -19,13 +21,21 @@ class ViblioBookMarkDrawable(
         style = Paint.Style.FILL
         color = pageColor
     }
+    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = backgroundColor
+    }
     private val path = Path()
     private var alphaValue = 255
 
     override fun draw(canvas: Canvas) {
         val b = bounds
         if (b.isEmpty) return
-        val size = minOf(b.width(), b.height()).toFloat()
+        if (backgroundColor != Color.TRANSPARENT) {
+            bgPaint.alpha = alphaValue
+            canvas.drawRect(b, bgPaint)
+        }
+        val size = minOf(b.width(), b.height()).toFloat() * scale.coerceIn(0.2f, 1f)
         if (size <= 0f) return
         val ox = b.left + (b.width() - size) * 0.5f
         val oy = b.top + (b.height() - size) * 0.5f

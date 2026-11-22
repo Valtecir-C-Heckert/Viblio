@@ -822,7 +822,7 @@ class AnnualPlanPanel(
         val cov = ImageView(activity).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
             background = ui.outlined(ui.activeSurface, ui.lineColor, 0)
-            setImageDrawable(ui.symbol("book_nav", ui.muted, 20))
+            setImageDrawable(if(ui.rectilinear) br.com.viblio.ui.ViblioBookMarkDrawable(ui.accent,android.graphics.Color.WHITE,scale=0.56f,backgroundColor=ui.activeSurface) else ui.symbol("book_nav", ui.muted, 20))
             if (item.localCover.isNotBlank()) images.thumbnail(item.localCover)?.let(::setImageBitmap)
         }
         card.addView(cov, LinearLayout.LayoutParams(ui.dp(34), ui.dp(50)).apply { marginEnd = ui.dp(10) })
@@ -936,7 +936,7 @@ class AnnualPlanPanel(
                 val img = ImageView(activity).apply {
                     scaleType = ImageView.ScaleType.CENTER_CROP
                     background = ui.outlined(ui.activeSurface, ui.lineColor, 0)
-                    setImageDrawable(ui.symbol("book_nav", ui.muted, 18))
+                    setImageDrawable(if(ui.rectilinear) br.com.viblio.ui.ViblioBookMarkDrawable(ui.accent,android.graphics.Color.WHITE,scale=0.56f,backgroundColor=ui.activeSurface) else ui.symbol("book_nav", ui.muted, 18))
                     if (credit.cover.isNotBlank()) images.thumbnail(credit.cover)?.let(::setImageBitmap)
                 }
                 row.addView(img, LinearLayout.LayoutParams(ui.dp(30), ui.dp(44)).apply { marginEnd = ui.dp(10) })

@@ -227,7 +227,7 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
     }
     private fun creditRow(parent:LinearLayout,credit:GoalCredit,pages:Boolean,sessions:List<ReadingSession>,goal:ReadingGoal?=null,entry:ReadingGoalStore.Entry?=null){
         val row=ui.row().apply {tag="goal-credit:${credit.bookId}";setPadding(0,ui.dp(6),0,ui.dp(6));isFocusable=true};parent.addView(row)
-        val image=ImageView(activity).apply {scaleType=ImageView.ScaleType.FIT_CENTER;setImageDrawable(ui.symbol("books",ui.muted,32));images.thumbnail(credit.cover)?.let(::setImageBitmap)}
+        val image=ImageView(activity).apply {scaleType=ImageView.ScaleType.FIT_CENTER;setImageDrawable(if(ui.rectilinear) br.com.viblio.ui.ViblioBookMarkDrawable(ui.accent,android.graphics.Color.WHITE,scale=0.52f,backgroundColor=ui.activeSurface) else ui.symbol("books",ui.muted,32));images.thumbnail(credit.cover)?.let(::setImageBitmap)}
         row.addView(image,LinearLayout.LayoutParams(ui.dp(34),ui.dp(50)).apply {marginEnd=ui.dp(10)})
         val labels=ui.column();row.addView(labels,LinearLayout.LayoutParams(0,-2,1f))
         ui.label(labels,credit.title,13).apply {maxLines=2}

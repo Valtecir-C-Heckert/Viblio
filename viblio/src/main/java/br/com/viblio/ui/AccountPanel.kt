@@ -109,6 +109,14 @@ class AccountPanel(private val activity:Activity,private val ui:DisplayUi,privat
             Toast.makeText(activity,if(next)"O ícone mudará ao sair do app." else "Ícone padrão restaurado.",Toast.LENGTH_SHORT).show()
             changed()
         }.apply {background=ui.outlined();(layoutParams as LinearLayout.LayoutParams).topMargin=ui.dp(16)}
+        val localSettings=br.com.centralcasa.data.LocalSettings(activity)
+        val galleryOn=localSettings.galleryUiStyle()
+        ui.action(parent,if(galleryOn)"Visual (Livro atual e Amigos): Galeria (novo)" else "Visual (Livro atual e Amigos): Clássico") {
+            val next=!localSettings.galleryUiStyle()
+            localSettings.setGalleryUiStyle(next)
+            Toast.makeText(activity,if(next)"Novo visual Galeria ativado em Livro atual e Amigos." else "Visual Clássico restaurado.",Toast.LENGTH_SHORT).show()
+            changed()
+        }.apply {background=ui.outlined();(layoutParams as LinearLayout.LayoutParams).topMargin=ui.dp(10)}
         ui.action(parent,"Removidos da Estante",onClick=::removed).apply {background=ui.outlined();(layoutParams as LinearLayout.LayoutParams).topMargin=ui.dp(10)}
         ui.action(parent,"Continuar na Estante",onClick=shelf)
     }

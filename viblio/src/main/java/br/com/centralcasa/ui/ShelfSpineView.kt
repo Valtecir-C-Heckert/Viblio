@@ -26,7 +26,8 @@ class ShelfSpineView(
     private val collectionId: String = "",
     private val genre: String = "",
     private val kind: String = "book",
-    private val spineDesign: SpineDesignMode = SpineDesignMode.BY_GENRE
+    private val spineDesign: SpineDesignMode = SpineDesignMode.BY_GENRE,
+    private val resolvedVariant: Int? = null
 ) : ImageView(context) {
     var spineColor: Int = 0xff404944.toInt()
         private set
@@ -35,7 +36,7 @@ class ShelfSpineView(
     private val genreTheme: SpineGenreTheme =
         if (spineDesign == SpineDesignMode.BY_GENRE) SpineThemes.resolveGenre(genre, kind) else SpineGenreTheme.DEFAULT
     private val stampAsset: String? = when (spineDesign) {
-        SpineDesignMode.BY_GENRE -> SpineThemes.assetName(genreTheme, seedId, saga, collectionId) ?: "spines/classicos_a.webp"
+        SpineDesignMode.BY_GENRE -> SpineThemes.assetName(genreTheme, seedId, saga, collectionId, overrideVariant = resolvedVariant) ?: "spines/classicos_a.webp"
         SpineDesignMode.ANTIQUE_BROWN -> "spines/classicos_a.webp"
         else -> null
     }
