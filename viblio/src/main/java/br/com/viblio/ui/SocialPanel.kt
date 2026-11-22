@@ -119,7 +119,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             if(source==null || source.isRecycled){if(backdropRequest==path)backdropRequest="";return@bitmap}
             val copy=runCatching {source.copy(Bitmap.Config.ARGB_8888,false)}.getOrNull() ?: run {if(backdropRequest==path)backdropRequest="";return@bitmap}
             backdropWorker.execute {
-                val rendered=runCatching {CoverBlur.render(copy,0xB3000000.toInt())}.getOrNull()
+                val rendered=runCatching {CoverBlur.renderAtmospheric(copy)}.getOrNull()
                 copy.recycle()
                 handler.post {
                     if(backdropRequest==path)backdropRequest=""
@@ -239,6 +239,21 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             }
         }
     }
+    val isRefreshing get()=if(tab=="friends" && !people) friends.isLoading else busy
+    fun triggerRefresh(){
+        if(!active || closed || !accounts.signedIn)return
+        if(tab=="friends" && !people) friends.refresh()
+        else if(stage!=null){ eventsSeen++; refreshMessages() }
+        else load()
+    }
+    private fun gText(value:String,sp:Float,color:Int,serif:Boolean=false,medium:Boolean=false)=TextView(activity).apply {
+        text=value;textSize=sp;setTextColor(color);includeFontPadding=false
+        typeface=when {
+            serif -> Typeface.create("serif",Typeface.NORMAL)
+            medium -> Typeface.create("sans-serif-medium",Typeface.NORMAL)
+            else -> Typeface.create("sans-serif",Typeface.NORMAL)
+        }
+    }
     fun render(parent:LinearLayout){
         if(closed)return
         active=true
@@ -253,68 +268,90 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         }else if(images==null && api!=null){
             images=FriendCoverLoader(api!!::thumbnail)
         }
-        if(!accounts.signedIn){feedColors.clear();images?.close();images=null;identity="";title(parent,"AMIGOS",30);text(parent,"Entre para ver seus amigos.",14,ui.muted);return}
+        val gallery = br.com.centralcasa.data.LocalSettings(activity).galleryUiStyle()
+        if(!accounts.signedIn){feedColors.clear();images?.close();images=null;identity="";title(parent,if(gallery)"Amigos" else "AMIGOS",30);text(parent,"Entre para ver seus amigos.",14,ui.muted);return}
         updateTheme()
         arm()
         if(tab=="friends" && !people && friends.inDetail){friends.render(parent);return}
         if(tab!="friends" || people)images?.attach(parent)
-        val gallery = br.com.centralcasa.data.LocalSettings(activity).galleryUiStyle()
         if(club!=null && stage!=null && !people){
             renderDiscussionHeader(parent)
         }else {
-            val header=ui.row().apply {gravity=Gravity.CENTER_VERTICAL};parent.addView(header,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+            val header=ui.row().apply {gravity=Gravity.CENTER_VERTICAL};parent.addView(header,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(if(gallery && !people && club==null) 16 else 14)})
             if(people || club!=null)ui.icon(header,"back","Voltar",40){back()}.apply {layoutParams=LinearLayout.LayoutParams(ui.dp(40),ui.dp(40)).apply {marginEnd=ui.dp(4)}}
-            title(header,if(people)"ADICIONAR PESSOAS" else if(club!=null)data.s("name").ifBlank {"CLUBE"} else "AMIGOS",if(club!=null)25 else 28).apply {
-                maxLines=1;ellipsize=TextUtils.TruncateAt.END
-                layoutParams=LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)}
-            }
-            if(!people && club==null){
-                val styleToggle=TextView(activity).apply {
-                    tag="social-style-toggle"
-                    text=if(gallery)"Galeria" else "Clássico"
-                    textSize=10.5f;gravity=Gravity.CENTER;maxLines=1
-                    setTextColor(if(gallery)ui.accent else ui.muted)
-                    typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
-                    background=if(gallery) android.graphics.drawable.GradientDrawable().apply {
-                        setColor(alphaColor(ui.accent,34));cornerRadius=ui.dp(16).toFloat()
-                    } else ui.outlined(ui.surface,ui.lineColor,0)
-                    setPadding(ui.dp(10),ui.dp(6),ui.dp(10),ui.dp(6))
-                    contentDescription="Alternar visual entre Clássico e Galeria"
+            if(gallery && !people && club==null){
+                header.addView(
+                    gText("Amigos",26f,Color.WHITE,serif=true).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},
+                    LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)},
+                )
+                val pillLabel=if(tab=="clubs")"+ Clube" else "+ Pessoa"
+                val pillBtn=gText(pillLabel,12f,0xD9FFFFFF.toInt(),medium=true).apply {
+                    tag=if(tab=="clubs")"club-create" else "friends-discover"
+                    gravity=Gravity.CENTER
+                    setPadding(ui.dp(12),ui.dp(7),ui.dp(12),ui.dp(7))
+                    background=ui.pillRipple(0x14FFFFFF,18)
+                    contentDescription=if(tab=="clubs")"Criar clube" else "Adicionar amigo"
                     isFocusable=true
-                    setOnClickListener {
-                        br.com.centralcasa.data.LocalSettings(activity).setGalleryUiStyle(!gallery)
-                        changed()
+                    setOnClickListener {if(tab=="clubs") createClub() else discover()}
+                }
+                header.addView(pillBtn,LinearLayout.LayoutParams(-2,-2))
+            }else {
+                title(header,if(people)"ADICIONAR PESSOAS" else if(club!=null)data.s("name").ifBlank {"CLUBE"} else "AMIGOS",if(club!=null)25 else 28).apply {
+                    maxLines=1;ellipsize=TextUtils.TruncateAt.END
+                    layoutParams=LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)}
+                }
+                if(tab=="clubs" && club==null && !people){
+                    ui.icon(header,"plus","Criar clube",44){createClub()}.apply {
+                        tag="club-create";background=ui.outlined(ui.surface,ui.lineColor,0)
+                        setPadding(ui.dp(10),ui.dp(10),ui.dp(10),ui.dp(10))
+                        layoutParams=LinearLayout.LayoutParams(ui.dp(44),ui.dp(44))
+                    }
+                } else if(tab=="friends" && !people){
+                    ui.icon(header,"plus","Adicionar amigo",44){discover()}.apply {
+                        tag="friends-discover";background=ui.outlined(ui.surface,ui.lineColor,0)
+                        setPadding(ui.dp(10),ui.dp(10),ui.dp(10),ui.dp(10))
+                        layoutParams=LinearLayout.LayoutParams(ui.dp(44),ui.dp(44))
                     }
                 }
-                header.addView(styleToggle,LinearLayout.LayoutParams(-2,ui.dp(34)).apply {marginEnd=ui.dp(6)})
-            }
-            if(tab=="clubs" && club==null && !people){
-                ui.icon(header,"plus","Criar clube",44){createClub()}.apply {
-                    tag="club-create";background=if(gallery) android.graphics.drawable.GradientDrawable().apply {setColor(0x14FFFFFF);cornerRadius=ui.dp(12).toFloat()} else ui.outlined(ui.surface,ui.lineColor,0)
+                if(club!=null && !people)ui.icon(header,"more","Opções do clube",44){clubOptions()}.apply {
+                    tag="club-options";background=ui.outlined(ui.surface,ui.lineColor,0)
                     setPadding(ui.dp(10),ui.dp(10),ui.dp(10),ui.dp(10))
-                    layoutParams=LinearLayout.LayoutParams(ui.dp(44),ui.dp(44)).apply {marginEnd=ui.dp(6)}
+                    layoutParams=LinearLayout.LayoutParams(ui.dp(44),ui.dp(44)).apply {marginStart=ui.dp(6)}
                 }
-            } else if(tab=="friends" && !people){
-                ui.icon(header,"plus","Adicionar amigo",44){discover()}.apply {
-                    tag="friends-discover";background=if(gallery) android.graphics.drawable.GradientDrawable().apply {setColor(0x14FFFFFF);cornerRadius=ui.dp(12).toFloat()} else ui.outlined(ui.surface,ui.lineColor,0)
-                    setPadding(ui.dp(10),ui.dp(10),ui.dp(10),ui.dp(10))
-                    layoutParams=LinearLayout.LayoutParams(ui.dp(44),ui.dp(44)).apply {marginEnd=ui.dp(6)}
-                }
-            }
-            SocialRefresh.button(activity,ui,header,if(tab=="friends" && !people)friends.isLoading else busy,"Atualizar"){if(tab=="friends" && !people)friends.refresh()else if(stage!=null){eventsSeen++;refreshMessages()}else {load()}}
-            if(club!=null && !people)ui.icon(header,"more","Opções do clube",44){clubOptions()}.apply {
-                tag="club-options";background=ui.outlined(ui.surface,ui.lineColor,0)
-                setPadding(ui.dp(10),ui.dp(10),ui.dp(10),ui.dp(10))
-                layoutParams=LinearLayout.LayoutParams(ui.dp(44),ui.dp(44)).apply {marginStart=ui.dp(6)}
             }
         }
         if(!people && club==null){
-            val tabs=ui.row();parent.addView(tabs,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
-            listOf("feed" to "Feed","clubs" to "Clubes","friends" to "Meus amigos").forEach {(key,label)->
-                val cell=ui.column().apply {tag="social-tab:$key";isSelected=tab==key;isFocusable=true;setOnClickListener {friends.hide(resetSelection=true);tab=key;club=null;stage=null;round=null;clubPage="home";draft="";replyToId=null;replyToUser="";reset();if(key=="friends")changed() else load()}}
-                tabs.addView(cell,LinearLayout.LayoutParams(0,-2,1f));text(cell,label,12,if(tab==key)ui.accent else ui.muted).apply {gravity=Gravity.CENTER;minHeight=ui.dp(40)}
-                val inactiveLine=if(gallery) 0x16FFFFFF else ui.lineColor
-                cell.addView(View(activity).apply {setBackgroundColor(if(tab==key)ui.accent else inactiveLine)},LinearLayout.LayoutParams(-1,ui.dp(if(tab==key)2 else 1)))
+            if(gallery){
+                val tabWrap=ui.column()
+                parent.addView(tabWrap,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+                val tabs=ui.row().apply {gravity=Gravity.BOTTOM}
+                tabWrap.addView(tabs,LinearLayout.LayoutParams(-1,-2))
+                listOf("feed" to "Feed","clubs" to "Clubes","friends" to "Meus amigos").forEachIndexed {idx,(key,label)->
+                    val on=tab==key
+                    val cell=ui.column().apply {
+                        tag="social-tab:$key";isSelected=on;isFocusable=true
+                        setOnClickListener {friends.hide(resetSelection=true);tab=key;club=null;stage=null;round=null;clubPage="home";draft="";replyToId=null;replyToUser="";reset();if(key=="friends")changed() else load()}
+                    }
+                    tabs.addView(cell,LinearLayout.LayoutParams(-2,-2).apply {if(idx>0)marginStart=ui.dp(20)})
+                    cell.addView(
+                        gText(label,12.5f,if(on)Color.WHITE else 0x80FFFFFF.toInt(),medium=on).apply {
+                            setPadding(0,ui.dp(4),0,ui.dp(8))
+                        },
+                        LinearLayout.LayoutParams(-2,-2),
+                    )
+                    cell.addView(
+                        View(activity).apply {setBackgroundColor(if(on)ui.accent else Color.TRANSPARENT)},
+                        LinearLayout.LayoutParams(-1,ui.dp(2).coerceAtLeast(2)),
+                    )
+                }
+                tabWrap.addView(View(activity).apply {setBackgroundColor(0x14FFFFFF)},LinearLayout.LayoutParams(-1,1))
+            }else {
+                val tabs=ui.row();parent.addView(tabs,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
+                listOf("feed" to "Feed","clubs" to "Clubes","friends" to "Meus amigos").forEach {(key,label)->
+                    val cell=ui.column().apply {tag="social-tab:$key";isSelected=tab==key;isFocusable=true;setOnClickListener {friends.hide(resetSelection=true);tab=key;club=null;stage=null;round=null;clubPage="home";draft="";replyToId=null;replyToUser="";reset();if(key=="friends")changed() else load()}}
+                    tabs.addView(cell,LinearLayout.LayoutParams(0,-2,1f));text(cell,label,12,if(tab==key)ui.accent else ui.muted).apply {gravity=Gravity.CENTER;minHeight=ui.dp(40)}
+                    cell.addView(View(activity).apply {setBackgroundColor(if(tab==key)ui.accent else ui.lineColor)},LinearLayout.LayoutParams(-1,ui.dp(if(tab==key)2 else 1)))
+                }
             }
         }
         if(tab=="friends" && !people){friends.render(parent);return}
@@ -344,7 +381,6 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         title(meta,selected?.s("title")?.ifBlank {null} ?: data.s("name").ifBlank {"Conversa"},17).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END}
         val limitLabel=if(stageInfo.n("page_limit")>0)"Etapa $stageIndex · até pág. ${stageInfo.n("page_limit")}" else data.s("name")
         text(meta,limitLabel,11,ui.accent).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END}
-        SocialRefresh.button(activity,ui,header,busy,"Atualizar"){eventsSeen++;refreshMessages()}
         ui.icon(header,"more","Opções do clube",44){clubOptions()}.apply {
             tag="club-options";background=ui.outlined(ui.surface,ui.lineColor,0)
             setPadding(ui.dp(10),ui.dp(10),ui.dp(10),ui.dp(10))
@@ -354,11 +390,9 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     private fun picture(parent:LinearLayout,path:String,width:Int=55,height:Int=82,palette:DisplayUi=ui,marginEndDp:Int=12,roundedDp:Int=0):ImageView {
         val image=ImageView(activity).apply {
             scaleType=if(roundedDp>0) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.FIT_CENTER
-            background=if(roundedDp>0) android.graphics.drawable.GradientDrawable().apply {
-                setColor(palette.activeSurface);cornerRadius=ui.dp(roundedDp).toFloat()
-            } else palette.outlined(palette.activeSurface,palette.lineColor,0)
-            if(roundedDp>0){clipToOutline=true;elevation=ui.dp(5).toFloat()}
-            setImageDrawable(ViblioBookMarkDrawable(palette.accent,Color.WHITE,scale=0.48f,backgroundColor=palette.activeSurface))
+            background=if(roundedDp>0) ui.pillShape(palette.activeSurface,roundedDp) else palette.outlined(palette.activeSurface,palette.lineColor,0)
+            if(roundedDp>0){clipToOutline=true;elevation=ui.dp(6).toFloat()}
+            setImageDrawable(ViblioBookMarkDrawable(palette.accent,Color.WHITE,scale=0.46f,backgroundColor=palette.activeSurface))
         }
         parent.addView(image,LinearLayout.LayoutParams(ui.dp(width),ui.dp(height)).apply {marginEnd=ui.dp(marginEndDp)});images?.bind(image,path);return image
     }
@@ -398,24 +432,28 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     }
     private fun feedView(parent:LinearLayout){
         val gallery = br.com.centralcasa.data.LocalSettings(activity).galleryUiStyle()
-        // Quick filter chips row (no redundant "Lendo agora" strip — already in Meus amigos).
+        // Quick filter chips row.
         val filterScroll=HorizontalScrollView(activity).apply {isHorizontalScrollBarEnabled=false}
         val filterRow=ui.row();filterScroll.addView(filterRow)
-        parent.addView(filterScroll,LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(if(gallery)10 else 6);bottomMargin=ui.dp(if(gallery)8 else 4)})
+        parent.addView(filterScroll,LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(if(gallery) 0 else 6);bottomMargin=ui.dp(if(gallery) 14 else 4)})
         listOf("all" to "Tudo","read" to "Leituras","finished" to "Concluídos","rated" to "Notas","added" to "Adicionados").forEach {(key,label)->
             val on=feedFilter==key
             val chip=TextView(activity).apply {
-                tag="feed-filter:$key";text=label;textSize=11f;gravity=Gravity.CENTER;maxLines=1
-                setTextColor(if(on)ui.accent else ui.muted)
-                typeface=Typeface.create(if(on)"sans-serif-medium" else "sans-serif",Typeface.NORMAL)
-                background=if(gallery) android.graphics.drawable.GradientDrawable().apply {
-                    setColor(if(on) alphaColor(ui.accent,38) else 0x10FFFFFF)
-                    cornerRadius=ui.dp(18).toFloat()
-                } else ui.outlined(if(on)alphaColor(ui.accent,30) else ui.surface,if(on)ui.accent else ui.lineColor,0)
-                setPadding(ui.dp(if(gallery)13 else 11),ui.dp(if(gallery)7 else 6),ui.dp(if(gallery)13 else 11),ui.dp(if(gallery)7 else 6))
+                tag="feed-filter:$key";text=label;textSize=11f;gravity=Gravity.CENTER;maxLines=1;includeFontPadding=false
+                if(gallery){
+                    setTextColor(if(on) 0xFF0B1014.toInt() else 0xB3FFFFFF.toInt())
+                    typeface=Typeface.create(if(on)"sans-serif-medium" else "sans-serif",Typeface.NORMAL)
+                    background=ui.pillRipple(if(on) Color.WHITE else 0x0FFFFFFF,18)
+                    setPadding(ui.dp(13),ui.dp(7),ui.dp(13),ui.dp(7))
+                }else {
+                    setTextColor(if(on)ui.accent else ui.muted)
+                    typeface=Typeface.create(if(on)"sans-serif-medium" else "sans-serif",Typeface.NORMAL)
+                    background=ui.outlined(if(on)alphaColor(ui.accent,30) else ui.surface,if(on)ui.accent else ui.lineColor,0)
+                    setPadding(ui.dp(11),ui.dp(6),ui.dp(11),ui.dp(6))
+                }
                 setOnClickListener {if(feedFilter!=key){feedFilter=key;changed()}}
             }
-            filterRow.addView(chip,LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(if(gallery)8 else 6)})
+            filterRow.addView(chip,LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(if(gallery)7 else 6)})
         }
 
         val consolidated=FeedGrouping.consolidate(rows)
@@ -423,38 +461,44 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         val today=ReadingDays.at(System.currentTimeMillis())
         val yesterday=ReadingDays.at(System.currentTimeMillis()-86400000L)
         var day=""
+        var firstInDay=true
         shown.forEachIndexed {idx,entry->
             if(entry.dayKey!=day){
                 day=entry.dayKey
+                firstInDay=true
                 val dayTitle=when(day){today->"HOJE";yesterday->"ONTEM";else->ReadingDays.label(day).uppercase()}
                 if(gallery){
-                    ui.label(parent,dayTitle,10,ui.muted).apply {
-                        letterSpacing=0.10f
-                        (layoutParams as LinearLayout.LayoutParams).apply {topMargin=ui.dp(12);bottomMargin=ui.dp(2)}
-                    }
+                    parent.addView(
+                        gText(dayTitle,10f,ui.muted).apply {letterSpacing=0.16f},
+                        LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(if(idx==0) 2 else 16);bottomMargin=ui.dp(8)},
+                    )
                 }else {
                     section(parent,dayTitle)
                 }
+            }else {
+                firstInDay=false
             }
             val book=entry.book
             val palette=coverPalette(book.s("cover"))
             if(gallery){
                 val item=ui.row().apply {
                     tag="feed-event:${entry.id}"
-                    gravity=Gravity.CENTER_VERTICAL
-                    setPadding(ui.dp(2),ui.dp(12),ui.dp(2),ui.dp(12))
+                    gravity=Gravity.TOP
+                    setPadding(0,if(firstInDay) 0 else ui.dp(14),0,ui.dp(14))
                     isFocusable=true
                     setOnClickListener {consult(book,entry.actorUsername)}
                 }
                 parent.addView(item,LinearLayout.LayoutParams(-1,-2))
                 picture(item,book.s("cover"),52,78,palette,marginEndDp=14,roundedDp=5)
-                val col=ui.column();item.addView(col,LinearLayout.LayoutParams(0,-2,1f))
+                val col=ui.column()
+                item.addView(col,LinearLayout.LayoutParams(0,-2,1f))
 
-                // Line 1: avatar + @username + quiet time (no boxed uppercase badge).
+                // Line 1: @username + time (clean, no micro-avatar, no boxed badge).
                 val r1=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
-                col.addView(r1,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)})
-                val userTap=ui.row().apply {
-                    gravity=Gravity.CENTER_VERTICAL;isFocusable=true
+                col.addView(r1,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
+                val userLabel=gText("@${entry.actorUsername}",11f,ui.muted).apply {
+                    maxLines=1;ellipsize=TextUtils.TruncateAt.END
+                    isFocusable=true
                     setOnClickListener {
                         if(entry.actorId.isNotBlank()){
                             tab="friends";people=false;club=null;stage=null;round=null
@@ -463,89 +507,61 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                         }
                     }
                 }
-                r1.addView(userTap,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)})
-                val microAv=TextView(activity).apply {
-                    text=entry.actorUsername.take(1).uppercase();gravity=Gravity.CENTER;textSize=9f
-                    setTextColor(palette.accent);typeface=Typeface.create("serif",Typeface.NORMAL)
-                    background=android.graphics.drawable.GradientDrawable().apply {
-                        shape=android.graphics.drawable.GradientDrawable.OVAL
-                        setColor(alphaColor(palette.accent,34))
-                    }
-                }
-                userTap.addView(microAv,LinearLayout.LayoutParams(ui.dp(18),ui.dp(18)).apply {marginEnd=ui.dp(6)})
-                ui.label(userTap,"@${entry.actorUsername}",11,ui.muted).apply {
-                    typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
-                    maxLines=1;ellipsize=TextUtils.TruncateAt.END
-                    layoutParams=LinearLayout.LayoutParams(0,-2,1f)
-                }
-                ui.label(r1,date(entry.occurredAt,"HH'h'mm"),10,ui.muted).apply {
-                    maxLines=1;(layoutParams as LinearLayout.LayoutParams).bottomMargin=0
-                }
+                r1.addView(userLabel,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)})
+                r1.addView(
+                    gText(date(entry.occurredAt,"HH'h'mm"),11f,ui.muted).apply {maxLines=1},
+                    LinearLayout.LayoutParams(-2,-2),
+                )
 
-                // Line 2: serif book title + muted author.
-                ui.label(col,book.s("title"),16,ui.text).apply {
-                    typeface=Typeface.create("serif",Typeface.NORMAL)
-                    maxLines=1;ellipsize=TextUtils.TruncateAt.END
-                    (layoutParams as LinearLayout.LayoutParams).bottomMargin=ui.dp(1)
-                }
-                val author=book.s("author")
-                if(author.isNotBlank()){
-                    ui.label(col,author,11,ui.muted).apply {
+                // Line 2: serif book title.
+                col.addView(
+                    gText(book.s("title"),15f,Color.WHITE,serif=true).apply {
                         maxLines=1;ellipsize=TextUtils.TruncateAt.END
-                        (layoutParams as LinearLayout.LayoutParams).bottomMargin=ui.dp(5)
-                    }
+                    },
+                    LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)},
+                )
+
+                // Line 3: calm human narrative sentence.
+                val accentNarrative=entry.primaryType=="finished" || entry.rating!=null
+                val narrativeText=when {
+                    entry.primaryType=="finished" && entry.rating!=null -> "Concluiu · ${FeedGrouping.stars(entry.rating)}"
+                    entry.primaryType=="finished" -> "Concluiu a leitura"
+                    entry.rating!=null -> "Avaliou · ${FeedGrouping.stars(entry.rating)}"
+                    entry.pagesKnown && entry.pagesRead>0L && entry.durationMs>0L -> "Leu ${entry.pagesRead} páginas em ${duration(entry.durationMs)}"
+                    entry.pagesKnown && entry.pagesRead>0L -> "Leu ${entry.pagesRead} páginas"
+                    entry.durationMs>0L -> "Leu por ${duration(entry.durationMs)}"
+                    entry.hasStarted -> "Começou a ler"
+                    entry.hasAdded -> "Adicionou à estante"
+                    else -> FeedGrouping.actionBadge(entry)
+                }
+                col.addView(
+                    gText(narrativeText,12f,if(accentNarrative) palette.accent else 0xCCFFFFFF.toInt()).apply {
+                        maxLines=1;ellipsize=TextUtils.TruncateAt.END
+                    },
+                    LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)},
+                )
+
+                // Line 4: quiet context line (page X of Y or author).
+                val curPage=entry.endPage ?: book.n("page").toInt()
+                val totalPages=book.n("pages").toInt()
+                val author=book.s("author")
+                val contextLine=when {
+                    entry.primaryType!="finished" && entry.primaryType!="added" && entry.pagesKnown && curPage>0 && totalPages>0 -> "Página $curPage de $totalPages"
+                    author.isNotBlank() -> author
+                    else -> ""
+                }
+                if(contextLine.isNotBlank()){
+                    col.addView(
+                        gText(contextLine,11f,ui.muted).apply {
+                            maxLines=1;ellipsize=TextUtils.TruncateAt.END
+                        },
+                        LinearLayout.LayoutParams(-1,-2),
+                    )
                 }
 
-                // Line 3: calm human narrative + thin rounded progress bar.
-                val narrativeParts=mutableListOf<String>()
-                when {
-                    entry.primaryType=="finished" -> {
-                        narrativeParts.add("Concluiu")
-                        entry.rating?.let {narrativeParts.add(FeedGrouping.stars(it))}
-                        if(entry.totalDurationMs>0L)narrativeParts.add(duration(entry.totalDurationMs))
-                    }
-                    entry.rating!=null -> {
-                        narrativeParts.add("Avaliou ${FeedGrouping.stars(entry.rating)}")
-                        if(entry.totalDurationMs>0L)narrativeParts.add(duration(entry.totalDurationMs))
-                    }
-                    entry.pagesKnown && entry.pagesRead>0L -> {
-                        val sess=if(entry.sessionCount>1)" (${entry.sessionCount}x)" else ""
-                        narrativeParts.add("Leu ${entry.pagesRead} págs$sess")
-                        if(entry.durationMs>0L)narrativeParts.add(duration(entry.durationMs))
-                    }
-                    entry.durationMs>0L -> narrativeParts.add("Leu ${duration(entry.durationMs)}")
-                    entry.hasStarted -> narrativeParts.add("Começou a ler")
-                    entry.hasAdded -> narrativeParts.add("Adicionou à estante")
-                    else -> narrativeParts.add(FeedGrouping.actionBadge(entry))
-                }
-                val narrativeText=narrativeParts.joinToString(" · ")
-                val r3=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
-                col.addView(r3,LinearLayout.LayoutParams(-1,-2))
-                ui.label(r3,narrativeText,11,palette.accent).apply {
-                    typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
-                    maxLines=1;ellipsize=TextUtils.TruncateAt.END
-                    layoutParams=LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(8)}
-                }
-                val pct=FeedGrouping.progressPercent(entry)
-                if(pct!=null){
-                    val barWrap=FrameLayout(activity).apply {
-                        background=android.graphics.drawable.GradientDrawable().apply {setColor(0x1EFFFFFF);cornerRadius=ui.dp(2).toFloat()}
-                        clipToOutline=true
-                    }
-                    val barFill=View(activity).apply {
-                        background=android.graphics.drawable.GradientDrawable().apply {setColor(palette.accent);cornerRadius=ui.dp(2).toFloat()}
-                    }
-                    val fillW=pct.coerceIn(0,100)
-                    val barRow=ui.row()
-                    barRow.addView(barFill,LinearLayout.LayoutParams(0,-1,fillW.toFloat().coerceAtLeast(1f)))
-                    if(fillW<100)barRow.addView(View(activity),LinearLayout.LayoutParams(0,-1,(100-fillW).toFloat()))
-                    barWrap.addView(barRow,FrameLayout.LayoutParams(-1,-1))
-                    r3.addView(barWrap,LinearLayout.LayoutParams(0,ui.dp(3).coerceAtLeast(3),1f).apply {marginEnd=ui.dp(6)})
-                    ui.label(r3,"$pct%",10,ui.muted).apply {maxLines=1;(layoutParams as LinearLayout.LayoutParams).bottomMargin=0}
-                }
                 val nextSameDay=shown.getOrNull(idx+1)?.dayKey==day
                 if(nextSameDay){
-                    parent.addView(View(activity).apply {setBackgroundColor(0x16FFFFFF)},LinearLayout.LayoutParams(-1,1))
+                    parent.addView(View(activity).apply {setBackgroundColor(0x10FFFFFF)},LinearLayout.LayoutParams(-1,1))
                 }
                 return@forEachIndexed
             }
@@ -709,42 +725,96 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         val gallery = br.com.centralcasa.data.LocalSettings(activity).galleryUiStyle()
         val activeClubs=rows.filter {it.s("status")!="invited"}
         val invites=rows.filter {it.s("status")=="invited"}
-        if(activeClubs.isNotEmpty() || invites.isEmpty()){
-            if(gallery) ui.label(parent,"SEUS CLUBES",10,ui.muted).apply {letterSpacing=0.10f;(layoutParams as LinearLayout.LayoutParams).apply {topMargin=ui.dp(10);bottomMargin=ui.dp(8)}}
-            else section(parent,"SEUS CLUBES")
-        }
+        if(!gallery && (activeClubs.isNotEmpty() || invites.isEmpty())) section(parent,"SEUS CLUBES")
         activeClubs.forEach {entry->
             val identifier=id(entry.s("id")) ?: return@forEach
             val book=entry.o("book");val bookTitle=book.s("title");val cover=book.s("cover")
             val state=entry.s("state")
             val isVoting=state=="voting" || (state!="reading" && bookTitle.isBlank())
             val palette=if(!isVoting && cover.isNotBlank())coverPalette(cover,fallbackToBase=true) else ui
-            val block=if(gallery) ui.column().apply {
-                tag="club-card:$identifier"
-                background=android.graphics.drawable.GradientDrawable().apply {
-                    setColor(if(!isVoting) alphaColor(palette.surface,215) else 0x12FFFFFF)
-                    cornerRadius=ui.dp(14).toFloat()
+            if(gallery){
+                val cardRow=ui.row().apply {
+                    tag="club-card:$identifier"
+                    gravity=Gravity.CENTER_VERTICAL
+                    background=ui.pillShape(0x0EFFFFFF,16)
+                    setPadding(ui.dp(16),ui.dp(16),ui.dp(16),ui.dp(16))
+                    isFocusable=true
+                    setOnClickListener {openClub(identifier)}
                 }
-                clipToOutline=true
-                parent.addView(this,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
-            } else if(!isVoting)stripeCard(parent,"club-card:$identifier",palette,padH=0,padV=0)
+                parent.addView(cardRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+                if(!isVoting){
+                    picture(cardRow,cover,56,84,palette,marginEndDp=14,roundedDp=5)
+                }else {
+                    val voteThumb=ImageView(activity).apply {
+                        background=ui.pillShape(0x0FFFFFFF,5)
+                        clipToOutline=true
+                        setImageDrawable(ViblioBookMarkDrawable(palette.accent,0xD9FFFFFF.toInt(),scale=0.46f,backgroundColor=Color.TRANSPARENT))
+                    }
+                    cardRow.addView(voteThumb,LinearLayout.LayoutParams(ui.dp(56),ui.dp(84)).apply {marginEnd=ui.dp(14)})
+                }
+                val info=ui.column()
+                cardRow.addView(info,LinearLayout.LayoutParams(0,-2,1f))
+                info.addView(
+                    gText(entry.s("name"),18f,Color.WHITE,serif=true).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},
+                    LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(5)},
+                )
+                val line2Text=if(!isVoting && bookTitle.isNotBlank()) "Lendo: $bookTitle" else {
+                    val proposals=entry.o("voting").n("proposals")
+                    if(proposals>0) "Em votação · ${ClubFormatting.countLabel(proposals,"indicação","indicações")}" else "Em votação"
+                }
+                info.addView(
+                    gText(line2Text,12f,if(!isVoting && bookTitle.isNotBlank()) 0xCCFFFFFF.toInt() else ui.muted).apply {
+                        maxLines=1;ellipsize=TextUtils.TruncateAt.END
+                    },
+                    LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(5)},
+                )
+                val stageObj=entry.o("stage")
+                val membersCount=entry.n("member_count")
+                val unread=entry.n("unread_count")
+                val line3Text=when {
+                    isVoting -> "Vote no próximo livro →"
+                    unread>0 -> listOfNotNull(
+                        ClubFormatting.countLabel(unread,"nova","novas"),
+                        membersCount.takeIf {it>0}?.let {ClubFormatting.countLabel(it,"membro","membros")},
+                    ).joinToString(" · ")
+                    stageObj.n("page_limit")>0 -> listOfNotNull(
+                        "Etapa ${stageObj.n("index").coerceAtLeast(1)} aberta",
+                        membersCount.takeIf {it>0}?.let {ClubFormatting.countLabel(it,"membro","membros")},
+                    ).joinToString(" · ")
+                    state=="completed" -> "Leitura concluída"
+                    else -> listOfNotNull(
+                        "Leitura em andamento",
+                        membersCount.takeIf {it>0}?.let {ClubFormatting.countLabel(it,"membro","membros")},
+                    ).joinToString(" · ")
+                }
+                info.addView(
+                    gText(line3Text,11f,palette.accent).apply {
+                        tag="club-open:$identifier"
+                        maxLines=1;ellipsize=TextUtils.TruncateAt.END
+                    },
+                    LinearLayout.LayoutParams(-1,-2),
+                )
+                return@forEach
+            }
+
+            val block=if(!isVoting)stripeCard(parent,"club-card:$identifier",palette,padH=0,padV=0)
             else ui.column().apply {
                 tag="club-card:$identifier";background=palette.outlined(palette.surface,palette.lineColor,0)
                 parent.addView(this,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
             }
             block.isFocusable=true;block.setOnClickListener {openClub(identifier)}
 
-            val top=ui.row().apply {gravity=Gravity.TOP;setPadding(ui.dp(14),ui.dp(14),ui.dp(14),ui.dp(12))}
+            val top=ui.row().apply {gravity=Gravity.TOP;setPadding(ui.dp(14),ui.dp(12),ui.dp(14),ui.dp(10))}
             block.addView(top,LinearLayout.LayoutParams(-1,-2))
             if(!isVoting){
-                picture(top,cover,if(gallery)54 else 48,if(gallery)81 else 72,palette,marginEndDp=if(gallery)14 else 12,roundedDp=if(gallery)5 else 0)
+                picture(top,cover,48,72,palette,marginEndDp=12)
             }else {
                 val frame=TextView(activity).apply {
                     text="VOTOS";gravity=Gravity.CENTER;textSize=9f;letterSpacing=0.10f
                     setTextColor(palette.accent);typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
-                    background=if(gallery) android.graphics.drawable.GradientDrawable().apply {setColor(0x18FFFFFF);cornerRadius=ui.dp(5).toFloat()} else palette.outlined(palette.activeSurface,palette.lineColor,0)
+                    background=palette.outlined(palette.activeSurface,palette.lineColor,0)
                 }
-                top.addView(frame,LinearLayout.LayoutParams(ui.dp(if(gallery)54 else 48),ui.dp(if(gallery)81 else 72)).apply {marginEnd=ui.dp(if(gallery)14 else 12)})
+                top.addView(frame,LinearLayout.LayoutParams(ui.dp(48),ui.dp(72)).apply {marginEnd=ui.dp(12)})
             }
             val info=ui.column();top.addView(info,LinearLayout.LayoutParams(0,-2,1f))
             val titleRow=ui.row().apply {gravity=Gravity.CENTER_VERTICAL};info.addView(titleRow,LinearLayout.LayoutParams(-1,-2))
@@ -753,10 +823,8 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 layoutParams=LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)}
             }
             val roleBadge=TextView(activity).apply {
-                text=if(entry.s("role")=="admin")"Admin" else "Membro";textSize=9.5f;setTextColor(palette.muted)
-                if(!gallery){
-                    setPadding(ui.dp(6),ui.dp(2),ui.dp(6),ui.dp(2));background=palette.outlined(palette.activeSurface,palette.lineColor,0)
-                }
+                text=if(entry.s("role")=="admin")"Admin" else "Membro";textSize=9f;setTextColor(palette.muted)
+                setPadding(ui.dp(6),ui.dp(2),ui.dp(6),ui.dp(2));background=palette.outlined(palette.activeSurface,palette.lineColor,0)
             }
             titleRow.addView(roleBadge,LinearLayout.LayoutParams(-2,-2))
 
@@ -783,11 +851,11 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 if(parts.isNotEmpty())palette.label(info,parts.joinToString(" · "),10,palette.muted).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END}
             }
 
-            block.addView(View(activity).apply {setBackgroundColor(if(gallery) 0x16FFFFFF else palette.lineColor)},LinearLayout.LayoutParams(-1,1))
+            block.addView(View(activity).apply {setBackgroundColor(palette.lineColor)},LinearLayout.LayoutParams(-1,ui.dp(1).coerceAtLeast(1)))
             val footer=ui.row().apply {
                 gravity=Gravity.CENTER_VERTICAL
-                setPadding(ui.dp(14),ui.dp(9),ui.dp(14),ui.dp(9))
-                if(!gallery) setBackgroundColor(alphaColor(palette.activeSurface,110))
+                setPadding(ui.dp(14),ui.dp(8),ui.dp(14),ui.dp(8))
+                setBackgroundColor(alphaColor(palette.activeSurface,110))
             }
             block.addView(footer,LinearLayout.LayoutParams(-1,-2))
             val stageObj=entry.o("stage")

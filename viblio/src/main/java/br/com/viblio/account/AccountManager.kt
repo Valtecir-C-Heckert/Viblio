@@ -67,6 +67,7 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
     }
     fun stop(){if(observingNetwork){activity.unregisterReceiver(network);observingNetwork=false};running=false;handler.removeCallbacks(periodic);handler.removeCallbacks(scheduled)}
     fun localChanged(){deferAutomatic(5000)}
+    fun syncSilently(){if(signedIn) deferAutomatic(0)}
     private fun <T> work(label:String,modal:Boolean=true,trackSync:Boolean=false,action:()->T,done:(T)->Unit) {
         if(closed || busy){if(modal)toast("Aguarde a operação atual.");return};busy=true
         val profile=LibraryProfiles.database(activity)

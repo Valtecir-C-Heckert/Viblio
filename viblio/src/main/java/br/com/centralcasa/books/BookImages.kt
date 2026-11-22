@@ -143,25 +143,69 @@ class BookImages(private val context: Context, private val profileSuffix:String=
         val SHA_HEX_RE = Regex("[a-f0-9]{64}")
         val SHA_FILE_RE = Regex("[a-f0-9]{64}\\.jpg")
     }
-    @Synchronized fun background(book: LibraryBook): Drawable {
+    @Synchronized fun background(book: LibraryBook, atmospheric: Boolean = false, baseColor: Int = Color.BLACK): Drawable {
         val color = when (book.background) {
             "graphite" -> Color.rgb(34, 34, 34); "slate" -> Color.rgb(25, 30, 35)
             "warm" -> Color.rgb(35, 29, 24); "blue" -> Color.rgb(16, 29, 42)
             "wine" -> Color.rgb(39, 20, 29); else -> Color.rgb(21, 21, 21)
         }
         if (book.background != "cover") return GradientDrawable().apply { setColor(color); cornerRadius = 14 * context.resources.displayMetrics.density }
-        val result = backgrounds[book.cover] ?: run {
-            val file = file(book.cover) ?: return GradientDrawable().apply { setColor(color) }
+        val cacheKey = if (atmospheric) "atmo:${book.cover}" else book.cover
+        val result = backgrounds[cacheKey] ?: run {
+            val file = file(book.cover) ?: return GradientDrawable().apply { setColor(if (atmospheric) baseColor else color) }
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeFile(file.path, bounds)
             var sample = 1
-            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= br.com.centralcasa.ui.CoverBlur.MAX_EDGE) sample *= 2
+            val maxDecode = if (atmospheric) 512 else br.com.centralcasa.ui.CoverBlur.MAX_EDGE
+            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxDecode) sample *= 2
             val source = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
-                ?: return GradientDrawable().apply { setColor(color) }
-            try { br.com.centralcasa.ui.CoverBlur.render(source).also { backgrounds[book.cover] = it } }
-            finally { source.recycle() }
+                ?: return GradientDrawable().apply { setColor(if (atmospheric) baseColor else color) }
+            try {
+                val rendered = if (atmospheric) br.com.centralcasa.ui.CoverBlur.renderAtmospheric(source) else br.com.centralcasa.ui.CoverBlur.render(source)
+                rendered.also { backgrounds[cacheKey] = it }
+            } finally { source.recycle() }
         }
-        return CenteredCoverBackdrop(result)
+        return if (atmospheric) AtmosphericCoverBackdrop(result, baseColor, context.resources.displayMetrics.density) else CenteredCoverBackdrop(result)
     }
+}
+
+/** Atmospheric blurred cover zoomed 1.25x at top edge-to-edge, melting smoothly into the theme background color. */
+private class AtmosphericCoverBackdrop(
+    private val bitmap: Bitmap,
+    private val baseColor: Int,
+    private val density: Float,
+) : Drawable() {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { alpha = 166 }
+    private val fadePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    override fun draw(canvas: Canvas) {
+        if (bounds.isEmpty) return
+        val save = canvas.save()
+        canvas.clipRect(bounds)
+        canvas.drawColor(baseColor)
+        val bandH = maxOf(440f * density, bounds.height() * 0.56f).coerceAtMost(bounds.height().toFloat())
+        val baseScale = maxOf(bounds.width().toFloat() / bitmap.width, bandH / bitmap.height)
+        val scale = baseScale * 1.25f
+        val drawW = bitmap.width * scale
+        val drawH = bitmap.height * scale
+        val left = bounds.exactCenterX() - drawW / 2f
+        val top = bounds.top + (bandH - drawH) * 0.35f
+        val bandClip = canvas.save()
+        canvas.clipRect(bounds.left.toFloat(), bounds.top.toFloat(), bounds.right.toFloat(), bounds.top + bandH)
+        canvas.drawBitmap(bitmap, null, RectF(left, top, left + drawW, top + drawH), paint)
+        val solidBase = (baseColor and 0x00FFFFFF) or 0xFF000000.toInt()
+        fadePaint.shader = LinearGradient(
+            0f, bounds.top.toFloat(), 0f, bounds.top + bandH,
+            intArrayOf(0x2E000000, 0x6B000000, solidBase),
+            floatArrayOf(0f, 0.48f, 0.96f),
+            Shader.TileMode.CLAMP,
+        )
+        canvas.drawRect(bounds.left.toFloat(), bounds.top.toFloat(), bounds.right.toFloat(), bounds.top + bandH, fadePaint)
+        canvas.restoreToCount(bandClip)
+        canvas.restoreToCount(save)
+    }
+    override fun setAlpha(alpha: Int) { paint.alpha = (alpha * 166 / 255).coerceIn(0, 255); invalidateSelf() }
+    override fun setColorFilter(colorFilter: ColorFilter?) { paint.colorFilter = colorFilter; invalidateSelf() }
+    @Deprecated("Framework drawable contract")
+    override fun getOpacity() = PixelFormat.OPAQUE
 }
 
 /** Fit the entire cover width, centred horizontally, over a black reading background. */

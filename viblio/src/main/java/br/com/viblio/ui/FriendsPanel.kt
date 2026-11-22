@@ -204,7 +204,6 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
         val header=ui.row();if(!embedded || friend!=null)parent.addView(header)
         if(friend!=null)ui.icon(header,"back","Voltar aos amigos",44){back()}
         ui.label(header,if(friend==null)(if(ui.rectilinear)"AMIGOS" else "Amigos") else if(collection.isNotBlank())collectionName.ifBlank {"Volumes"} else "@${friendName.ifBlank {"amigo"}}",30,bold=true).apply {typeface=Typeface.create("serif",if(ui.rectilinear)Typeface.NORMAL else Typeface.BOLD);layoutParams=LinearLayout.LayoutParams(0,-2,1f)}
-        SocialRefresh.button(activity,ui,header,busy,"Atualizar amigos"){readingCover="";readingResolved=false;readingCursor=null;readingPages=0;reset(preserve=true);load()}
         if(friend!=null)ui.icon(header,"more","Opções da amizade",40){
             AlertDialog.Builder(activity).setItems(arrayOf("Remover amizade")){_,_->AlertDialog.Builder(activity).setTitle("Remover amizade?").setMessage("Vocês deixarão de ter acesso às estantes um do outro.").setPositiveButton("Remover"){_,_->val id=friend ?: return@setPositiveButton;request("/v1/friends/$id","DELETE"){friend=null;collection="";query="";kind="all";reset();load()}}.setNegativeButton("Cancelar",null).show()}.show()
         }
@@ -236,26 +235,35 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
         if(error.isNotBlank()){ui.label(parent,error,14,ui.muted);ui.action(parent,"Tentar novamente"){load(retryMore)}}
         val rows=ui.column();parent.addView(rows);coverLoader()?.attach(rows)
         val gallery = br.com.centralcasa.data.LocalSettings(activity).galleryUiStyle()
+        fun gText(value:String,sp:Float,color:Int,serif:Boolean=false,medium:Boolean=false)=TextView(activity).apply {
+            text=value;textSize=sp;setTextColor(color);includeFontPadding=false
+            typeface=when {
+                serif -> Typeface.create("serif",Typeface.NORMAL)
+                medium -> Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                else -> Typeface.create("sans-serif",Typeface.NORMAL)
+            }
+        }
         if(friend==null){
             if(requests.isNotEmpty()){
-                if(gallery) ui.label(rows,"PEDIDOS DE AMIZADE",10,ui.muted).apply {letterSpacing=0.10f;(layoutParams as LinearLayout.LayoutParams).apply {topMargin=ui.dp(10);bottomMargin=ui.dp(6)}}
-                else ui.label(rows,"Pedidos de amizade",18,bold=true)
+                if(gallery){
+                    rows.addView(
+                        gText("PEDIDOS DE AMIZADE",10f,ui.muted).apply {letterSpacing=0.14f},
+                        LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(8);bottomMargin=ui.dp(8)},
+                    )
+                } else ui.label(rows,"Pedidos de amizade",18,bold=true)
             }
             requests.forEach {pending->val id=uuid(pending.str("id")) ?: return@forEach;val incoming=pending.get("incoming")?.asBoolean==true
                 val card=if(gallery) ui.column().apply {
-                    background=android.graphics.drawable.GradientDrawable().apply {setColor(0x12FFFFFF);cornerRadius=ui.dp(14).toFloat()}
-                    setPadding(ui.dp(14),ui.dp(12),ui.dp(14),ui.dp(12))
-                    rows.addView(this,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
+                    background=ui.pillShape(0x0EFFFFFF,16)
+                    setPadding(ui.dp(16),ui.dp(14),ui.dp(16),ui.dp(14))
+                    rows.addView(this,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
                 } else ui.panel(rows,12)
                 ui.label(card,"@${pending.str("username").take(32)}",16,bold=true)
                 val controls=ui.row();card.addView(controls)
                 if(incoming)ui.action(controls,"Aceitar"){action("/v1/friends/$id/accept")}.apply {isEnabled=!busy;layoutParams=LinearLayout.LayoutParams(0,-2,1f);tag="friend-accept:$id"}
                 ui.action(controls,if(incoming)"Recusar" else "Cancelar pedido"){action("/v1/friends/$id","DELETE")}.apply {isEnabled=!busy;layoutParams=LinearLayout.LayoutParams(0,-2,1f)}
             }
-            if(items.isNotEmpty()){
-                if(gallery) ui.label(rows,"MEUS AMIGOS",10,ui.muted).apply {letterSpacing=0.10f;(layoutParams as LinearLayout.LayoutParams).apply {topMargin=ui.dp(10);bottomMargin=ui.dp(4)}}
-                else ui.label(rows,"Meus amigos",18,bold=true)
-            }
+            if(items.isNotEmpty() && !gallery) ui.label(rows,"Meus amigos",18,bold=true)
             items.forEachIndexed {idx,entry->val id=uuid(entry.str("id")) ?: return@forEachIndexed;val reading=entry.get("current")?.takeUnless {it.isJsonNull}?.asJsonObject
                 val path=reading?.str("cover").orEmpty()
                 val rowUi=DisplayUi(activity).apply {scopedReadingColor(friendColors[path])}
@@ -263,66 +271,56 @@ class FriendsPanel(private val activity:Activity,private val baseUi:DisplayUi,pr
                 if(gallery){
                     val card=ui.row().apply {
                         gravity=Gravity.CENTER_VERTICAL
-                        setPadding(ui.dp(2),ui.dp(12),ui.dp(2),ui.dp(12))
+                        setPadding(0,if(idx==0) ui.dp(6) else ui.dp(14),0,ui.dp(14))
                         isFocusable=true;contentDescription="Estante de @${entry.str("username")}";tag="friend:$id"
                     }
                     rows.addView(card,LinearLayout.LayoutParams(-1,-2))
                     val img=ImageView(activity).apply {
-                        setImageDrawable(ViblioBookMarkDrawable(rowUi.accent,android.graphics.Color.WHITE,scale=0.48f,backgroundColor=ui.activeSurface))
+                        setImageDrawable(ViblioBookMarkDrawable(rowUi.accent,android.graphics.Color.WHITE,scale=0.46f,backgroundColor=ui.activeSurface))
                         scaleType=ImageView.ScaleType.CENTER_CROP
-                        background=android.graphics.drawable.GradientDrawable().apply {setColor(ui.activeSurface);cornerRadius=ui.dp(5).toFloat()}
+                        background=ui.pillShape(ui.activeSurface,5)
                         clipToOutline=true
-                        elevation=ui.dp(4).toFloat()
+                        elevation=ui.dp(6).toFloat()
                         importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
                     }
                     card.addView(img,LinearLayout.LayoutParams(ui.dp(48),ui.dp(72)).apply {marginEnd=ui.dp(14)})
                     coverLoader()?.bind(img,path)
-                    val labels=ui.column();card.addView(labels,LinearLayout.LayoutParams(0,-2,1f))
-                    ui.label(labels,"@${entry.str("username").take(32)}",12,ui.muted).apply {
-                        typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
-                        (layoutParams as LinearLayout.LayoutParams).bottomMargin=ui.dp(2)
-                    }
-                    val bookTitle=reading?.str("title")?.take(500)?.takeIf(String::isNotBlank)
-                    if(bookTitle!=null){
-                        ui.label(labels,bookTitle,16,ui.text).apply {
-                            typeface=Typeface.create("serif",Typeface.NORMAL)
+                    val labels=ui.column()
+                    card.addView(labels,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(10)})
+                    labels.addView(
+                        gText("@${entry.str("username").take(32)}",14f,android.graphics.Color.WHITE,medium=true).apply {
                             maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END
-                            (layoutParams as LinearLayout.LayoutParams).bottomMargin=ui.dp(4)
-                        }
-                    }else {
-                        ui.label(labels,"Sem livro atual",13,ui.muted).apply {
-                            (layoutParams as LinearLayout.LayoutParams).bottomMargin=0
-                        }
-                    }
+                        },
+                        LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)},
+                    )
+                    val bookTitle=reading?.str("title")?.take(500)?.takeIf(String::isNotBlank)
+                    labels.addView(
+                        gText(bookTitle ?: "Sem livro atual",12.5f,if(bookTitle!=null) 0xCCFFFFFF.toInt() else ui.muted,serif=bookTitle!=null).apply {
+                            maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END
+                        },
+                        LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)},
+                    )
                     reading?.get("page")?.takeUnless {it.isJsonNull}?.asInt?.let {page->
                         val total=reading.get("pages")?.takeUnless {it.isJsonNull}?.asInt
-                        if(total!=null && total>0){
-                            val pct=(page.toLong()*100/total).coerceIn(0,100).toInt()
-                            val progRow=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
-                            labels.addView(progRow,LinearLayout.LayoutParams(-1,-2))
-                            val track=FrameLayout(activity).apply {
-                                background=android.graphics.drawable.GradientDrawable().apply {setColor(0x1EFFFFFF);cornerRadius=ui.dp(2).toFloat()}
-                                clipToOutline=true
-                            }
-                            val fill=View(activity).apply {
-                                background=android.graphics.drawable.GradientDrawable().apply {setColor(rowUi.accent);cornerRadius=ui.dp(2).toFloat()}
-                            }
-                            val barRow=ui.row()
-                            barRow.addView(fill,LinearLayout.LayoutParams(0,-1,pct.toFloat().coerceAtLeast(1f)))
-                            if(pct<100)barRow.addView(View(activity),LinearLayout.LayoutParams(0,-1,(100-pct).toFloat()))
-                            track.addView(barRow,FrameLayout.LayoutParams(-1,-1))
-                            progRow.addView(track,LinearLayout.LayoutParams(0,ui.dp(3).coerceAtLeast(3),1f).apply {marginEnd=ui.dp(8)})
-                            ui.label(progRow,"$page/$total · $pct%",11,rowUi.accent).apply {
-                                maxLines=1;tag="friend-current-page:$id"
-                                (layoutParams as LinearLayout.LayoutParams).bottomMargin=0
-                            }
-                        }else {
-                            ui.label(labels,"$page páginas",11,rowUi.accent).apply {tag="friend-current-page:$id";(layoutParams as LinearLayout.LayoutParams).bottomMargin=0}
+                        val progText=when {
+                            total!=null && total>0 && page>=total -> "Concluído · 100%"
+                            total!=null && total>0 -> "$page / $total págs · ${(page.toLong()*100/total).coerceIn(0,100)}%"
+                            else -> "$page págs"
                         }
+                        labels.addView(
+                            gText(progText,11f,rowUi.accent).apply {
+                                maxLines=1;tag="friend-current-page:$id"
+                            },
+                            LinearLayout.LayoutParams(-1,-2),
+                        )
                     }
+                    card.addView(
+                        gText("›",18f,0x66FFFFFF),
+                        LinearLayout.LayoutParams(-2,-2),
+                    )
                     card.setOnClickListener {focusedInput=null;friend=id;friendName=entry.str("username");readingCover=path;readingBookId=reading?.str("id").orEmpty();readingResolved=true;collection="";kind="all";query="";reset();load()}
                     if(idx<items.lastIndex){
-                        rows.addView(View(activity).apply {setBackgroundColor(0x16FFFFFF)},LinearLayout.LayoutParams(-1,1))
+                        rows.addView(View(activity).apply {setBackgroundColor(0x10FFFFFF)},LinearLayout.LayoutParams(-1,1))
                     }
                 }else {
                     val card=ui.row().apply {background=rowUi.outlined();setPadding(ui.dp(12),ui.dp(12),ui.dp(12),ui.dp(12));isFocusable=true;contentDescription="Estante de @${entry.str("username")}";tag="friend:$id"};rows.addView(card,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})

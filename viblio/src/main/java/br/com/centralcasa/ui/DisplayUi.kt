@@ -66,6 +66,35 @@ class DisplayUi(private val context: Context) {
         slider.progressTintList = null; slider.progressBackgroundTintList = null
         slider.progressDrawable.level = (slider.progress.toLong() * 10000 / slider.max.coerceAtLeast(1)).toInt()
     }
+    /** Thin rounded gallery slider matching the editorial mockup (6dp rounded track + subtle 12dp thumb). */
+    fun styleGallerySlider(slider: SeekBar, color: Int) {
+        val trackHeight = dp(6).coerceAtLeast(4)
+        val radius = dp(4).toFloat()
+        val bgTrack = GradientDrawable().apply { setColor(0x1EFFFFFF); cornerRadius = radius }
+        val fgTrack = GradientDrawable().apply { setColor(color); cornerRadius = radius }
+        val clip = android.graphics.drawable.ClipDrawable(fgTrack, android.view.Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL)
+        val layers = object : android.graphics.drawable.LayerDrawable(arrayOf(bgTrack, clip)) {
+            override fun onBoundsChange(bounds: Rect) {
+                val cy = bounds.centerY()
+                val top = cy - trackHeight / 2
+                val bottom = top + trackHeight
+                val inset = Rect(bounds.left, top, bounds.right, bottom)
+                getDrawable(0).bounds = inset
+                getDrawable(1).bounds = inset
+            }
+        }.apply {
+            setId(0, android.R.id.background)
+            setId(1, android.R.id.progress)
+        }
+        slider.progressDrawable = layers
+        slider.thumb = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(color); setSize(dp(12), dp(12)) }
+        slider.thumbOffset = dp(6)
+        slider.setPadding(dp(6), 0, dp(6), 0)
+        slider.progressTintList = null; slider.progressBackgroundTintList = null
+        slider.progressDrawable.level = (slider.progress.toLong() * 10000 / slider.max.coerceAtLeast(1)).toInt()
+    }
+    fun pillShape(color: Int, radiusDp: Int = 24) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radiusDp).toFloat() }
+    fun pillRipple(color: Int, radiusDp: Int = 24): Drawable = RippleDrawable(ColorStateList.valueOf(0x28000000), pillShape(color, radiusDp), pillShape(Color.WHITE, radiusDp))
     fun ripple(color: Int, radius: Int = 14): Drawable = RippleDrawable(ColorStateList.valueOf(0x28FFFFFF), shape(color, radius), shape(Color.WHITE, radius))
     // Raster icons follow the same path already used by the navigation bar on MIUI.
     fun symbol(name: String, color: Int = text, size: Int = 18): Drawable {

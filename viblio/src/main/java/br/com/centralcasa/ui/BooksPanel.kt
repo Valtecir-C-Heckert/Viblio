@@ -551,7 +551,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         if(baseUi.rectilinear){
             val book=backgroundBook() ?: return baseUi.shape(baseUi.background,0)
             val color=detailBackgroundColor() ?: baseUi.background
-            return if(book.cover.isNotBlank() && images.file(book.cover)!=null)images.background(book.copy(background="cover")) else baseUi.shape(color,0)
+            return if(book.cover.isNotBlank() && images.file(book.cover)!=null)images.background(book.copy(background="cover"), atmospheric = true, baseColor = color) else baseUi.shape(color,0)
         }
         if (screen == "library") {
             val color = shelfThemeColor() ?: return if(spineMode())ui.shape(ui.background,0) else null
@@ -2060,9 +2060,27 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             }
         })
     }
-    /** Editorial "Galeria" style (Direction C) — toggleable test view for Livro atual. */
+    /** Editorial "Galeria" style (Direction C) — pixel-faithful to the approved mockup. */
     private fun detailGallery(parent: LinearLayout, b: LibraryBook) {
         val accent = readingAccent(b)
+        fun galleryText(
+            value: CharSequence,
+            sp: Float,
+            color: Int,
+            serif: Boolean = false,
+            medium: Boolean = false,
+        ) = TextView(activity).apply {
+            text = value
+            textSize = sp
+            setTextColor(color)
+            includeFontPadding = false
+            typeface = when {
+                serif -> Typeface.create("serif", Typeface.NORMAL)
+                medium -> Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                else -> Typeface.create("sans-serif", Typeface.NORMAL)
+            }
+        }
+
         val header = row(parent)
         ui.action(header, "") { show(if (selectedCollection != null) "collection" else "library") }.apply {
             setCompoundDrawables(ui.symbol("back"), null, null, null)
@@ -2078,9 +2096,13 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             background = ui.ripple(Color.TRANSPARENT)
         }
 
-        val hero = ui.column().apply { gravity = Gravity.CENTER_HORIZONTAL; setPadding(0, ui.dp(8), 0, ui.dp(18)) }
+        // Hero: protagonist 2:3 cover + clean serif identity.
+        val hero = ui.column().apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, ui.dp(6), 0, ui.dp(20))
+        }
         parent.addView(hero, LinearLayout.LayoutParams(-1, -2))
-        val width = (detailCoverWidth() + 14).coerceAtMost(224)
+        val width = detailCoverWidth().coerceIn(150, 178)
         cover(hero, b, width, width * 3 / 2)
         val coverView = hero.getChildAt(0)
         if (catalog != null) coverView.apply {
@@ -2088,68 +2110,75 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             setOnLongClickListener { personalCover(b); true }
         }
         (coverView.layoutParams as LinearLayout.LayoutParams).apply {
-            marginEnd = 0; gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = ui.dp(16)
+            marginEnd = 0; gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = ui.dp(14)
         }
-        coverView.background = android.graphics.drawable.GradientDrawable().apply {
-            setColor(ui.activeSurface)
-            cornerRadius = ui.dp(6).toFloat()
-        }
+        coverView.background = ui.pillShape(ui.activeSurface, 6)
         coverView.clipToOutline = true
         coverView.elevation = ui.dp(14).toFloat()
         (coverView as? ImageView)?.scaleType = ImageView.ScaleType.CENTER_CROP
 
-        ui.label(hero, b.title, 24, ui.text).apply {
-            typeface = Typeface.create("serif", Typeface.NORMAL)
-            gravity = Gravity.CENTER
-            (layoutParams as LinearLayout.LayoutParams).apply { topMargin = 0; bottomMargin = ui.dp(4) }
-        }
+        hero.addView(
+            galleryText(b.title, 25f, Color.WHITE, serif = true).apply {
+                gravity = Gravity.CENTER
+                setLineSpacing(0f, 1.08f)
+            },
+            LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(5) },
+        )
         val metaLine = listOf(b.author, b.publisher, b.genre).map { it.trim() }.filter { it.isNotBlank() }.joinToString(" · ")
         if (metaLine.isNotBlank()) {
-            ui.label(hero, metaLine, 12, ui.muted).apply {
-                gravity = Gravity.CENTER
-                maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
-                (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(3)
-            }
+            hero.addView(
+                galleryText(metaLine, 12f, ui.muted).apply {
+                    gravity = Gravity.CENTER
+                    maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+                },
+                LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(3) },
+            )
         }
         if (b.saga.isNotBlank()) {
             val sagaLabel = b.saga + (b.sequenceNumber?.let { if (b.kind == "book" && b.collectionId.isBlank()) " · Livro $it" else " · Vol. $it" } ?: "")
-            ui.label(hero, sagaLabel, 11, accent).apply {
-                gravity = Gravity.CENTER
-                (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
-            }
+            hero.addView(
+                galleryText(sagaLabel, 11f, Color.argb(180, Color.red(ui.muted), Color.green(ui.muted), Color.blue(ui.muted))).apply {
+                    gravity = Gravity.CENTER
+                },
+                LinearLayout.LayoutParams(-1, -2),
+            )
         }
 
+        // Unified translucent reading card (rgba(255,255,255,0.055) == 0x0EFFFFFF, rounded 16dp).
         val unifiedCard = ui.column().apply {
             tag = "gallery-reading-card"
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(0x16FFFFFF)
-                cornerRadius = ui.dp(16).toFloat()
-            }
-            setPadding(ui.dp(16), ui.dp(15), ui.dp(16), ui.dp(15))
+            background = ui.pillShape(0x0EFFFFFF, 16)
+            setPadding(ui.dp(16), ui.dp(16), ui.dp(16), ui.dp(16))
         }
-        parent.addView(unifiedCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(20) })
+        parent.addView(unifiedCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(22) })
 
         if (!b.pagesKnown) {
-            ui.label(unifiedCard, if (b.complete) "Volume lido" else "Ainda não lido", 20, ui.text).apply {
-                typeface = Typeface.create("serif", Typeface.NORMAL)
-                (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(4)
+            unifiedCard.addView(
+                galleryText(if (b.complete) "Volume lido" else "Ainda não lido", 19f, Color.WHITE, serif = true),
+                LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(4) },
+            )
+            unifiedCard.addView(
+                galleryText("Total de páginas não informado.", 12f, ui.muted),
+                LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(14) },
+            )
+            val actions = ui.row()
+            unifiedCard.addView(actions, LinearLayout.LayoutParams(-1, -2))
+            val primaryBtn = galleryText(if (b.complete) "Marcar não lido" else "Marcar lido", 12f, 0xFF0B1014.toInt(), medium = true).apply {
+                gravity = Gravity.CENTER
+                background = ui.pillRipple(Color.WHITE, 24)
+                setPadding(ui.dp(18), ui.dp(10), ui.dp(18), ui.dp(10))
+                isFocusable = true
+                setOnClickListener { repository.markVolumeRead(b.id, !b.complete); changed() }
             }
-            ui.label(unifiedCard, "Total de páginas não informado.", 12, ui.muted).apply {
-                (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(12)
+            actions.addView(primaryBtn, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(10) })
+            val editBtn = galleryText("Informar páginas", 12f, Color.WHITE).apply {
+                gravity = Gravity.CENTER
+                background = ui.pillRipple(0x18FFFFFF, 24)
+                setPadding(ui.dp(14), ui.dp(10), ui.dp(14), ui.dp(10))
+                isFocusable = true
+                setOnClickListener { fields.clear(); editor = b; newBook = false; show("editor") }
             }
-            val actions = row(unifiedCard)
-            ui.action(actions, if (b.complete) "Marcar não lido" else "Marcar lido", primary = true) {
-                repository.markVolumeRead(b.id, !b.complete); changed()
-            }.apply {
-                background = ui.ripple(accent, 22); setTextColor(ui.background); textSize = 12f
-                minHeight = ui.dp(42); setPadding(ui.dp(16), ui.dp(6), ui.dp(16), ui.dp(6))
-                layoutParams = LinearLayout.LayoutParams(-2, ui.dp(42)).apply { marginEnd = ui.dp(10) }
-            }
-            ui.action(actions, "Informar páginas") { fields.clear(); editor = b; newBook = false; show("editor") }.apply {
-                background = ui.ripple(0x18FFFFFF, 22); setTextColor(ui.text); textSize = 12f
-                minHeight = ui.dp(42); setPadding(ui.dp(14), ui.dp(6), ui.dp(14), ui.dp(6))
-                layoutParams = LinearLayout.LayoutParams(-2, ui.dp(42))
-            }
+            actions.addView(editBtn, LinearLayout.LayoutParams(-2, -2))
             collectionHistory(parent, b, listOf(b))
             return
         }
@@ -2157,164 +2186,217 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         val records = repository.sessions(b.id)
         val summary = ReadingSummary.from(records)
         fun shownPercent(page: Int) = if (page == b.totalPages) 100 else Math.round(page * 100f / b.totalPages).coerceIn(0, 99)
+        fun formatPagesSpan(page: Int): CharSequence {
+            val lead = page.toString()
+            val tail = " de ${b.totalPages} págs"
+            return android.text.SpannableStringBuilder(lead + tail).apply {
+                setSpan(android.text.style.ForegroundColorSpan(Color.WHITE), 0, lead.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(android.text.style.RelativeSizeSpan(1.15f), 0, lead.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(android.text.style.ForegroundColorSpan(ui.muted), lead.length, lead.length + tail.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
 
-        val topNumbers = row(unifiedCard)
-        val pagesLabel = ui.label(topNumbers, "${b.currentPage} de ${b.totalPages} págs", 13, ui.text).apply {
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-        }
-        val percentLabel = ui.label(topNumbers, "${shownPercent(b.currentPage)}%", 14, accent, bold = true).apply {
-            layoutParams = LinearLayout.LayoutParams(-2, -2)
-        }
+        // Side-by-side layout: progress stack on left, single white/accent pill button on right.
+        val mainRow = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        unifiedCard.addView(mainRow, LinearLayout.LayoutParams(-1, -2))
+
+        val progressCol = ui.column()
+        mainRow.addView(progressCol, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(14) })
+
+        val topNums = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        progressCol.addView(topNums, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(6) })
+        val pagesLabel = galleryText(formatPagesSpan(b.currentPage), 12f, ui.muted, medium = true)
+        topNums.addView(pagesLabel, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(6) })
+        val percentLabel = galleryText("${shownPercent(b.currentPage)}%", 12f, accent, medium = true)
+        topNums.addView(percentLabel, LinearLayout.LayoutParams(-2, -2))
 
         val slider = SeekBar(activity).apply {
             max = b.totalPages; progress = b.currentPage
             contentDescription = "Página atual de ${b.title}"
-            progressTintList = android.content.res.ColorStateList.valueOf(accent)
-            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(0x33FFFFFF)
-            thumbTintList = android.content.res.ColorStateList.valueOf(accent)
-            setPadding(0, 0, 0, 0)
         }
-        ui.styleSlider(slider, color = accent)
-        unifiedCard.addView(slider, LinearLayout.LayoutParams(-1, ui.dp(26)).apply { topMargin = ui.dp(6); bottomMargin = ui.dp(6) })
+        ui.styleGallerySlider(slider, accent)
+        progressCol.addView(slider, LinearLayout.LayoutParams(-1, ui.dp(20)).apply { bottomMargin = ui.dp(5) })
 
-        val bottomRow = row(unifiedCard).apply { gravity = Gravity.CENTER_VERTICAL }
-        val metaCol = ui.column()
-        bottomRow.addView(metaCol, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(12) })
-        val remainingLabel = ui.label(metaCol, if (b.complete) "Leitura concluída" else "Faltam ${b.totalPages - b.currentPage} páginas", 12, ui.muted).apply {
-            (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(2)
-        }
-        val rhythmText = when {
-            records.isEmpty() -> "Arraste a barra ou inicie a leitura"
-            summary.millisPerPage != null -> "${compactReadingTime(summary.durationMs)} · ${readingPace(summary.millisPerPage)}"
-            else -> "${compactReadingTime(summary.durationMs)} de leitura"
-        }
-        ui.label(metaCol, rhythmText, 11, ui.muted).apply {
+        val footerNums = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        progressCol.addView(footerNums, LinearLayout.LayoutParams(-1, -2))
+        val remainingLabel = galleryText(
+            if (b.complete) "Concluído" else "Faltam ${b.totalPages - b.currentPage} páginas",
+            10.5f, ui.muted,
+        ).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+        footerNums.addView(remainingLabel, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) })
+        val totalStr = if (records.isEmpty()) "0 min" else "Total: ${compactReadingTime(summary.durationMs)}"
+        val totalLabel = galleryText(totalStr, 10.5f, ui.muted).apply {
             tag = "book-reading-total"
-            maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
-            (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
+            maxLines = 1
         }
+        footerNums.addView(totalLabel, LinearLayout.LayoutParams(-2, -2))
 
         val d = repository.draft()
         val ownSession = d?.bookId == b.id
-        fun pillButton(label: String, iconName: String?, filled: Boolean = true, onClick: () -> Unit) {
-            ui.action(bottomRow, label, onClick = onClick).apply {
-                minHeight = ui.dp(42); textSize = 12f
-                setTextColor(if (filled) ui.background else accent)
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                setPadding(ui.dp(16), ui.dp(6), ui.dp(16), ui.dp(6))
-                background = ui.ripple(if (filled) accent else 0x22FFFFFF, 22)
-                if (iconName != null) {
-                    setCompoundDrawables(ui.symbol(iconName, if (filled) ui.background else accent, 14), null, null, null)
-                    compoundDrawablePadding = ui.dp(6)
-                }
-                layoutParams = LinearLayout.LayoutParams(-2, ui.dp(42))
+        fun pillAction(label: String, bgColor: Int, txtColor: Int, onClick: () -> Unit) {
+            val btn = galleryText(label, 12f, txtColor, medium = true).apply {
+                gravity = Gravity.CENTER
+                minWidth = ui.dp(64)
+                minHeight = ui.dp(38)
+                setPadding(ui.dp(18), ui.dp(10), ui.dp(18), ui.dp(10))
+                background = ui.pillRipple(bgColor, 24)
+                contentDescription = label
+                isFocusable = true
+                setOnClickListener { onClick() }
             }
+            mainRow.addView(btn, LinearLayout.LayoutParams(-2, -2))
         }
         when {
-            d != null && !ownSession -> pillButton("Abrir leitura", "book_nav") { open(d.bookId) }
-            ownSession -> pillButton(
-                if (d!!.runningSince != null) "Pausar" else "Continuar",
-                if (d.runningSince != null) "pause" else "play"
-            ) {
-                attempt {
-                    if (d.runningSince != null) pauseAndSaveReading(b) else { repository.start(b.id); changed() }
-                }
-            }
-            !b.complete -> pillButton("Ler", "play") { attempt { repository.start(b.id); changed() } }
-            else -> pillButton("Concluído", null, filled = false) { toast("Leitura concluída") }
+            d != null && !ownSession -> pillAction("Abrir", Color.WHITE, 0xFF0B1014.toInt()) { open(d.bookId) }
+            ownSession && d!!.runningSince != null -> pillAction("Pausar", accent, 0xFF0B1014.toInt()) { attempt { pauseAndSaveReading(b) } }
+            ownSession -> pillAction("Continuar", Color.WHITE, 0xFF0B1014.toInt()) { attempt { repository.start(b.id); changed() } }
+            !b.complete -> pillAction("Ler", Color.WHITE, 0xFF0B1014.toInt()) { attempt { repository.start(b.id); changed() } }
+            else -> pillAction("Concluído", 0x18FFFFFF, accent) { toast("Leitura concluída") }
         }
 
         fun preview(page: Int) {
-            pagesLabel.text = "$page de ${b.totalPages} págs"
+            pagesLabel.text = formatPagesSpan(page)
             percentLabel.text = "${shownPercent(page)}%"
-            remainingLabel.text = if (page >= b.totalPages) "Leitura concluída" else "Faltam ${b.totalPages - page} páginas"
+            remainingLabel.text = if (page >= b.totalPages) "Concluído" else "Faltam ${b.totalPages - page} páginas"
         }
         bindDetailProgressSlider(slider, b, ::preview)
 
         if (ownSession) {
-            unifiedCard.addView(View(activity).apply { setBackgroundColor(0x18FFFFFF) }, LinearLayout.LayoutParams(-1, 1).apply { topMargin = ui.dp(12); bottomMargin = ui.dp(10) })
+            unifiedCard.addView(
+                View(activity).apply { setBackgroundColor(0x12FFFFFF) },
+                LinearLayout.LayoutParams(-1, 1).apply { topMargin = ui.dp(12); bottomMargin = ui.dp(10) },
+            )
             timerBookId = b.id
-            val liveRow = row(unifiedCard).apply { gravity = Gravity.CENTER_VERTICAL }
-            timerLabel = ui.label(liveRow, readingTime(repository.elapsed(d!!)), 28, accent).apply {
-                typeface = Typeface.create("serif", Typeface.NORMAL)
-                fontFeatureSettings = "tnum"; maxLines = 1
-                layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            val liveRow = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+            unifiedCard.addView(liveRow, LinearLayout.LayoutParams(-1, -2))
+            liveRow.addView(
+                galleryText(if (d!!.runningSince != null) "Sessão em andamento" else "Sessão pausada", 12f, accent).apply {
+                    tag = "reading-status"
+                },
+                LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) },
+            )
+            timerLabel = galleryText(readingTime(repository.elapsed(d)), 13f, Color.WHITE, medium = true).apply {
+                typeface = Typeface.MONOSPACE
+                fontFeatureSettings = "tnum"
+                maxLines = 1
             }
-            val status = if (d.runningSince != null) "● Lendo" else "● Pausado"
-            ui.label(liveRow, status, 10, accent).apply {
-                tag = "reading-status"
-                setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
-                background = android.graphics.drawable.GradientDrawable().apply { setColor(0x22FFFFFF); cornerRadius = ui.dp(12).toFloat() }
-                layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) }
-            }
-            ui.action(liveRow, "Concluir") { concludeBook(b) }.apply {
-                textSize = 11f; setTextColor(ui.text); minHeight = ui.dp(36)
-                background = ui.ripple(Color.TRANSPARENT, 8)
-                setPadding(ui.dp(8), 0, ui.dp(4), 0)
-                layoutParams = LinearLayout.LayoutParams(-2, ui.dp(36))
-            }
+            liveRow.addView(timerLabel, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(10) })
+            liveRow.addView(
+                galleryText("Concluir", 11f, ui.muted, medium = true).apply {
+                    setPadding(ui.dp(6), ui.dp(4), ui.dp(2), ui.dp(4))
+                    isFocusable = true
+                    setOnClickListener { concludeBook(b) }
+                },
+                LinearLayout.LayoutParams(-2, -2),
+            )
         } else if (d != null) {
-            unifiedCard.addView(View(activity).apply { setBackgroundColor(0x18FFFFFF) }, LinearLayout.LayoutParams(-1, 1).apply { topMargin = ui.dp(10); bottomMargin = ui.dp(8) })
-            ui.label(unifiedCard, "Sessão ativa em outro livro · toque em Abrir leitura para pausar.", 11, ui.muted).apply {
-                (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
-            }
+            unifiedCard.addView(
+                View(activity).apply { setBackgroundColor(0x12FFFFFF) },
+                LinearLayout.LayoutParams(-1, 1).apply { topMargin = ui.dp(12); bottomMargin = ui.dp(10) },
+            )
+            unifiedCard.addView(
+                galleryText("Sessão ativa em outro livro · toque em Abrir para pausar", 11f, ui.muted),
+                LinearLayout.LayoutParams(-1, -2),
+            )
         }
 
-        // Borderless editorial session history directly below the unified card.
+        // Borderless editorial session history (compact 2-line rows, zero phantom gaps).
         val manualDates = repository.dates(b.id)
         val grouped = records.groupBy { it.readingDay ?: ReadingDays.at(it.startedAt) }
         val days = (grouped.keys + manualDates.map { it.day }).distinct().sortedDescending()
+        val todayKey = ReadingDays.at(System.currentTimeMillis())
+        val yesterdayKey = ReadingDays.at(System.currentTimeMillis() - 86400000L)
+
         val history = ui.column().apply { tag = "book-history" }
         parent.addView(history, LinearLayout.LayoutParams(-1, -2))
-        val histHeader = row(history).apply { gravity = Gravity.CENTER_VERTICAL }
-        ui.label(histHeader, "Sessões recentes", 19, ui.text).apply {
-            typeface = Typeface.create("serif", Typeface.NORMAL)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+
+        val histHeader = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        history.addView(histHeader, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(6) })
+        histHeader.addView(
+            galleryText("Sessões recentes", 16f, 0xF2FFFFFF.toInt(), serif = true),
+            LinearLayout.LayoutParams(0, -2, 1f),
+        )
+        histHeader.addView(
+            galleryText("+ Data", 11f, ui.muted).apply {
+                setPadding(ui.dp(6), ui.dp(4), ui.dp(6), ui.dp(4))
+                contentDescription = "Adicionar datas de leitura"
+                isFocusable = true
+                setOnClickListener { datesEditor.show(b) }
+            },
+            LinearLayout.LayoutParams(-2, -2),
+        )
+        if (days.size > shownSessions) {
+            histHeader.addView(
+                galleryText("Ver todas", 11f, ui.muted).apply {
+                    setPadding(ui.dp(6), ui.dp(4), 0, ui.dp(4))
+                    isFocusable = true
+                    setOnClickListener { shownSessions = days.size; changed() }
+                },
+                LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(4) },
+            )
         }
-        if (days.isNotEmpty()) {
-            ui.label(histHeader, "${days.size} dias", 11, ui.muted).apply {
-                layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) }
-            }
-        }
-        ui.icon(histHeader, "plus", "Adicionar datas de leitura", 40) { datesEditor.show(b) }
+
         if (days.isEmpty()) {
-            ui.label(history, "Ainda sem leituras registradas.", 12, ui.muted).apply {
-                (layoutParams as LinearLayout.LayoutParams).topMargin = ui.dp(4)
-            }
+            history.addView(
+                galleryText("Ainda sem sessões registradas.", 12f, ui.muted),
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(4) },
+            )
         } else {
             val shown = days.take(shownSessions)
             shown.forEachIndexed { idx, day ->
                 val sessions = grouped[day].orEmpty()
                 val manual = manualDates.filter { it.day == day }
-                val dayRow = row(history).apply {
+                val dayName = when (day) {
+                    todayKey -> "Hoje"
+                    yesterdayKey -> "Ontem"
+                    else -> ReadingDays.label(day)
+                }
+                val totalMs = sessions.sumOf { it.durationMs }
+                val dayPages = sessions.sumOf { it.pages }
+                val line1 = if (totalMs > 0L) "$dayName · ${compactReadingTime(totalMs)}" else dayName
+                val line2 = if (sessions.isNotEmpty()) {
+                    val startP = sessions.minOf { it.startPage }
+                    val endP = sessions.maxOf { it.endPage }
+                    if (endP > startP) "Página $startP → $endP" else "Página $endP"
+                } else {
+                    "Data informada por você"
+                }
+
+                val dayRow = ui.row().apply {
                     tag = "reading-history-day"
                     gravity = Gravity.CENTER_VERTICAL
-                    setPadding(ui.dp(2), ui.dp(11), ui.dp(2), ui.dp(11))
+                    setPadding(0, ui.dp(10), 0, ui.dp(10))
                     isFocusable = true
                     setOnClickListener { datesEditor.editDay(day, sessions, manual) }
                 }
-                ui.label(dayRow, ReadingDays.label(day), 13, ui.text).apply {
-                    layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(10) }
+                history.addView(dayRow, LinearLayout.LayoutParams(-1, -2))
+
+                val leftCol = ui.column()
+                dayRow.addView(leftCol, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(12) })
+                leftCol.addView(
+                    galleryText(line1, 12.5f, 0xE6FFFFFF.toInt()),
+                    LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(2) },
+                )
+                leftCol.addView(
+                    galleryText(line2, 11f, ui.muted),
+                    LinearLayout.LayoutParams(-1, -2),
+                )
+
+                val rightLabel = when {
+                    dayPages > 0 -> "+$dayPages págs"
+                    sessions.isNotEmpty() -> compactReadingTime(totalMs)
+                    else -> "✓"
                 }
-                val summaryStr = if (sessions.isNotEmpty()) {
-                    val daily = ReadingSummary.from(sessions)
-                    "${sessions.sumOf { it.pages }} págs · ${compactReadingTime(daily.durationMs)}"
-                } else {
-                    "Data registrada"
-                }
-                ui.label(dayRow, summaryStr, 12, accent).apply {
-                    maxLines = 1
-                    (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
-                }
+                dayRow.addView(
+                    galleryText(rightLabel, 12f, accent, medium = true).apply { maxLines = 1 },
+                    LinearLayout.LayoutParams(-2, -2),
+                )
+
                 if (idx < shown.lastIndex) {
-                    history.addView(View(activity).apply { setBackgroundColor(0x16FFFFFF) }, LinearLayout.LayoutParams(-1, 1))
-                }
-            }
-            if (days.size > shownSessions) {
-                ui.action(history, "Ver mais dias") { shownSessions += 4; changed() }.apply {
-                    background = ui.ripple(Color.TRANSPARENT, 8)
-                    setTextColor(accent); textSize = 12f; gravity = Gravity.START
+                    history.addView(
+                        View(activity).apply { setBackgroundColor(0x10FFFFFF) },
+                        LinearLayout.LayoutParams(-1, 1),
+                    )
                 }
             }
         }

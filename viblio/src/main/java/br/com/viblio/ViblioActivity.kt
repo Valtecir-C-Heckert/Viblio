@@ -9,6 +9,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.view.Gravity
 import android.widget.ImageView
+import android.widget.ProgressBar
 import br.com.viblio.ui.SearchPanel
 import br.com.viblio.ui.AccountPanel
 import br.com.centralcasa.R
@@ -81,6 +82,26 @@ class ViblioActivity : Activity() {
         private var introPlayed = false
     }
     private var introView: br.com.viblio.ui.ViblioIntroView? = null
+    private lateinit var pullBadge: FrameLayout
+    private lateinit var pullIcon: ImageView
+    private lateinit var pullSpinner: ProgressBar
+    private var pullSpinning = false
+    private val pullTimeout = Runnable { stopPullSpinner() }
+
+    private fun stopPullSpinner() {
+        pullSpinning = false
+        if (::pullBadge.isInitialized) {
+            pullBadge.animate().translationY(-ui.dp(48).toFloat()).alpha(0f).setDuration(160).withEndAction {
+                if (!pullSpinning) pullBadge.visibility = android.view.View.GONE
+            }.start()
+        }
+    }
+
+    private fun updatePullTheme(theme: DisplayUi) {
+        if (!::pullBadge.isInitialized) return
+        pullIcon.setImageDrawable(theme.symbol("refresh", theme.accent, 18))
+        pullSpinner.indeterminateTintList = android.content.res.ColorStateList.valueOf(theme.accent)
+    }
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
@@ -110,9 +131,76 @@ class ViblioActivity : Activity() {
             clipToPadding = false
             addView(content, FrameLayout.LayoutParams(-1, -2))
         }
+        pullIcon = ImageView(this).apply {
+            setImageDrawable(ui.symbol("refresh", ui.accent, 18))
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        pullSpinner = ProgressBar(this, null, android.R.attr.progressBarStyleSmall).apply {
+            isIndeterminate = true
+            indeterminateTintList = android.content.res.ColorStateList.valueOf(ui.accent)
+            visibility = android.view.View.GONE
+            contentDescription = "Atualizando"
+        }
+        pullBadge = FrameLayout(this).apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(0xEB14181E.toInt())
+                setStroke(ui.dp(1).coerceAtLeast(1), 0x26FFFFFF)
+            }
+            elevation = ui.dp(8).toFloat()
+            visibility = android.view.View.GONE
+            alpha = 0f
+            translationY = -ui.dp(48).toFloat()
+            addView(pullIcon, FrameLayout.LayoutParams(ui.dp(20), ui.dp(20), Gravity.CENTER))
+            addView(pullSpinner, FrameLayout.LayoutParams(ui.dp(20), ui.dp(20), Gravity.CENTER))
+        }
+        val scrollHost = FrameLayout(this).apply {
+            addView(scroll, FrameLayout.LayoutParams(-1, -1))
+            addView(pullBadge, FrameLayout.LayoutParams(ui.dp(38), ui.dp(38), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+        }
+        scroll.canPullRefresh = {
+            !pullSpinning && !needsLogin() && (tab == "friends" || (tab == "shelf" && accounts.signedIn && !library.isEditor))
+        }
+        scroll.onPullProgress = { progress, dragging ->
+            if (!pullSpinning) {
+                if (dragging && progress > 0.04f) {
+                    pullBadge.animate().cancel()
+                    pullBadge.visibility = android.view.View.VISIBLE
+                    pullIcon.visibility = android.view.View.VISIBLE
+                    pullSpinner.visibility = android.view.View.GONE
+                    pullBadge.alpha = (progress * 1.4f).coerceIn(0f, 1f)
+                    pullBadge.translationY = -ui.dp(32) + progress.coerceAtMost(1.3f) * ui.dp(52)
+                    pullIcon.rotation = progress * 240f
+                    val scale = if (progress >= 1f) 1.08f else 0.9f + progress * 0.1f
+                    pullBadge.scaleX = scale; pullBadge.scaleY = scale
+                } else if (!dragging) {
+                    stopPullSpinner()
+                }
+            }
+        }
+        scroll.onPullRefresh = {
+            pullSpinning = true
+            pullBadge.animate().cancel()
+            pullBadge.visibility = android.view.View.VISIBLE
+            pullIcon.visibility = android.view.View.GONE
+            pullSpinner.visibility = android.view.View.VISIBLE
+            pullBadge.scaleX = 1f; pullBadge.scaleY = 1f
+            pullBadge.animate().translationY(ui.dp(14).toFloat()).alpha(1f).setDuration(140).start()
+            root.removeCallbacks(pullTimeout)
+            if (tab == "friends") {
+                friends.triggerRefresh()
+                root.postDelayed(pullTimeout, 10000L)
+            } else if (tab == "shelf" && accounts.signedIn) {
+                accounts.syncSilently()
+                root.postDelayed(pullTimeout, 900L)
+            } else {
+                stopPullSpinner()
+            }
+        }
         val host=ui.column()
         root.addView(host,FrameLayout.LayoutParams(-1,-1))
-        host.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
+        host.addView(scrollHost,LinearLayout.LayoutParams(-1,0,1f))
         composerDock=FrameLayout(this).apply { visibility=android.view.View.GONE }
         host.addView(composerDock,LinearLayout.LayoutParams(-1,-2))
         navigation=ui.row().apply { setPadding(ui.dp(12),ui.dp(6),ui.dp(12),ui.dp(6));background=ui.shape(ui.background,0) }
@@ -308,6 +396,10 @@ class ViblioActivity : Activity() {
         navigation.visibility=if(hideNav)android.view.View.GONE else android.view.View.VISIBLE
         val navUi=if(tab=="friends")friends.displayTheme else if(tab=="shelf" && library.isEditor)library.displayTheme() else ui
         applyBackground(navUi)
+        updatePullTheme(navUi)
+        if (pullSpinning && (tab != "friends" || !friends.isRefreshing)) {
+            if (tab == "friends") { root.removeCallbacks(pullTimeout); stopPullSpinner() }
+        }
         scroll.pinchStep=1.4
         scroll.moveBook = if(tab=="shelf" && (library.isDetail || library.isCollection)) library::moveBook else null
         scroll.pinchColumns = when {tab=="shelf" && (library.isShelf || library.isCollection)->library::pinchColumns;tab=="friends"->friends::pinchColumns;else->null}
@@ -391,7 +483,7 @@ class ViblioActivity : Activity() {
     override fun onStart() { super.onStart();suppressIconSwitch=false;stopped=false;accounts.start();homeAssistant.start();started=true;if(tab=="shelf" && !needsLogin()) library.onStart();catalog.retry();if(br.com.viblio.reminder.ReadingReminder.isEnabled(this)) br.com.viblio.reminder.ReadingReminder.scheduleNext(this);if(needsRender)render() }
     override fun onStop() { stopped=true;accounts.stop();homeAssistant.stop();started=false;library.onStop();if(tab=="search") search.hide();if(tab=="friends")friends.hide();refreshWidgetsAsync(captureLastBook=true);super.onStop() }
     override fun onResume() { super.onResume();if(tab=="search" || tab=="friends") render() }
-    override fun onDestroy() { introView?.cancel();introView=null;navigationCovers.shutdownNow();accounts.close();homeAssistant.close();search.close();catalog.close();friends.close();statistics?.onDestroy();library.onDestroy();super.onDestroy() }
+    override fun onDestroy() { root.removeCallbacks(pullTimeout);introView?.cancel();introView=null;navigationCovers.shutdownNow();accounts.close();homeAssistant.close();search.close();catalog.close();friends.close();statistics?.onDestroy();library.onDestroy();super.onDestroy() }
     override fun onSaveInstanceState(outState:Bundle) {
         outState.putString("scan.target",scanTarget);outState.putString("scan.profile",scanProfile);outState.putString("scan.editor",scanEditor)
         outState.putBoolean("viblio.offline",offline)
