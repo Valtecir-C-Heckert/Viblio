@@ -352,20 +352,20 @@ class Viblio070FeaturesTest {
         val unknownBook = LibraryBook(id = "p4", title = "Sem páginas", totalPages = 0, pagesKnown = false)
         val books = listOf(unknownBook, longBook, shortBook, midBook)
 
-        val asc = ShelfFilters(order = listOf(ShelfOrder(ShelfField.PAGES, descending = false))).apply(books)
+        val asc = ShelfFilters(order = listOf(ShelfOrder(ShelfField.PAGES, descending = false))).select(books, null)
         assertEquals(listOf("p1", "p2", "p3", "p4"), asc.map { it.id })
 
-        val desc = ShelfFilters(order = listOf(ShelfOrder(ShelfField.PAGES, descending = true))).apply(books)
+        val desc = ShelfFilters(order = listOf(ShelfOrder(ShelfField.PAGES, descending = true))).select(books, null)
         assertEquals(listOf("p3", "p2", "p1", "p4"), desc.map { it.id })
 
-        val bySortLow = ShelfFilters(sort = ShelfSort.PAGES_LOW).apply(books)
+        val bySortLow = ShelfFilters(sort = ShelfSort.PAGES_LOW).select(books, null)
         assertEquals(listOf("p1", "p2", "p3", "p4"), bySortLow.map { it.id })
 
-        val bySortHigh = ShelfFilters(sort = ShelfSort.PAGES_HIGH).apply(books)
+        val bySortHigh = ShelfFilters(sort = ShelfSort.PAGES_HIGH).select(books, null)
         assertEquals(listOf("p3", "p2", "p1", "p4"), bySortHigh.map { it.id })
 
         // Quick Z-A alphabetical order.
-        val za = ShelfFilters(order = listOf(ShelfOrder(ShelfField.TITLE, descending = true))).apply(listOf(shortBook, midBook, longBook))
+        val za = ShelfFilters(order = listOf(ShelfOrder(ShelfField.TITLE, descending = true))).select(listOf(shortBook, midBook, longBook), null)
         assertEquals(listOf("Romance", "Épico", "Conto"), za.map { it.title })
     }
 }
