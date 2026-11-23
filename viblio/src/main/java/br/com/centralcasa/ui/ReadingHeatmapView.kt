@@ -23,27 +23,28 @@ class ReadingHeatmapView(
     private val accentColor: Int,
     private val todayDay: String,
     private var selectedDay: String?,
+    private val bulletJournal: Boolean = false,
     private val onDaySelected: (String) -> Unit,
 ) : View(context) {
     private val weekdays = arrayOf("D", "S", "T", "Q", "Q", "S", "S")
-    private val gapPx = ui.dp(5).toFloat()
+    private val gapPx = ui.dp(if (bulletJournal) 4 else 5).toFloat()
     private val headerH = ui.dp(20).toFloat()
     private val padX = ui.dp(1).toFloat()
     private val padBottom = ui.dp(2).toFloat()
 
     private var cellSize = ui.dp(34).toFloat()
 
-    private val emptyFill = if (ui.rectilinear) 0xFF1E1D1B.toInt() else 0xFF1B2922.toInt()
-    private val emptyBorder = if (ui.rectilinear) 0xFF2B2926.toInt() else 0xFF293B31.toInt()
+    private val emptyFill = if (bulletJournal) Color.TRANSPARENT else if (ui.rectilinear) ui.background else 0xFF1B2922.toInt()
+    private val emptyBorder = if (ui.rectilinear) ui.galleryHairline(115) else 0xFF293B31.toInt()
     private val levelColors = intArrayOf(
         emptyFill,
-        Color.argb(82, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor)),
-        Color.argb(165, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor)),
+        ui.tint(accentColor, if (bulletJournal) 66 else 82),
+        ui.tint(accentColor, if (bulletJournal) 152 else 165),
         accentColor,
     )
-    private val darkInk = 0xFF141312.toInt()
-    private val lightInk = 0xFFF0ECE4.toInt()
-    private val mutedInk = 0xFF7D7870.toInt()
+    private val darkInk = ui.background
+    private val lightInk = ui.text
+    private val mutedInk = ui.tint(ui.muted, if (bulletJournal) 185 else 220)
 
     private val cellPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -51,13 +52,18 @@ class ReadingHeatmapView(
         strokeWidth = ui.dp(1).coerceAtLeast(1).toFloat()
         color = emptyBorder
     }
+    private val todayRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = ui.dp(1).coerceAtLeast(1).toFloat()
+        color = accentColor
+    }
     private val selPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = ui.dp(2).coerceAtLeast(2).toFloat()
         color = ui.text
     }
     private val headerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = ui.muted
+        color = ui.tint(ui.muted, 185)
         textSize = ui.dp(10).toFloat()
         textAlign = Paint.Align.CENTER
         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -72,7 +78,7 @@ class ReadingHeatmapView(
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val availW = MeasureSpec.getSize(widthMeasureSpec).coerceAtLeast(ui.dp(220))
         val usableW = (availW - padX * 2f - gapPx * 6f).coerceAtLeast(ui.dp(140).toFloat())
-        cellSize = (usableW / 7f).coerceIn(ui.dp(24).toFloat(), ui.dp(46).toFloat())
+        cellSize = (usableW / 7f).coerceIn(ui.dp(24).toFloat(), ui.dp(44).toFloat())
         val rowsCount = grid.rows.size.coerceAtLeast(4)
         val totalH = (headerH + rowsCount * cellSize + (rowsCount - 1) * gapPx + padBottom).toInt()
         setMeasuredDimension(availW, totalH)
@@ -105,31 +111,52 @@ class ReadingHeatmapView(
                 val left = ox + col * step
                 val right = left + cellSize
                 val bottom = top + cellSize
-                val lvl = summary.daysByDate[day]?.level?.coerceIn(0, 3) ?: 0
-
-                cellPaint.color = levelColors[lvl]
-                canvas.drawRect(left, top, right, bottom, cellPaint)
-                if (lvl == 0) {
-                    canvas.drawRect(left + 0.5f, top + 0.5f, right - 0.5f, bottom - 0.5f, borderPaint)
-                }
-
-                val dayNumber = day.substring(8, 10).toIntOrNull()?.toString() ?: ""
-                dayNumPaint.color = when {
-                    lvl >= 2 -> if (isLightColor(accentColor)) darkInk else lightInk
-                    lvl == 1 -> lightInk
-                    else -> mutedInk
-                }
                 val cx = left + cellSize * 0.5f
-                val cy = top + cellSize * 0.5f + textCenterOffset
-                canvas.drawText(dayNumber, cx, cy, dayNumPaint)
+                val cy = top + cellSize * 0.5f
+                val lvl = summary.daysByDate[day]?.level?.coerceIn(0, 3) ?: 0
+                val dayNumber = day.substring(8, 10).toIntOrNull()?.toString() ?: ""
 
-                if (day == todayDay) {
-                    dotPaint.color = if (lvl >= 2 && isLightColor(accentColor)) darkInk else accentColor
-                    canvas.drawCircle(cx, bottom - ui.dp(4).toFloat(), ui.dp(2).coerceAtLeast(2).toFloat(), dotPaint)
-                }
-                if (day == selectedDay) {
-                    val inset = selPaint.strokeWidth * 0.5f
-                    canvas.drawRect(left + inset, top + inset, right - inset, bottom - inset, selPaint)
+                if (bulletJournal) {
+                    val radius = cellSize * 0.41f
+                    if (lvl > 0) {
+                        cellPaint.color = levelColors[lvl]
+                        canvas.drawCircle(cx, cy, radius, cellPaint)
+                    }
+                    if (day == todayDay && day != selectedDay) {
+                        canvas.drawCircle(cx, cy, radius, todayRingPaint)
+                    }
+                    if (day == selectedDay) {
+                        canvas.drawCircle(cx, cy, radius, selPaint)
+                    }
+                    dayNumPaint.typeface = Typeface.create(if (lvl > 0 || day == todayDay) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
+                    dayNumPaint.color = when {
+                        lvl >= 2 -> if (isLightColor(accentColor)) darkInk else lightInk
+                        lvl == 1 -> lightInk
+                        day == todayDay -> accentColor
+                        else -> mutedInk
+                    }
+                    canvas.drawText(dayNumber, cx, cy + textCenterOffset, dayNumPaint)
+                } else {
+                    cellPaint.color = levelColors[lvl]
+                    canvas.drawRect(left, top, right, bottom, cellPaint)
+                    if (lvl == 0) {
+                        canvas.drawRect(left + 0.5f, top + 0.5f, right - 0.5f, bottom - 0.5f, borderPaint)
+                    }
+                    dayNumPaint.color = when {
+                        lvl >= 2 -> if (isLightColor(accentColor)) darkInk else lightInk
+                        lvl == 1 -> lightInk
+                        else -> mutedInk
+                    }
+                    canvas.drawText(dayNumber, cx, cy + textCenterOffset, dayNumPaint)
+
+                    if (day == todayDay) {
+                        dotPaint.color = if (lvl >= 2 && isLightColor(accentColor)) darkInk else accentColor
+                        canvas.drawCircle(cx, bottom - ui.dp(4).toFloat(), ui.dp(2).coerceAtLeast(2).toFloat(), dotPaint)
+                    }
+                    if (day == selectedDay) {
+                        val inset = selPaint.strokeWidth * 0.5f
+                        canvas.drawRect(left + inset, top + inset, right - inset, bottom - inset, selPaint)
+                    }
                 }
             }
         }

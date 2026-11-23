@@ -307,6 +307,12 @@ class AnnualPlanPanel(
         )
         val currentMs = summary.months[(selectedMonth - 1).coerceIn(0, 11)]
 
+        val gallery = ui.rectilinear && br.com.centralcasa.data.LocalSettings(activity).galleryUiStyle()
+        if (gallery) {
+            renderGallery(parent, plan, books, sessions, now, gp, purchaseGoalEntry, summary, currentMs)
+            return
+        }
+
         val wrap = ui.column().apply { setPadding(ui.dp(20), ui.dp(10), ui.dp(20), ui.dp(16)) }
         parent.addView(wrap)
 
@@ -797,6 +803,511 @@ class AnnualPlanPanel(
                         ).apply { layoutParams = LinearLayout.LayoutParams(-2, -2) }
                     }
                     if (pair.size == 1) sRow.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = ui.dp(6) })
+                }
+            }
+        }
+    }
+
+    private fun renderGallery(
+        parent: LinearLayout,
+        plan: AnnualReadingPlan,
+        books: List<LibraryBook>,
+        sessions: List<ReadingSession>,
+        now: Long,
+        gp: ReadingGoalsPanel,
+        purchaseGoalEntry: ReadingGoalStore.Entry?,
+        summary: YearPlanSummary,
+        currentMs: MonthPlanSummary,
+    ) {
+        val hairline = ui.galleryHairline(105)
+        fun gText(value: CharSequence, sp: Float, color: Int, serif: Boolean = false, medium: Boolean = false) = TextView(activity).apply {
+            text = value; textSize = sp; setTextColor(color); includeFontPadding = false
+            typeface = when {
+                serif -> Typeface.create("serif", Typeface.NORMAL)
+                medium -> Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                else -> Typeface.create("sans-serif", Typeface.NORMAL)
+            }
+        }
+
+        val wrap = ui.column().apply { setPadding(ui.dp(20), ui.dp(2), ui.dp(20), ui.dp(20)) }
+        parent.addView(wrap, LinearLayout.LayoutParams(-1, -2))
+
+        // 1) Quiet top utility row: [ 2026 ▾ ]  ...  Lista · Ajustar
+        val topRow = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        wrap.addView(topRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(16) })
+        topRow.addView(
+            gText("$selectedYear ▾", 20f, ui.text, serif = true).apply {
+                tag = "plan-year-picker"; isFocusable = true
+                setPadding(0, ui.dp(2), ui.dp(8), ui.dp(2))
+                setOnClickListener { pickYear() }
+            },
+            LinearLayout.LayoutParams(-2, -2),
+        )
+        topRow.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f))
+        topRow.addView(
+            gText("Lista", 12f, ui.muted, medium = true).apply {
+                tag = "plan-export-list"; isFocusable = true
+                setPadding(ui.dp(8), ui.dp(6), ui.dp(8), ui.dp(6))
+                setOnClickListener {
+                    val dlg = exportDialog ?: AnnualPlanExportDialog(activity, ui).also { exportDialog = it }
+                    dlg.show(summary)
+                }
+            },
+            LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) },
+        )
+        topRow.addView(
+            gText("Ajustar", 12f, ui.accent, medium = true).apply {
+                tag = "goal-configure"; isFocusable = true
+                setPadding(ui.dp(8), ui.dp(6), 0, ui.dp(6))
+                setOnClickListener { openGoalConfigDialog(plan, purchaseGoalEntry) }
+            },
+            LinearLayout.LayoutParams(-2, -2),
+        )
+
+        // 2) Asymmetric Yearly Hero: Fine Editorial Arc + Pace (ZERO twin boxes!)
+        val hasBooksGoal = plan.booksGoalType != BooksGoalType.NONE
+        val hasPagesGoal = plan.pagesGoalType != PagesGoalType.NONE
+
+        if (hasBooksGoal || hasPagesGoal) {
+            val heroRow = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+            wrap.addView(heroRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(22) })
+
+            val bookPct = if (summary.annualBookGoal > 0) ((summary.completedCount * 100) / summary.annualBookGoal).coerceIn(0, 100) else 0
+            val monthTarget = currentMs.monthlyPagesTarget.coerceAtLeast(1)
+            val monthPct = ((currentMs.actualPagesRead * 100) / monthTarget).coerceIn(0, 100)
+
+            val arcFrac = if (hasBooksGoal) bookPct / 100f else monthPct / 100f
+            val arcPrimary = if (hasBooksGoal) numbers.format(summary.completedCount) else "$monthPct%"
+            val arcSub = if (hasBooksGoal) "de ${numbers.format(summary.annualBookGoal)}" else AnnualPlanCalculator.shortName(selectedMonth).lowercase(Locale("pt", "BR"))
+            val arcColor = if ((hasBooksGoal && bookPct >= 100) || (!hasBooksGoal && monthPct >= 100)) colorGreen else ui.accent
+
+            val arcView = GoalArcView(activity, ui, arcFrac, arcPrimary, arcSub, arcColor).apply {
+                tag = "plan-kpi-books"
+                isFocusable = true
+                contentDescription = if (hasBooksGoal) "${summary.completedCount} de ${summary.annualBookGoal} livros" else "$monthPct por cento das páginas"
+                setOnClickListener { openYearBooksDialog(plan, summary, purchaseGoalEntry) }
+            }
+            heroRow.addView(arcView, LinearLayout.LayoutParams(ui.dp(88), ui.dp(88)).apply { marginEnd = ui.dp(18) })
+
+            val rightCol = ui.column()
+            heroRow.addView(rightCol, LinearLayout.LayoutParams(0, -2, 1f))
+
+            if (hasBooksGoal) {
+                val r1 = ui.row().apply { gravity = Gravity.BOTTOM }
+                rightCol.addView(r1, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(3) })
+                val goalDesc = if (plan.booksGoalType == BooksGoalType.PER_MONTH) {
+                    "Meta anual · ${plan.booksGoalValue}/mês"
+                } else {
+                    "Meta anual de livros"
+                }
+                r1.addView(gText(goalDesc, 12f, ui.text, medium = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(6) })
+                r1.addView(gText("$bookPct%", 12f, arcColor, medium = true).apply { fontFeatureSettings = "tnum" }, LinearLayout.LayoutParams(-2, -2))
+                rightCol.addView(
+                    gText("${numbers.format(summary.totalPagesReadInYear)} págs lidas em ${plan.year}", 11f, ui.muted).apply {
+                        maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                    },
+                    LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(if (hasPagesGoal) 12 else 0) },
+                )
+            }
+
+            if (hasPagesGoal) {
+                val pagesCol = ui.column().apply {
+                    tag = "plan-kpi-pages"; isFocusable = true
+                    setOnClickListener { openGoalConfigDialog(plan, purchaseGoalEntry) }
+                }
+                rightCol.addView(pagesCol, LinearLayout.LayoutParams(-1, -2))
+                val minHint = summary.estimatedMinutesPerDay?.let { "~${it}m/d" } ?: "$monthPct%"
+                val pRow = ui.row().apply { gravity = Gravity.BOTTOM }
+                pagesCol.addView(pRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(5) })
+                val pLead: String
+                val pTail: String
+                if (plan.pagesGoalType == PagesGoalType.PER_DAY) {
+                    val elapsedDays = if (currentMs.isCurrent) {
+                        (currentMs.daysInMonth - currentMs.remainingDays + 1).coerceAtLeast(1)
+                    } else currentMs.daysInMonth.coerceAtLeast(1)
+                    val actualDaily = currentMs.actualPagesRead.toDouble() / elapsedDays
+                    pLead = AnnualPlanCalculator.formatDecimal(actualDaily)
+                    pTail = " / ${numbers.format(plan.pagesGoalValue)} págs/dia"
+                } else {
+                    pLead = numbers.format(currentMs.actualPagesRead)
+                    pTail = " / ${numbers.format(plan.pagesGoalValue)} págs"
+                }
+                val pSpan = android.text.SpannableStringBuilder(pLead + pTail).apply {
+                    setSpan(android.text.style.ForegroundColorSpan(ui.text), 0, pLead.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    setSpan(android.text.style.RelativeSizeSpan(1.25f), 0, pLead.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    setSpan(android.text.style.ForegroundColorSpan(ui.muted), pLead.length, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+                pRow.addView(gText(pSpan, 11f, ui.muted).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(6) })
+                pRow.addView(gText(minHint, 10.5f, ui.muted).apply { fontFeatureSettings = "tnum" }, LinearLayout.LayoutParams(-2, -2))
+
+                val track = FrameLayout(activity).apply {
+                    background = ui.pillShape(ui.galleryHairline(85), 3)
+                    clipToOutline = true
+                }
+                val tRow = ui.row()
+                val clamped = monthPct.coerceIn(0, 100)
+                if (clamped > 0) tRow.addView(View(activity).apply { setBackgroundColor(if (clamped >= 100) colorGreen else ui.accent) }, LinearLayout.LayoutParams(0, -1, clamped.toFloat()))
+                if (clamped < 100) tRow.addView(View(activity), LinearLayout.LayoutParams(0, -1, (100 - clamped).toFloat()))
+                track.addView(tRow, FrameLayout.LayoutParams(-1, -1))
+                pagesCol.addView(track, LinearLayout.LayoutParams(-1, ui.dp(3).coerceAtLeast(3)))
+            }
+        } else {
+            val noGoalRow = ui.row().apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, ui.dp(4), 0, ui.dp(18))
+                isFocusable = true
+                setOnClickListener { openYearBooksDialog(plan, summary, purchaseGoalEntry) }
+            }
+            wrap.addView(noGoalRow, LinearLayout.LayoutParams(-1, -2))
+            val doneStr = if (summary.completedCount == 1) "1 concluído" else "${summary.completedCount} concluídos"
+            noGoalRow.addView(
+                gText("$doneStr · ${numbers.format(summary.totalPagesReadInYear)} págs em ${plan.year}", 13f, ui.text).apply {
+                    maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                },
+                LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(10) },
+            )
+            noGoalRow.addView(
+                gText("Definir meta →", 12f, ui.accent, medium = true).apply {
+                    isFocusable = true; setPadding(ui.dp(6), ui.dp(4), 0, ui.dp(4))
+                    setOnClickListener { openGoalConfigDialog(plan, purchaseGoalEntry) }
+                },
+                LinearLayout.LayoutParams(-2, -2),
+            )
+        }
+
+        // 3) Full 12-Month Pulse Timeline (J F M A M J J A S O N D — all 12 visible at once!)
+        val barAreaH = ui.dp(44)
+        val timelineWrap = ui.column()
+        wrap.addView(timelineWrap, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(20) })
+
+        val barsRow = ui.row().apply { gravity = Gravity.BOTTOM }
+        timelineWrap.addView(barsRow, LinearLayout.LayoutParams(-1, barAreaH))
+        timelineWrap.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
+        val labelsRow = ui.row().apply { gravity = Gravity.CENTER_HORIZONTAL }
+        timelineWrap.addView(labelsRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(6) })
+
+        summary.months.forEach { ms ->
+            val sel = ms.month == selectedMonth
+            val frac = ms.barProgress.coerceIn(0.0, 1.0).toFloat()
+            val barH = if (frac > 0.01f) (barAreaH * (0.18f + frac * 0.78f)).toInt().coerceAtLeast(ui.dp(7)) else ui.dp(4)
+            val barColor = when {
+                sel -> ui.accent
+                frac <= 0.01f -> ui.galleryHairline(85)
+                else -> ui.tint(healthColor(ms.health), 195)
+            }
+            val barSlot = FrameLayout(activity).apply {
+                tag = "plan-month:${ms.month}"
+                isFocusable = true
+                contentDescription = AnnualPlanCalculator.fullName(ms.month)
+                setOnClickListener {
+                    if (selectedMonth != ms.month) {
+                        selectedMonth = ms.month
+                        changed()
+                    }
+                }
+            }
+            val pillBar = View(activity).apply {
+                background = GradientDrawable().apply {
+                    setColor(barColor)
+                    val r = ui.dp(4).toFloat()
+                    cornerRadii = floatArrayOf(r, r, r, r, 0f, 0f, 0f, 0f)
+                }
+            }
+            barSlot.addView(pillBar, FrameLayout.LayoutParams(ui.dp(7), barH, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
+            barsRow.addView(barSlot, LinearLayout.LayoutParams(0, -1, 1f))
+
+            val lblCol = ui.column().apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                isFocusable = true
+                setOnClickListener {
+                    if (selectedMonth != ms.month) {
+                        selectedMonth = ms.month
+                        changed()
+                    }
+                }
+            }
+            val initial = AnnualPlanCalculator.shortName(ms.month).take(1)
+            lblCol.addView(
+                gText(initial, 10.5f, if (sel) ui.accent else ui.muted, medium = sel).apply { gravity = Gravity.CENTER },
+                LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = ui.dp(3) },
+            )
+            lblCol.addView(
+                View(activity).apply { background = dotDrawable(if (sel) ui.accent else Color.TRANSPARENT) },
+                LinearLayout.LayoutParams(ui.dp(3).coerceAtLeast(3), ui.dp(3).coerceAtLeast(3)),
+            )
+            labelsRow.addView(lblCol, LinearLayout.LayoutParams(0, -2, 1f))
+        }
+
+        // 4) Bookshop Stamp Strip (Purchase 3:1, optional — clean hairlines top & bottom)
+        if (purchaseGoalEntry?.goal != null) {
+            val pGoal = purchaseGoalEntry.goal
+            val pProg = ReadingGoals.progress(pGoal, books, sessions, now)
+            val unlocked = pProg.value >= pGoal.target
+
+            wrap.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
+            val strip = ui.row().apply {
+                tag = "plan-purchase-strip"
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, ui.dp(11), 0, ui.dp(11))
+                isFocusable = true
+                setOnClickListener { gp.openGoalDetailDialog(purchaseGoalEntry) }
+            }
+            wrap.addView(strip, LinearLayout.LayoutParams(-1, -2))
+
+            val slots = minOf(pGoal.target, 3)
+            val coversRow = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+            strip.addView(coversRow, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(12) })
+            repeat(slots) { idx ->
+                val credit = pProg.credits.getOrNull(idx)
+                val frame = FrameLayout(activity).apply {
+                    background = if (credit != null) ui.pillShape(ui.activeSurface, 3, ui.tint(ui.accent, 130)) else GradientDrawable().apply {
+                        setColor(Color.TRANSPARENT)
+                        cornerRadius = ui.dp(3).toFloat()
+                        setStroke(ui.dp(1).coerceAtLeast(1), ui.galleryHairline(160), ui.dp(2).toFloat(), ui.dp(2).toFloat())
+                    }
+                    clipToOutline = true
+                }
+                coversRow.addView(frame, LinearLayout.LayoutParams(ui.dp(20), ui.dp(30)))
+                if (credit != null) {
+                    val bmp = images.thumbnail(credit.cover)
+                    if (bmp != null) {
+                        frame.addView(ImageView(activity).apply { scaleType = ImageView.ScaleType.CENTER_CROP; setImageBitmap(bmp) }, FrameLayout.LayoutParams(-1, -1))
+                    } else {
+                        frame.addView(gText(credit.title.take(1).uppercase(), 10f, ui.accent, serif = true).apply { gravity = Gravity.CENTER }, FrameLayout.LayoutParams(-1, -1))
+                    }
+                } else {
+                    frame.addView(gText("+", 9f, ui.muted).apply { gravity = Gravity.CENTER }, FrameLayout.LayoutParams(-1, -1))
+                }
+                if (idx < slots - 1) {
+                    coversRow.addView(
+                        View(activity).apply { setBackgroundColor(if (credit != null) ui.accent else hairline) },
+                        LinearLayout.LayoutParams(ui.dp(7), ui.dp(1).coerceAtLeast(1)).apply { marginStart = ui.dp(2); marginEnd = ui.dp(2) },
+                    )
+                }
+            }
+
+            val doneInCycle = minOf(pProg.value, pGoal.target.toLong())
+            val statusStr = if (unlocked) {
+                "${pGoal.name} · Liberada!"
+            } else {
+                val rem = pProg.remaining(pGoal)
+                "${pGoal.name} $doneInCycle/${pGoal.target} · ${if (rem == 1L) "falta 1" else "faltam $rem"}"
+            }
+            strip.addView(
+                gText(statusStr, 11.5f, if (unlocked) colorGreen else ui.text, medium = unlocked).apply {
+                    maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                },
+                LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) },
+            )
+            if (unlocked) {
+                strip.addView(
+                    gText("Wishlist ›", 11f, ui.background, medium = true).apply {
+                        tag = "plan-purchase-wishlist"; gravity = Gravity.CENTER
+                        setPadding(ui.dp(11), ui.dp(6), ui.dp(11), ui.dp(6))
+                        background = ui.pillRipple(ui.accent, 18, darkRipple = true)
+                        setOnClickListener { redeemPurchaseFromWishlist(purchaseGoalEntry, pGoal, pProg) }
+                    },
+                    LinearLayout.LayoutParams(-2, -2),
+                )
+            } else {
+                strip.addView(gText("Ciclo ›", 11f, ui.accent, medium = true), LinearLayout.LayoutParams(-2, -2))
+            }
+            wrap.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1).apply { bottomMargin = ui.dp(18) })
+        }
+
+        // 5) Rollover banner if previous past month has manually planned pending books
+        if (selectedMonth > 1) {
+            val prevMs = summary.months[selectedMonth - 2]
+            if (prevMs.isPast && prevMs.hasManualPending) {
+                val rollover = ui.row().apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(ui.dp(12), ui.dp(9), ui.dp(10), ui.dp(9))
+                    background = ui.pillShape(alphaColor(colorRed, 26), 14, alphaColor(colorRed, 100))
+                }
+                wrap.addView(rollover, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(14) })
+                rollover.addView(
+                    gText("Pendentes em ${AnnualPlanCalculator.fullName(prevMs.month)}", 11.5f, ui.text).apply {
+                        maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                    },
+                    LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) },
+                )
+                rollover.addView(
+                    gText("Mover p/ ${AnnualPlanCalculator.shortName(selectedMonth)}", 11f, ui.accent, medium = true).apply {
+                        gravity = Gravity.CENTER; setPadding(ui.dp(10), ui.dp(5), ui.dp(10), ui.dp(5))
+                        background = ui.pillRipple(ui.surface, 16, ui.tint(ui.accent, 140))
+                        setOnClickListener { movePendingFromPrevious(plan, prevMs.month, selectedMonth) }
+                    },
+                    LinearLayout.LayoutParams(-2, -2),
+                )
+            }
+        }
+
+        // 6) Selected Month Header + Accent "+ Livro" Pill
+        val mHead = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        wrap.addView(mHead, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
+        val mLeft = ui.column()
+        mHead.addView(mLeft, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(10) })
+        mLeft.addView(
+            gText(AnnualPlanCalculator.fullName(selectedMonth), 21f, ui.text, serif = true),
+            LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(3) },
+        )
+
+        val subParts = mutableListOf<String>()
+        if (currentMs.monthlyBooksTarget > 0) subParts.add("${currentMs.actualBooksCompleted}/${currentMs.monthlyBooksTarget} livros")
+        else if (currentMs.actualBooksCompleted > 0) subParts.add(if (currentMs.actualBooksCompleted == 1) "1 concluído" else "${currentMs.actualBooksCompleted} concluídos")
+        if (currentMs.monthlyPagesTarget > 0) subParts.add("${numbers.format(currentMs.actualPagesRead)}/${numbers.format(currentMs.monthlyPagesTarget)} págs")
+        else if (currentMs.actualPagesRead > 0) subParts.add("${numbers.format(currentMs.actualPagesRead)} págs")
+        if (currentMs.totalRemainingPages > 0) {
+            val paceHint = if (!currentMs.isPast) " (${AnnualPlanCalculator.formatDecimal(currentMs.pacePagesPerDay)} p/d)" else ""
+            subParts.add("restam ${numbers.format(currentMs.totalRemainingPages)}$paceHint")
+        }
+        val healthWord = when (currentMs.health) {
+            MonthHealth.COMPLETED -> "meta batida"
+            MonthHealth.ON_PACE -> "no ritmo"
+            MonthHealth.INTENSE -> "ritmo intenso"
+            MonthHealth.MISSED -> "abaixo da meta"
+            MonthHealth.EMPTY -> ""
+        }
+        val subBase = if (subParts.isEmpty()) "Sem leituras neste mês" else subParts.joinToString(" · ")
+        val subSpan = android.text.SpannableStringBuilder(subBase).apply {
+            setSpan(android.text.style.ForegroundColorSpan(ui.muted), 0, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (healthWord.isNotBlank()) {
+                append(" · ")
+                val s = length
+                append(healthWord)
+                setSpan(android.text.style.ForegroundColorSpan(healthColor(currentMs.health)), s, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
+        mLeft.addView(gText(subSpan, 11f, ui.muted).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }, LinearLayout.LayoutParams(-1, -2))
+
+        mHead.addView(
+            gText("+ Livro", 11.5f, ui.background, medium = true).apply {
+                tag = "plan-add-item"; gravity = Gravity.CENTER; isFocusable = true
+                setPadding(ui.dp(13), ui.dp(7), ui.dp(13), ui.dp(7))
+                background = ui.pillRipple(ui.accent, 18, darkRipple = true)
+                setOnClickListener { triggerShelfPicker(plan.year, selectedMonth) }
+            },
+            LinearLayout.LayoutParams(-2, -2),
+        )
+
+        // 7) Borderless Month Books Shelf (44x66 real covers, ZERO boxes, ZERO stripeBg!)
+        if (currentMs.items.isEmpty()) {
+            wrap.addView(
+                gText("Nenhum livro planejado ou lido em ${AnnualPlanCalculator.fullName(selectedMonth)}.", 12f, ui.muted).apply {
+                    setPadding(0, ui.dp(10), 0, ui.dp(12))
+                },
+                LinearLayout.LayoutParams(-1, -2),
+            )
+            wrap.addView(
+                gText("+ Escolher da Estante", 12f, ui.accent, medium = true).apply {
+                    gravity = Gravity.CENTER; isFocusable = true
+                    setPadding(ui.dp(16), ui.dp(10), ui.dp(16), ui.dp(10))
+                    background = ui.pillRipple(ui.surface, 18, ui.galleryHairline(145))
+                    setOnClickListener { triggerShelfPicker(plan.year, selectedMonth) }
+                },
+                LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = ui.dp(8) },
+            )
+        } else {
+            currentMs.items.forEachIndexed { idx, item ->
+                val row = ui.row().apply {
+                    tag = if (item.entry != null) "plan-entry:${item.entry.id}" else "plan-auto:${item.bookId}"
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, ui.dp(11), 0, ui.dp(11))
+                    isFocusable = true
+                    setOnClickListener { openBookItemMenu(plan, selectedMonth, item) }
+                }
+                wrap.addView(row, LinearLayout.LayoutParams(-1, -2))
+
+                val cov = ImageView(activity).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    background = ui.pillShape(ui.activeSurface, 5)
+                    clipToOutline = true
+                    elevation = ui.dp(6).toFloat()
+                    setImageDrawable(br.com.viblio.ui.ViblioBookMarkDrawable(ui.accent, Color.WHITE, scale = 0.46f, backgroundColor = ui.activeSurface))
+                    if (item.localCover.isNotBlank()) images.thumbnail(item.localCover)?.let(::setImageBitmap)
+                }
+                row.addView(cov, LinearLayout.LayoutParams(ui.dp(44), ui.dp(66)).apply { marginEnd = ui.dp(14) })
+
+                val info = ui.column()
+                row.addView(info, LinearLayout.LayoutParams(0, -2, 1f))
+                info.addView(
+                    gText(item.title, 14.5f, ui.text, serif = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
+                    LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(3) },
+                )
+
+                val detailParts = mutableListOf<String>()
+                if (item.isReread) detailParts.add("Releitura")
+                else if (!item.entry?.tag.isNullOrBlank()) detailParts.add(item.entry!!.tag)
+                val identity = item.saga.ifBlank { item.author }
+                if (identity.isNotBlank()) detailParts.add(identity)
+                when (item.status) {
+                    PlanItemStatus.COMPLETED -> if (item.pagesReadInMonth > 0) detailParts.add("${numbers.format(item.pagesReadInMonth)} págs no mês")
+                    PlanItemStatus.READING -> {
+                        if (item.pagesReadInMonth > 0) detailParts.add("${numbers.format(item.pagesReadInMonth)} págs no mês")
+                        if (item.remainingPages > 0) detailParts.add("restam ${numbers.format(item.remainingPages)}")
+                    }
+                    PlanItemStatus.READ_IN_MONTH -> detailParts.add(if (item.pagesReadInMonth > 0) "${numbers.format(item.pagesReadInMonth)} págs lidas" else "Leitura registrada")
+                    PlanItemStatus.PLANNED -> if (item.remainingPages > 0) detailParts.add("${numbers.format(item.remainingPages)} págs restantes")
+                }
+                if (detailParts.isNotEmpty()) {
+                    info.addView(
+                        gText(detailParts.joinToString(" · "), 11f, ui.muted).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
+                        LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(5) },
+                    )
+                }
+
+                val statusText = when (item.status) {
+                    PlanItemStatus.COMPLETED -> "✓ Concluído"
+                    PlanItemStatus.READING -> "Lendo"
+                    PlanItemStatus.READ_IN_MONTH -> "Lido no mês"
+                    PlanItemStatus.PLANNED -> "Na fila"
+                }
+                val statusCol = when (item.status) {
+                    PlanItemStatus.COMPLETED -> colorGreen
+                    PlanItemStatus.READING -> ui.accent
+                    PlanItemStatus.READ_IN_MONTH -> colorBlue
+                    PlanItemStatus.PLANNED -> ui.muted
+                }
+                info.addView(
+                    gText(statusText, 10.5f, statusCol, medium = item.status == PlanItemStatus.COMPLETED || item.status == PlanItemStatus.READING),
+                    LinearLayout.LayoutParams(-1, -2),
+                )
+
+                if (idx < currentMs.items.lastIndex) {
+                    wrap.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
+                }
+            }
+        }
+
+        // 8) Collapsible Sagas Summary
+        if (summary.sagas.isNotEmpty()) {
+            wrap.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1).apply { topMargin = ui.dp(14); bottomMargin = ui.dp(10) })
+            val sagaToggle = ui.row().apply {
+                gravity = Gravity.CENTER_VERTICAL; isFocusable = true
+                setOnClickListener { sagasExpanded = !sagasExpanded; changed() }
+            }
+            wrap.addView(sagaToggle, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(8) })
+            sagaToggle.addView(gText("SAGAS EM ${plan.year} (${summary.sagas.size})", 10.5f, ui.muted).apply { letterSpacing = 0.10f }, LinearLayout.LayoutParams(0, -2, 1f))
+            sagaToggle.addView(gText(if (sagasExpanded) "▾" else "›", 13f, ui.accent), LinearLayout.LayoutParams(-2, -2))
+            if (sagasExpanded) {
+                summary.sagas.chunked(2).forEach { pair ->
+                    val sRow = ui.row()
+                    wrap.addView(sRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(7) })
+                    pair.forEachIndexed { i, sp ->
+                        val cell = ui.row().apply {
+                            gravity = Gravity.CENTER_VERTICAL
+                            setPadding(ui.dp(11), ui.dp(8), ui.dp(11), ui.dp(8))
+                            background = ui.pillShape(ui.surface, 12, ui.galleryHairline(130))
+                        }
+                        sRow.addView(cell, LinearLayout.LayoutParams(0, -2, 1f).apply { if (i == 0 && pair.size == 2) marginEnd = ui.dp(7) })
+                        cell.addView(gText(sp.name, 11.5f, ui.text).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(6) })
+                        val doneAll = sp.completedCount >= sp.totalCount && sp.totalCount > 0
+                        cell.addView(
+                            gText(if (doneAll) "${sp.completedCount}/${sp.totalCount} ✓" else "${sp.completedCount}/${sp.totalCount}", 11f, if (doneAll) colorGreen else ui.accent, medium = true),
+                            LinearLayout.LayoutParams(-2, -2),
+                        )
+                    }
+                    if (pair.size == 1) sRow.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = ui.dp(7) })
                 }
             }
         }

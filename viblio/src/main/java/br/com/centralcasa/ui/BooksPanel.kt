@@ -3300,6 +3300,262 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     private var readingPeriodUnit=ReadingPeriodUnit.MONTH
     private var readingPeriodAnchor=ReadingDays.at(System.currentTimeMillis())
     private var periodVisibleBooks=10
+    private var statsTaxonomyMode="genres"
+    private var statsTaxonomyExpanded=false
+    private fun periodStatisticsGallery(parent:LinearLayout,books:List<LibraryBook>,sessions:List<ReadingSession>,mint:Int){
+        val format=java.text.NumberFormat.getIntegerInstance(Locale("pt","BR"))
+        val dates=repository.dates()
+        val range=ReadingPeriods.range(readingPeriodAnchor,readingPeriodUnit)
+        val todayDay=ReadingDays.at(System.currentTimeMillis())
+        val currentRange=ReadingPeriods.range(todayDay,readingPeriodUnit)
+        val isCurrentPeriod=range.start==currentRange.start
+        val prevAnchor=ReadingPeriods.shift(readingPeriodAnchor,readingPeriodUnit,-1)
+        val prevRange=ReadingPeriods.range(prevAnchor,readingPeriodUnit)
+
+        val summary=PeriodReading.from(books,sessions,dates,range)
+        val prevSummary=PeriodReading.from(books,sessions,dates,prevRange)
+        val completedIds=PeriodCompletions.completedBookIds(books,sessions,dates,range)
+        val activeBookIds=summary.bookIds+completedIds
+        val countUnit=when(statisticsType){"book"->"livros";"manga","comic"->"volumes";else->"exemplares"}
+        val singleUnit=when(statisticsType){"book"->"livro";"manga","comic"->"volume";else->"exemplar"}
+        val hairline=ui.galleryHairline(105)
+
+        fun gText(value:CharSequence,sp:Float,color:Int,serif:Boolean=false,medium:Boolean=false)=TextView(activity).apply {
+            text=value;textSize=sp;setTextColor(color);includeFontPadding=false
+            typeface=when {
+                serif -> Typeface.create("serif",Typeface.NORMAL)
+                medium -> Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                else -> Typeface.create("sans-serif",Typeface.NORMAL)
+            }
+        }
+
+        val wrap=ui.column().apply {setPadding(ui.dp(20),ui.dp(2),ui.dp(20),ui.dp(20))}
+        parent.addView(wrap,LinearLayout.LayoutParams(-1,-2))
+
+        // 1) Pure typographic scale switcher (keeps period-unit:* background == null) + Retrospectiva link
+        val scaleRow=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+        wrap.addView(scaleRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(16)})
+        ReadingPeriodUnit.entries.forEachIndexed { idx,unit ->
+            val active=unit==readingPeriodUnit
+            val tab=ui.column().apply {
+                tag="period-unit:${unit.name}";isSelected=active;isFocusable=true;contentDescription=unit.label
+                gravity=Gravity.CENTER_HORIZONTAL
+                setPadding(0,ui.dp(4),0,ui.dp(2))
+                setOnClickListener {readingPeriodUnit=unit;periodVisibleBooks=10;changed()}
+            }
+            scaleRow.addView(tab,LinearLayout.LayoutParams(-2,-2).apply {if(idx>0)marginStart=ui.dp(18)})
+            tab.addView(gText(unit.label,12f,if(active)mint else ui.muted,medium=active),LinearLayout.LayoutParams(-2,-2).apply {bottomMargin=ui.dp(4)})
+            val dot=View(activity).apply {
+                background=android.graphics.drawable.GradientDrawable().apply {
+                    shape=android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(if(active)mint else Color.TRANSPARENT)
+                }
+            }
+            tab.addView(dot,LinearLayout.LayoutParams(ui.dp(4),ui.dp(4)))
+        }
+        scaleRow.addView(View(activity),LinearLayout.LayoutParams(0,1,1f))
+        val showRetro=ui.rectilinear && (readingPeriodUnit==ReadingPeriodUnit.MONTH || readingPeriodUnit==ReadingPeriodUnit.YEAR)
+        if(showRetro){
+            scaleRow.addView(
+                gText("Retrospectiva ›",11f,mint,medium=true).apply {
+                    setPadding(ui.dp(6),ui.dp(4),0,ui.dp(4));isFocusable=true
+                    setOnClickListener {
+                        val dlg=retrospectiveDialog ?: RetrospectiveDialog(activity,ui,repository).also {retrospectiveDialog=it}
+                        val title=if(readingPeriodUnit==ReadingPeriodUnit.YEAR)"Meu ano em livros" else "Meu mês em livros"
+                        val slug="viblio_${range.start.replace("-","")}_${readingPeriodUnit.name.lowercase(Locale.US)}"
+                        dlg.showRange(range,title,slug)
+                    }
+                },
+                LinearLayout.LayoutParams(-2,-2),
+            )
+        }
+
+        // 2) Monumental borderless period navigator
+        val nav=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+        wrap.addView(nav,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(if(!isCurrentPeriod) 4 else 18)})
+        nav.addView(
+            gText("‹",24f,mint).apply {
+                gravity=Gravity.CENTER;contentDescription="Período anterior";isFocusable=true
+                background=ui.pillRipple(Color.TRANSPARENT,18)
+                setOnClickListener {readingPeriodAnchor=ReadingPeriods.shift(readingPeriodAnchor,readingPeriodUnit,-1);periodVisibleBooks=10;changed()}
+            },
+            LinearLayout.LayoutParams(ui.dp(36),ui.dp(36)),
+        )
+        val niceLabel=range.label.replaceFirstChar {it.titlecase(Locale("pt","BR"))}
+        nav.addView(
+            gText(niceLabel,23f,ui.text,serif=true).apply {
+                tag="period-label";gravity=Gravity.CENTER;maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END
+            },
+            LinearLayout.LayoutParams(0,-2,1f).apply {marginStart=ui.dp(8);marginEnd=ui.dp(8)},
+        )
+        nav.addView(
+            gText("›",24f,mint).apply {
+                gravity=Gravity.CENTER;contentDescription="Próximo período";isFocusable=true
+                background=ui.pillRipple(Color.TRANSPARENT,18)
+                setOnClickListener {readingPeriodAnchor=ReadingPeriods.shift(readingPeriodAnchor,readingPeriodUnit,1);periodVisibleBooks=10;changed()}
+            },
+            LinearLayout.LayoutParams(ui.dp(36),ui.dp(36)),
+        )
+        if(!isCurrentPeriod){
+            wrap.addView(
+                gText("Voltar ao período atual",11f,mint,medium=true).apply {
+                    gravity=Gravity.CENTER;setPadding(0,ui.dp(2),0,ui.dp(14));isFocusable=true
+                    setOnClickListener {readingPeriodAnchor=todayDay;periodVisibleBooks=10;changed()}
+                },
+                LinearLayout.LayoutParams(-1,-2),
+            )
+        }
+
+        // 3) Single unified reading stage: pages + delta + inline metrics + slender editorial bars (NO 2 boxes!)
+        val heroRow=ui.row().apply {gravity=Gravity.BOTTOM}
+        wrap.addView(heroRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
+        heroRow.addView(
+            gText(format.format(summary.pages),44f,mint,serif=true).apply {
+                tag="period-metric:1";fontFeatureSettings="tnum";letterSpacing=-0.03f
+            },
+            LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(8)},
+        )
+        heroRow.addView(
+            gText("páginas",12.5f,ui.muted).apply {setPadding(0,0,0,ui.dp(6))},
+            LinearLayout.LayoutParams(0,-2,1f),
+        )
+        val delta=PeriodInsights.deltaPercent(summary.pages,prevSummary.pages)
+        if(delta!=null){
+            val pos=delta>=0
+            val badgeCol=if(pos) Color.rgb(127,176,134) else Color.rgb(220,131,115)
+            val sign=if(pos) "+" else ""
+            heroRow.addView(
+                gText("$sign$delta% vs ant.",11.5f,badgeCol,medium=true).apply {
+                    fontFeatureSettings="tnum";setPadding(0,0,0,ui.dp(6))
+                },
+                LinearLayout.LayoutParams(-2,-2),
+            )
+        }
+
+        val byId=books.associateBy {it.id}
+        val timedKnown=summary.sessions.filter {byId[it.bookId]?.pagesKnown==true}
+        val timedDur=timedKnown.sumOf {it.durationMs}
+        val timedPages=timedKnown.sumOf {it.pages.toLong()}
+        val speedHint=if(timedDur>0L && timedPages>0L) " · ${format.format(kotlin.math.round(timedPages*3600000.0/timedDur).toLong())} p/h" else ""
+
+        val metaStrip=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+        wrap.addView(metaStrip,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(18)})
+        metaStrip.addView(gText("${completedIds.size} ${if(completedIds.size==1)"concluído" else "concluídos"}",12f,ui.text).apply {tag="period-metric:3"},LinearLayout.LayoutParams(-2,-2))
+        metaStrip.addView(gText(" · ",12f,ui.muted),LinearLayout.LayoutParams(-2,-2))
+        metaStrip.addView(gText("${activeBookIds.size} ${if(activeBookIds.size==1)singleUnit else countUnit}",12f,ui.muted).apply {tag="period-metric:0"},LinearLayout.LayoutParams(-2,-2))
+        metaStrip.addView(gText(" · ",12f,ui.muted),LinearLayout.LayoutParams(-2,-2))
+        metaStrip.addView(
+            gText("${compactReadingTime(summary.durationMs)}$speedHint",12f,ui.muted).apply {
+                tag="period-metric:2";maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END
+            },
+            LinearLayout.LayoutParams(0,-2,1f),
+        )
+
+        val buckets=PeriodInsights.buckets(readingPeriodAnchor,readingPeriodUnit,books,sessions,dates)
+        val peakVal=buckets.maxOfOrNull {it.value} ?: 0L
+        val chartEntries=buckets.map { PeriodBarEntry(it.label,it.value) }
+        val chartTap:((Int)->Unit)?=when(readingPeriodUnit){
+            ReadingPeriodUnit.YEAR -> { idx ->
+                buckets.getOrNull(idx)?.targetAnchor?.let { mStart ->
+                    readingPeriodAnchor=mStart;readingPeriodUnit=ReadingPeriodUnit.MONTH;periodVisibleBooks=10;changed()
+                }
+            }
+            ReadingPeriodUnit.WEEK -> { idx ->
+                buckets.getOrNull(idx)?.targetAnchor?.let { dStart ->
+                    readingPeriodAnchor=dStart;readingPeriodUnit=ReadingPeriodUnit.DAY;periodVisibleBooks=10;changed()
+                }
+            }
+            else -> null
+        }
+        wrap.addView(
+            PeriodBarChartView(activity,ui,chartEntries,mint,chartTap,editorial=true,peakLabel=if(peakVal>0L)format.format(peakVal) else null),
+            LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(if(readingPeriodUnit!=ReadingPeriodUnit.YEAR) 4 else 22)},
+        )
+        if(readingPeriodUnit!=ReadingPeriodUnit.YEAR){
+            val yrRow=ui.row().apply {gravity=Gravity.END}
+            wrap.addView(yrRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(18)})
+            yrRow.addView(
+                gText("Ver meses de ${readingPeriodAnchor.take(4)} ›",11f,mint,medium=true).apply {
+                    setPadding(ui.dp(6),ui.dp(4),0,ui.dp(4));isFocusable=true
+                    setOnClickListener {readingPeriodUnit=ReadingPeriodUnit.YEAR;periodVisibleBooks=10;changed()}
+                },
+                LinearLayout.LayoutParams(-2,-2),
+            )
+        }
+
+        // 4) Borderless reading archive list with large 44x66 covers
+        val rows=books.filter {it.id in activeBookIds}.sortedWith(compareBy<LibraryBook> {if(it.id in completedIds)0 else 1}.thenBy {ShelfFilters.key(it.title)})
+        val listHead=ui.row().apply {gravity=Gravity.BOTTOM}
+        wrap.addView(listHead,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(8)})
+        listHead.addView(gText("Leituras no período",18f,ui.text,serif=true),LinearLayout.LayoutParams(0,-2,1f))
+        listHead.addView(gText("${rows.size} ${if(rows.size==1)singleUnit else countUnit}",11f,ui.muted),LinearLayout.LayoutParams(-2,-2))
+
+        val shown=rows.take(periodVisibleBooks)
+        shown.forEachIndexed { idx,book ->
+            val isDoneInPeriod=book.id in completedIds
+            val itemRow=ui.row().apply {
+                gravity=Gravity.CENTER_VERTICAL
+                setPadding(0,ui.dp(11),0,ui.dp(11))
+                if(onOpenPlannedBook!=null){
+                    isFocusable=true
+                    setOnClickListener {onOpenPlannedBook?.invoke(book.id)}
+                }
+            }
+            wrap.addView(itemRow,LinearLayout.LayoutParams(-1,-2))
+            val thumb=ImageView(activity).apply {
+                scaleType=ImageView.ScaleType.CENTER_CROP
+                background=ui.pillShape(ui.activeSurface,5)
+                clipToOutline=true
+                elevation=ui.dp(6).toFloat()
+                setImageDrawable(br.com.viblio.ui.ViblioBookMarkDrawable(mint,Color.WHITE,scale=0.46f,backgroundColor=ui.activeSurface))
+                if(book.cover.isNotBlank()) images.thumbnail(book.cover)?.let(::setImageBitmap)
+            }
+            itemRow.addView(thumb,LinearLayout.LayoutParams(ui.dp(44),ui.dp(66)).apply {marginEnd=ui.dp(14)})
+            val infoCol=ui.column()
+            itemRow.addView(infoCol,LinearLayout.LayoutParams(0,-2,1f))
+            val titleText=book.title+(book.sequenceNumber?.let {if(book.kind=="book" && book.collectionId.isBlank())" · Livro $it" else " · Vol. $it"} ?: "")
+            infoCol.addView(
+                gText(titleText,14.5f,ui.text,serif=true).apply {maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END},
+                LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)},
+            )
+            val records=summary.sessions.filter {it.bookId==book.id}
+            val metaParts=mutableListOf<String>()
+            if(book.author.isNotBlank()) metaParts.add(book.author)
+            if(records.isNotEmpty()){
+                if(book.pagesKnown) metaParts.add("${format.format(records.sumOf {it.pages})} págs")
+                if(records.sumOf {it.durationMs}>0L) metaParts.add(compactReadingTime(records.sumOf {it.durationMs}))
+            } else if(!isDoneInPeriod){
+                metaParts.add("Leitura registrada")
+            } else if(book.pagesKnown){
+                metaParts.add("${format.format(book.totalPages)} págs")
+            }
+            if(metaParts.isNotEmpty()){
+                infoCol.addView(
+                    gText(metaParts.joinToString(" · "),11f,ui.muted).apply {maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END},
+                    LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(5)},
+                )
+            }
+            infoCol.addView(
+                gText(if(isDoneInPeriod)"✓ Concluído no período" else "Em leitura",10.5f,if(isDoneInPeriod)mint else ui.muted,medium=isDoneInPeriod),
+                LinearLayout.LayoutParams(-1,-2),
+            )
+            if(idx<shown.lastIndex){
+                wrap.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1))
+            }
+        }
+        if(rows.isEmpty()){
+            wrap.addView(gText("Nenhuma leitura registrada neste período.",12f,ui.muted).apply {setPadding(0,ui.dp(8),0,0)},LinearLayout.LayoutParams(-1,-2))
+        }
+        if(rows.size>periodVisibleBooks){
+            wrap.addView(
+                gText("Ver mais títulos",12f,mint,medium=true).apply {
+                    setPadding(0,ui.dp(12),ui.dp(12),ui.dp(4));isFocusable=true
+                    setOnClickListener {periodVisibleBooks+=10;changed()}
+                },
+                LinearLayout.LayoutParams(-2,-2),
+            )
+        }
+    }
     private fun periodStatistics(parent:LinearLayout,books:List<LibraryBook>,sessions:List<ReadingSession>,mint:Int){
         val format=java.text.NumberFormat.getIntegerInstance(Locale("pt","BR"))
         val dates=repository.dates()
@@ -3576,8 +3832,359 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             }
         }
     }
+    private fun summaryGallery(parent:LinearLayout,books:List<LibraryBook>,sessions:List<ReadingSession>,mint:Int){
+        val format=java.text.NumberFormat.getIntegerInstance(Locale("pt","BR"))
+        val byId=books.associateBy {it.id}
+        val knownSessions=sessions.filter {byId[it.bookId]?.pagesKnown==true}
+        val totalDuration=sessions.sumOf {it.durationMs}
+        val timedDuration=knownSessions.sumOf {it.durationMs}
+        val timedPages=knownSessions.sumOf {it.pages.toLong()}
+        val pages=books.filter {it.pagesKnown}.sumOf {it.currentPage.toLong()}
+        val done=books.count {it.complete}
+        val reading=books.count {it.currentPage>0 && !it.complete}
+        val unread=books.size-done-reading
+        val authorsCount=books.map {ShelfFilters.key(it.author)}.filter {it.isNotBlank()}.distinct().size
+        val unitLabel=when(statisticsType){"book"->"livros";"all"->"exemplares";else->"volumes"}
+        val hairline=ui.galleryHairline(105)
+
+        fun gText(value:CharSequence,sp:Float,color:Int,serif:Boolean=false,medium:Boolean=false)=TextView(activity).apply {
+            text=value;textSize=sp;setTextColor(color);includeFontPadding=false
+            typeface=when {
+                serif -> Typeface.create("serif",Typeface.NORMAL)
+                medium -> Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                else -> Typeface.create("sans-serif",Typeface.NORMAL)
+            }
+        }
+
+        val wrap=ui.column().apply {setPadding(ui.dp(20),ui.dp(4),ui.dp(20),ui.dp(20))}
+        parent.addView(wrap,LinearLayout.LayoutParams(-1,-2))
+
+        // 1) Editorial lead spread (NO box, pure typography + razor-thin 3dp proportion line)
+        val leadRow=ui.row().apply {gravity=Gravity.BOTTOM}
+        wrap.addView(leadRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(8)})
+        leadRow.addView(
+            gText(format.format(pages),48f,mint,serif=true).apply {
+                tag="statistics-pages";fontFeatureSettings="tnum";letterSpacing=-0.04f
+            },
+            LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(10)},
+        )
+        leadRow.addView(
+            gText("páginas",12.5f,ui.muted).apply {setPadding(0,0,0,ui.dp(7))},
+            LinearLayout.LayoutParams(-2,-2),
+        )
+
+        val paceStr=if(timedDuration>0L && timedPages>0L)"${format.format(kotlin.math.round(timedPages*3600000.0/timedDuration).toLong())} pág/h" else "—"
+        val narrative=android.text.SpannableStringBuilder().apply {
+            fun addLead(v:String){
+                val s=length;append(v)
+                setSpan(android.text.style.ForegroundColorSpan(ui.text),s,length,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            fun addDim(v:String){
+                val s=length;append(v)
+                setSpan(android.text.style.ForegroundColorSpan(ui.muted),s,length,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            addLead(compactReadingTime(totalDuration))
+            addDim(" de leitura · ")
+            addLead(paceStr)
+            addDim(" · ")
+            addLead("$done")
+            addDim(" de ${format.format(books.size)} $unitLabel concluídos")
+        }
+        wrap.addView(
+            gText(narrative,12.5f,ui.muted).apply {setLineSpacing(0f,1.25f)},
+            LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(16)},
+        )
+
+        val barHost=FrameLayout(activity).apply {
+            background=ui.pillShape(ui.galleryHairline(85),4)
+            clipToOutline=true
+        }
+        val barRow=ui.row()
+        if(books.isNotEmpty()){
+            if(done>0) barRow.addView(View(activity).apply {setBackgroundColor(mint)},LinearLayout.LayoutParams(0,-1,done.toFloat()))
+            if(reading>0) barRow.addView(View(activity).apply {setBackgroundColor(ui.tint(mint,118))},LinearLayout.LayoutParams(0,-1,reading.toFloat()))
+            if(unread>0) barRow.addView(View(activity).apply {setBackgroundColor(ui.galleryHairline(90))},LinearLayout.LayoutParams(0,-1,unread.toFloat()))
+        }
+        barHost.addView(barRow,FrameLayout.LayoutParams(-1,-1))
+        wrap.addView(barHost,LinearLayout.LayoutParams(-1,ui.dp(3).coerceAtLeast(3)).apply {bottomMargin=ui.dp(7)})
+
+        val propLegend=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+        wrap.addView(propLegend,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(26)})
+        propLegend.addView(gText("${format.format(done)} concluídos",10.5f,ui.muted).apply {fontFeatureSettings="tnum"},LinearLayout.LayoutParams(0,-2,1f))
+        propLegend.addView(gText("${format.format(reading)} lendo",10.5f,ui.muted).apply {gravity=Gravity.CENTER;fontFeatureSettings="tnum"},LinearLayout.LayoutParams(0,-2,1f))
+        propLegend.addView(gText("${format.format(unread)} na fila · ${format.format(authorsCount)} autores",10.5f,ui.muted).apply {gravity=Gravity.END;fontFeatureSettings="tnum";maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END},LinearLayout.LayoutParams(0,-2,1.6f))
+
+        // 2) Living Bullet-Journal Calendar in foreground (NO outer box, NO empty squares!)
+        val todayDay=ReadingDays.at(System.currentTimeMillis())
+        val hmSummary=ReadingHeatmap.forYear(heatmapYear,books,sessions,repository.dates(),todayDay=todayDay)
+        val hmMonthGrid=ReadingHeatmap.monthGrid(heatmapYear,heatmapMonth,hmSummary)
+        val isCurrentYear=heatmapYear==java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+
+        val calHead=ui.row().apply {tag="statistics-heatmap";gravity=Gravity.CENTER_VERTICAL}
+        wrap.addView(calHead,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
+        calHead.addView(gText(AnnualPlanCalculator.fullName(heatmapMonth),20f,ui.text,serif=true),LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(6)})
+        calHead.addView(gText(heatmapYear.toString(),12.5f,ui.muted),LinearLayout.LayoutParams(0,-2,1f))
+        calHead.addView(
+            gText("‹",20f,mint).apply {
+                gravity=Gravity.CENTER;contentDescription="Mês anterior";isFocusable=true
+                background=ui.pillRipple(Color.TRANSPARENT,16)
+                setOnClickListener {
+                    val (ny,nm)=ReadingHeatmap.shiftMonth(heatmapYear,heatmapMonth,-1)
+                    heatmapYear=ny;heatmapMonth=nm;heatmapSelectedDay=null;changed()
+                }
+            },
+            LinearLayout.LayoutParams(ui.dp(32),ui.dp(32)).apply {marginEnd=ui.dp(2)},
+        )
+        calHead.addView(
+            gText("›",20f,mint).apply {
+                gravity=Gravity.CENTER;contentDescription="Próximo mês";isFocusable=true
+                background=ui.pillRipple(Color.TRANSPARENT,16)
+                setOnClickListener {
+                    val (ny,nm)=ReadingHeatmap.shiftMonth(heatmapYear,heatmapMonth,1)
+                    heatmapYear=ny;heatmapMonth=nm;heatmapSelectedDay=null;changed()
+                }
+            },
+            LinearLayout.LayoutParams(ui.dp(32),ui.dp(32)).apply {marginEnd=ui.dp(6)},
+        )
+        val remOn=br.com.viblio.reminder.ReadingReminder.isEnabled(activity)
+        calHead.addView(
+            gText(if(remOn)"◷ ${br.com.viblio.reminder.ReadingReminder.label(activity)}" else "Lembrete",10.5f,if(remOn)mint else ui.muted,medium=remOn).apply {
+                tag="reading-reminder-btn";gravity=Gravity.CENTER
+                setPadding(ui.dp(10),ui.dp(5),ui.dp(10),ui.dp(5))
+                background=ui.pillRipple(if(remOn) ui.tint(mint,34) else ui.surface,16,if(remOn) Color.TRANSPARENT else ui.galleryHairline(130))
+                isFocusable=true
+                setOnClickListener {openReadingReminderDialog()}
+            },
+            LinearLayout.LayoutParams(-2,-2),
+        )
+
+        val streakLine=android.text.SpannableStringBuilder().apply {
+            val lead=if(isCurrentYear) "${format.format(hmSummary.currentStreak)} ${if(hmSummary.currentStreak==1)"dia seguido" else "dias seguidos"}"
+            else "${format.format(hmSummary.totalActiveDays)} dias em $heatmapYear"
+            append(lead)
+            setSpan(android.text.style.ForegroundColorSpan(mint),0,lead.length,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            val tail=" · ${format.format(hmMonthGrid.activeDaysInMonth)} no mês · recorde ${format.format(hmSummary.bestStreak)}"
+            val s=length;append(tail)
+            setSpan(android.text.style.ForegroundColorSpan(ui.muted),s,length,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        wrap.addView(gText(streakLine,11.5f,ui.muted,medium=false),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+
+        fun describeDay(day:String?):String {
+            if(day==null) return "Toque em um dia para ver detalhes"
+            val act=hmSummary.daysByDate[day]
+            val pretty=runCatching {ReadingDays.label(day)}.getOrDefault(day)
+            if(act==null) return "$pretty · Sem leitura registrada"
+            val parts=mutableListOf(pretty)
+            if(act.pages>0) parts.add("${format.format(act.pages)} págs")
+            if(act.durationMs>0L) parts.add(compactReadingTime(act.durationMs))
+            if(act.bookTitles.isNotEmpty()) parts.add(act.bookTitles.take(2).joinToString(", "))
+            return parts.joinToString(" · ")
+        }
+        val dayDetailLabel=gText(describeDay(heatmapSelectedDay),11f,ui.muted).apply {
+            maxLines=2;ellipsize=android.text.TextUtils.TruncateAt.END
+        }
+        val hmView=ReadingHeatmapView(activity,ui,hmSummary,hmMonthGrid,mint,todayDay,heatmapSelectedDay,bulletJournal=true){ pickedDay->
+            heatmapSelectedDay=pickedDay
+            dayDetailLabel.text=describeDay(pickedDay)
+        }
+        wrap.addView(hmView,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
+        wrap.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {bottomMargin=ui.dp(8)})
+        wrap.addView(dayDetailLabel,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(26)})
+
+        // 3) Magazine Index: Gêneros | Subgêneros (inline switchable, 2dp razor bars)
+        val genres=BookClassificationStats.genres(books)
+        val subgenres=BookClassificationStats.subgenres(books)
+        val entries=if(statsTaxonomyMode=="subgenres") subgenres else genres
+        val taxHead=ui.row().apply {gravity=Gravity.BOTTOM}
+        wrap.addView(taxHead,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
+        taxHead.addView(
+            gText("Gêneros",18f,if(statsTaxonomyMode=="genres")ui.text else ui.muted,serif=true).apply {
+                tag="statistics-toggle:stats";isFocusable=true;setPadding(0,ui.dp(2),ui.dp(14),ui.dp(2))
+                setOnClickListener {if(statsTaxonomyMode!="genres"){statsTaxonomyMode="genres";statsTaxonomyExpanded=false;changed()}}
+            },
+            LinearLayout.LayoutParams(-2,-2),
+        )
+        taxHead.addView(
+            gText("Subgêneros",18f,if(statsTaxonomyMode=="subgenres")ui.text else ui.muted,serif=true).apply {
+                tag="statistics-toggle:classification-tag";isFocusable=true;setPadding(0,ui.dp(2),ui.dp(8),ui.dp(2))
+                setOnClickListener {if(statsTaxonomyMode!="subgenres"){statsTaxonomyMode="subgenres";statsTaxonomyExpanded=false;changed()}}
+            },
+            LinearLayout.LayoutParams(0,-2,1f),
+        )
+        if(entries.size>4){
+            taxHead.addView(
+                gText(if(statsTaxonomyExpanded)"Ver menos" else "Ver todos",11f,mint,medium=true).apply {
+                    isFocusable=true;setPadding(ui.dp(6),ui.dp(4),0,ui.dp(2))
+                    setOnClickListener {statsTaxonomyExpanded=!statsTaxonomyExpanded;changed()}
+                },
+                LinearLayout.LayoutParams(-2,-2),
+            )
+        }
+
+        val taxList=ui.column().apply {tag=if(statsTaxonomyMode=="subgenres")"statistics-distribution:classification-tag" else "statistics-distribution:stats"}
+        wrap.addView(taxList,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(24)})
+        val peakCount=(entries.firstOrNull()?.books ?: 1).coerceAtLeast(1)
+        val shownEntries=if(statsTaxonomyExpanded) entries else entries.take(4)
+        if(shownEntries.isEmpty()){
+            taxList.addView(gText("Ainda sem dados neste filtro.",12f,ui.muted),LinearLayout.LayoutParams(-1,-2))
+        }else {
+            shownEntries.forEachIndexed { idx,entry ->
+                val line=ui.row().apply {gravity=Gravity.BOTTOM}
+                taxList.addView(line,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(5)})
+                line.addView(
+                    gText(entry.name,12.5f,ui.text).apply {
+                        tag="statistics-classification-name";maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END
+                    },
+                    LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(10)},
+                )
+                line.addView(
+                    gText(format.format(entry.books),11.5f,ui.muted).apply {
+                        tag="statistics-classification-count";fontFeatureSettings="tnum"
+                    },
+                    LinearLayout.LayoutParams(-2,-2),
+                )
+                val frac=(entry.books.toFloat()/peakCount.toFloat()).coerceIn(0.04f,1f)
+                val track=FrameLayout(activity).apply {
+                    background=ui.pillShape(ui.galleryHairline(72),3)
+                    clipToOutline=true
+                }
+                val tRow=ui.row()
+                tRow.addView(View(activity).apply {setBackgroundColor(mint)},LinearLayout.LayoutParams(0,-1,frac))
+                if(frac<0.99f) tRow.addView(View(activity),LinearLayout.LayoutParams(0,-1,1f-frac))
+                track.addView(tRow,FrameLayout.LayoutParams(-1,-1))
+                taxList.addView(track,LinearLayout.LayoutParams(-1,ui.dp(2).coerceAtLeast(2)).apply {if(idx<shownEntries.lastIndex)bottomMargin=ui.dp(13)})
+            }
+        }
+
+        // 4) Retrospective Physical Collector Card (with 2 real tilted covers from the year!)
+        val retroCard=ui.row().apply {
+            tag="statistics-retrospective-card"
+            gravity=Gravity.CENTER_VERTICAL
+            setPadding(ui.dp(16),ui.dp(14),ui.dp(16),ui.dp(14))
+            background=android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                intArrayOf(ui.surface,ui.activeSurface),
+            ).apply {
+                cornerRadius=ui.dp(16).toFloat()
+                setStroke(ui.dp(1).coerceAtLeast(1),ui.galleryHairline(145))
+            }
+            isFocusable=true
+            setOnClickListener {
+                val dlg=retrospectiveDialog ?: RetrospectiveDialog(activity,ui,repository).also {retrospectiveDialog=it}
+                dlg.showYear(heatmapYear)
+            }
+        }
+        wrap.addView(retroCard,LinearLayout.LayoutParams(-1,-2))
+
+        val yearCoverBooks=books.filter {it.cover.isNotBlank()}.sortedByDescending {if(it.complete) 1 else 0}.take(2)
+        val fan=FrameLayout(activity).apply {clipChildren=false;clipToPadding=false}
+        retroCard.addView(fan,LinearLayout.LayoutParams(ui.dp(50),ui.dp(48)).apply {marginEnd=ui.dp(14)})
+        fun addTiltedCover(book:LibraryBook?,leftDp:Int,topDp:Int,angle:Float){
+            val img=ImageView(activity).apply {
+                scaleType=ImageView.ScaleType.CENTER_CROP
+                background=ui.pillShape(ui.activeSurface,4,ui.galleryHairline(130))
+                clipToOutline=true
+                rotation=angle
+                elevation=ui.dp(6).toFloat()
+                val bmp=book?.cover?.takeIf(String::isNotBlank)?.let(images::thumbnail)
+                if(bmp!=null) setImageBitmap(bmp) else setImageDrawable(br.com.viblio.ui.ViblioBookMarkDrawable(mint,Color.WHITE,scale=0.5f,backgroundColor=ui.activeSurface))
+                importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }
+            fan.addView(img,FrameLayout.LayoutParams(ui.dp(30),ui.dp(44)).apply {marginStart=ui.dp(leftDp);topMargin=ui.dp(topDp)})
+        }
+        addTiltedCover(yearCoverBooks.getOrNull(1),0,2,-8f)
+        addTiltedCover(yearCoverBooks.getOrNull(0),16,1,7f)
+
+        val retroMid=ui.column()
+        retroCard.addView(retroMid,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(10)})
+        retroMid.addView(gText("Retrospectiva $heatmapYear",16.5f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)})
+        retroMid.addView(gText("Seu ano em livros · imagem pronta",11f,ui.muted).apply {maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END},LinearLayout.LayoutParams(-1,-2))
+        retroCard.addView(gText("→",18f,mint),LinearLayout.LayoutParams(-2,-2))
+    }
     private fun redesignedStatistics(parent: LinearLayout) {
         val mint=if(ui.rectilinear)ui.accent else 0xff9bd8bb.toInt();val amber=if(ui.rectilinear)ui.muted else 0xffbca566.toInt();val neutral=if(ui.rectilinear)ui.lineColor else 0xff435148.toInt()
+        val gallery=baseUi.rectilinear && settings.galleryUiStyle()
+        if(gallery){
+            parent.setPadding(0,0,0,0)
+            val canvas=ui.column().apply {
+                setPadding(0,ui.dp(8),0,ui.dp(24))
+                background=android.graphics.drawable.GradientDrawable(
+                    android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+                    intArrayOf(ui.tint(mint,32),ui.tint(mint,10),Color.TRANSPARENT),
+                )
+            }
+            parent.addView(canvas,LinearLayout.LayoutParams(-1,-2))
+
+            fun gText(value:String,sp:Float,color:Int,serif:Boolean=false,medium:Boolean=false)=TextView(activity).apply {
+                text=value;textSize=sp;setTextColor(color);includeFontPadding=false
+                typeface=when {
+                    serif -> Typeface.create("serif",Typeface.NORMAL)
+                    medium -> Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                    else -> Typeface.create("sans-serif",Typeface.NORMAL)
+                }
+            }
+            val scopeLabels=linkedMapOf("all" to "Todos","book" to "Livros","manga" to "Mangás","comic" to "Quadrinhos")
+            val header=ui.row().apply {gravity=Gravity.CENTER_VERTICAL;setPadding(ui.dp(20),ui.dp(4),ui.dp(20),ui.dp(14))}
+            canvas.addView(header,LinearLayout.LayoutParams(-1,-2))
+            if(!separateShelfStatistics) ui.icon(header,"back","Voltar à estante",40){onStatisticsBack?.invoke() ?: show("library")}
+            header.addView(gText("Estatísticas",26f,ui.text,serif=true),LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(10)})
+            if(statisticsTab!="plan"){
+                header.addView(
+                    gText("${scopeLabels[statisticsType] ?: "Todos"} ▾",11.5f,mint,medium=true).apply {
+                        tag="statistics-filter:$statisticsType";isSelected=true;gravity=Gravity.CENTER
+                        setPadding(ui.dp(11),ui.dp(6),ui.dp(11),ui.dp(6))
+                        background=ui.pillRipple(ui.surface,18,ui.galleryHairline(145))
+                        isFocusable=true
+                        setOnClickListener {
+                            val keys=scopeLabels.keys.toList()
+                            AlertDialog.Builder(activity).setTitle("Mostrar estatísticas de")
+                                .setSingleChoiceItems(scopeLabels.values.toTypedArray(),keys.indexOf(statisticsType).coerceAtLeast(0)){ dialog,index ->
+                                    statisticsType=keys[index];settings.set("STATISTICS_TYPE",statisticsType);dialog.dismiss();changed()
+                                }.setNegativeButton("Cancelar",null).show()
+                        }
+                    },
+                    LinearLayout.LayoutParams(-2,-2),
+                )
+            }
+            header.addView(View(activity),LinearLayout.LayoutParams(0,1,1f))
+
+            val tabWrap=ui.column().apply {setPadding(ui.dp(20),0,ui.dp(20),0)}
+            canvas.addView(tabWrap,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+            val subtabs=ui.row().apply {gravity=Gravity.BOTTOM}
+            tabWrap.addView(subtabs,LinearLayout.LayoutParams(-1,-2))
+            listOf("summary" to "Resumo","plan" to "Metas","periods" to "Períodos").forEachIndexed { idx,(key,name) ->
+                val active=statisticsTab==key
+                val cell=ui.column().apply {
+                    tag="statistics-subtab:$key";isSelected=active;isFocusable=true;contentDescription="Estatísticas: $name"
+                    setOnClickListener {if(statisticsTab!=key){statisticsTab=key;changed()}}
+                }
+                subtabs.addView(cell,LinearLayout.LayoutParams(-2,-2).apply {if(idx>0)marginStart=ui.dp(22)})
+                cell.addView(gText(name,12.5f,if(active)mint else ui.muted,medium=active).apply {setPadding(0,ui.dp(4),0,ui.dp(8))},LinearLayout.LayoutParams(-2,-2))
+                cell.addView(View(activity).apply {setBackgroundColor(if(active)mint else Color.TRANSPARENT)},LinearLayout.LayoutParams(-1,ui.dp(2).coerceAtLeast(2)))
+            }
+            tabWrap.addView(View(activity).apply {setBackgroundColor(ui.galleryHairline(115))},LinearLayout.LayoutParams(-1,1))
+
+            if(statisticsTab=="plan"){
+                val panel=annualPlanPanel ?: AnnualPlanPanel(
+                    activity = activity,
+                    ui = ui,
+                    repo = repository,
+                    catalogProvider = { planCatalogProvider() },
+                    onOpenBook = onOpenPlannedBook,
+                    onAddCatalogBook = onAddCatalogToShelf,
+                    onPickBookFromShelf = onRequestShelfBookForPlan,
+                ) { if(!destroyed) changed() }.also { annualPlanPanel = it }
+                panel.render(canvas)
+                return
+            }
+            val books=repository.books().filter {statisticsType=="all" || it.kind==statisticsType}
+            val byId=books.associateBy {it.id}
+            val sessions=repository.sessions().filter {it.bookId in byId}
+            if(statisticsTab=="periods"){periodStatisticsGallery(canvas,books,sessions,mint);return}
+            summaryGallery(canvas,books,sessions,mint)
+            return
+        }
+
         val format=java.text.NumberFormat.getIntegerInstance(Locale("pt","BR"))
         fun label(target:LinearLayout,text:String,size:Int=13,color:Int=ui.text,bold:Boolean=false)=
             ui.label(target,text,size,color,bold).apply {includeFontPadding=true;(layoutParams as LinearLayout.LayoutParams).bottomMargin=ui.dp(4)}
@@ -3814,9 +4421,9 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             footRow.addView(legendRow,LinearLayout.LayoutParams(-2,-2))
             ui.label(legendRow,"-",9,ui.muted).apply {layoutParams=LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(3)}}
             listOf(
-                0xFF1E1D1B.toInt(),
-                Color.argb(82,Color.red(mint),Color.green(mint),Color.blue(mint)),
-                Color.argb(165,Color.red(mint),Color.green(mint),Color.blue(mint)),
+                ui.background,
+                ui.tint(mint,82),
+                ui.tint(mint,165),
                 mint,
             ).forEach { col->
                 legendRow.addView(View(activity).apply {setBackgroundColor(col)},LinearLayout.LayoutParams(ui.dp(9),ui.dp(9)).apply {marginEnd=ui.dp(2)})
