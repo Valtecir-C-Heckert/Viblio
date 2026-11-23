@@ -49,8 +49,23 @@ class SearchPanel(
     private var status: TextView? = null
     private var rows: LinearLayout? = null
     private var subtabBar: LinearLayout? = null
+    private var galleryWishBtn: TextView? = null
+    private var galleryScopeBtn: TextView? = null
+    private var galleryClearBtn: TextView? = null
     private var infoDialog: android.app.AlertDialog? = null
     private var statusText = ""
+
+    private fun isGallery(): Boolean =
+        ui.rectilinear && br.com.centralcasa.data.LocalSettings(activity).galleryUiStyle()
+
+    private fun gText(value: CharSequence, sp: Float, color: Int, serif: Boolean = false, medium: Boolean = false) = TextView(activity).apply {
+        text = value; textSize = sp; setTextColor(color); includeFontPadding = false
+        typeface = when {
+            serif -> Typeface.create("serif", Typeface.NORMAL)
+            medium -> Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            else -> Typeface.create("sans-serif", Typeface.NORMAL)
+        }
+    }
 
     fun acceptIsbn(value: String) {
         query = value
@@ -86,6 +101,9 @@ class SearchPanel(
         status = null
         rows = null
         subtabBar = null
+        galleryWishBtn = null
+        galleryScopeBtn = null
+        galleryClearBtn = null
     }
 
     private fun cancelImages() {
@@ -101,101 +119,222 @@ class SearchPanel(
 
     private fun wishlistIds(): Set<String> = wishlistItems.mapTo(HashSet()) { it.id }
 
+    private fun openManualCreate() {
+        if (manual == null) add(null) else android.app.AlertDialog.Builder(activity).setTitle("Cadastrar manualmente")
+            .setItems(arrayOf("Livro", "Mangá", "Quadrinho")) { _, index ->
+                manual.invoke(listOf("book", "manga", "comic")[index])
+            }.setNegativeButton("Cancelar", null).show()
+    }
+
     fun render(parent: LinearLayout) {
         active = true
         cancelImages()
-        val header = ui.row()
-        parent.addView(header)
-        ui.label(header, if (ui.rectilinear) "PESQUISA" else "Pesquisa", if (ui.rectilinear) 30 else 36, bold = true).apply {
-            typeface = Typeface.create("serif", if (ui.rectilinear) Typeface.NORMAL else Typeface.BOLD)
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-        }
-        ui.action(header, "+ Cadastrar") {
-            if (manual == null) add(null) else android.app.AlertDialog.Builder(activity).setTitle("Cadastrar manualmente")
-                .setItems(arrayOf("Livro", "Mangá", "Quadrinho")) { _, index ->
-                    manual.invoke(listOf("book", "manga", "comic")[index])
-                }.setNegativeButton("Cancelar", null).show()
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(-2, ui.dp(44))
-            minHeight = ui.dp(44)
-            textSize = 12f
-            background = ui.outlined()
-        }
-        ui.label(parent, "Encontre sua próxima leitura", 13, ui.muted)
-
-        val field = EditText(activity).apply {
-            hint = "Título, autor, saga ou ISBN"
-            setText(query)
-            textSize = 15f
-            setTextColor(ui.text)
-            setHintTextColor(ui.muted)
-            isSingleLine = true
-            imeOptions = EditorInfo.IME_ACTION_SEARCH
-            setCompoundDrawables(ui.symbol("search", ui.muted, 20), null, null, null)
-            compoundDrawablePadding = ui.dp(10)
-            setPadding(ui.dp(14), ui.dp(14), ui.dp(14), ui.dp(14))
-            background = ui.outlined(ui.surface)
-        }
-        val queryRow = ui.row()
-        parent.addView(queryRow, LinearLayout.LayoutParams(-1, ui.dp(56)).apply {
-            topMargin = ui.dp(16)
-            bottomMargin = ui.dp(10)
-        })
-        queryRow.addView(field, LinearLayout.LayoutParams(0, -1, 1f))
-        if (scan != null) ui.icon(queryRow, "barcode", "Ler ISBN com a câmera", 52) { scan.invoke() }.apply {
-            tag = "search-scan-isbn"
-        }
-
-        val horizontal = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
-        val chips = ui.row()
-        horizontal.addView(chips)
-        parent.addView(horizontal, LinearLayout.LayoutParams(-1, -2))
+        galleryWishBtn = null
+        galleryScopeBtn = null
+        galleryClearBtn = null
         val labels = linkedMapOf("all" to "Todos", "book" to "Livros", "manga" to "Mangás", "comic" to "Quadrinhos")
-        fun repaintChips() {
-            chips.removeAllViews()
-            labels.forEach { (key, label) ->
-                val change = {
-                    if (kind != key) {
-                        kind = key
-                        repaintChips()
-                        if (query.trim().length >= 3) schedule(0) else drawBrowse()
-                    }
-                }
-                if (ui.rectilinear) {
-                    val tab = ui.column().apply {
-                        isSelected = key == kind
-                        isFocusable = true
-                        contentDescription = label
-                        setOnClickListener { change() }
-                    }
-                    chips.addView(tab, LinearLayout.LayoutParams(ui.dp(if (key == "comic") 94 else 72), -2))
-                    ui.label(tab, label, 11, if (key == kind) ui.accent else ui.muted).apply {
-                        gravity = Gravity.CENTER
-                        minHeight = ui.dp(38)
-                        maxLines = 1
-                        setOnClickListener { change() }
-                        (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
-                    }
-                    tab.addView(
-                        View(activity).apply { setBackgroundColor(if (key == kind) ui.accent else ui.lineColor) },
-                        LinearLayout.LayoutParams(-1, ui.dp(if (key == kind) 2 else 1)),
-                    )
-                } else ui.action(chips, label, key == kind) { change() }.apply {
-                    layoutParams = LinearLayout.LayoutParams(-2, ui.dp(40)).apply { marginEnd = ui.dp(6) }
-                    minHeight = ui.dp(40)
-                    setPadding(ui.dp(15), 0, ui.dp(15), 0)
-                    if (key != kind) background = ui.outlined(0x33151515)
+        val gallery = isGallery()
+
+        val field: EditText
+        if (gallery) {
+            // Compact 1-line header: Pesquisa + Todos ▾ + Comprar (N) + '+'
+            val header = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+            parent.addView(header, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(12) })
+
+            header.addView(
+                gText("Pesquisa", 26f, ui.text, serif = true),
+                LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(10) },
+            )
+            val scopeBtn = gText("${labels[kind] ?: "Todos"} ▾", 11.5f, ui.accent, medium = true).apply {
+                gravity = Gravity.CENTER
+                setPadding(ui.dp(11), ui.dp(6), ui.dp(11), ui.dp(6))
+                background = ui.pillRipple(ui.surface, 18, ui.galleryHairline(145))
+                isFocusable = true
+                setOnClickListener {
+                    val keys = labels.keys.toList()
+                    android.app.AlertDialog.Builder(activity).setTitle("Filtrar pesquisa")
+                        .setSingleChoiceItems(labels.values.toTypedArray(), keys.indexOf(kind).coerceAtLeast(0)) { dlg, idx ->
+                            val next = keys[idx]
+                            dlg.dismiss()
+                            if (kind != next) {
+                                kind = next
+                                text = "${labels[kind] ?: "Todos"} ▾"
+                                if (query.trim().length >= 3) schedule(0) else drawBrowse()
+                            }
+                        }.setNegativeButton("Cancelar", null).show()
                 }
             }
-        }
-        repaintChips()
+            galleryScopeBtn = scopeBtn
+            header.addView(scopeBtn, LinearLayout.LayoutParams(-2, -2))
+            header.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f))
 
-        subtabBar = ui.row().also { bar ->
-            parent.addView(bar, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(10) })
+            val wishToggle = gText("Comprar", 11.5f, ui.muted, medium = false).apply {
+                tag = "search-subtab:wishlist"
+                gravity = Gravity.CENTER
+                setPadding(ui.dp(8), ui.dp(6), ui.dp(8), ui.dp(6))
+                isFocusable = true
+            }
+            galleryWishBtn = wishToggle
+            header.addView(wishToggle, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) })
+
+            header.addView(
+                gText("+", 18f, ui.accent, medium = true).apply {
+                    gravity = Gravity.CENTER
+                    contentDescription = "Cadastrar manualmente"
+                    background = ui.pillRipple(ui.surface, 17, ui.galleryHairline(145))
+                    isFocusable = true
+                    setOnClickListener { openManualCreate() }
+                },
+                LinearLayout.LayoutParams(ui.dp(34), ui.dp(34)),
+            )
+
+            // Minimalist underlined editorial search line (zero chunky box!)
+            val searchRow = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+            parent.addView(searchRow, LinearLayout.LayoutParams(-1, -2))
+            searchRow.addView(
+                ImageView(activity).apply {
+                    setImageDrawable(ui.symbol("search", ui.accent, 18))
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                },
+                LinearLayout.LayoutParams(ui.dp(18), ui.dp(18)).apply { marginEnd = ui.dp(10) },
+            )
+            field = EditText(activity).apply {
+                hint = "Título, autor, saga ou ISBN"
+                setText(query)
+                textSize = 14.5f
+                setTextColor(ui.text)
+                setHintTextColor(ui.muted)
+                isSingleLine = true
+                imeOptions = EditorInfo.IME_ACTION_SEARCH
+                background = null
+                setPadding(0, ui.dp(10), ui.dp(6), ui.dp(10))
+            }
+            searchRow.addView(field, LinearLayout.LayoutParams(0, -2, 1f))
+
+            val clearBtn = gText("×", 18f, ui.muted).apply {
+                gravity = Gravity.CENTER; contentDescription = "Limpar busca"; isFocusable = true
+                background = ui.pillRipple(Color.TRANSPARENT, 16)
+                visibility = if (query.isNotEmpty()) View.VISIBLE else View.GONE
+                setOnClickListener {
+                    field.setText("")
+                    field.clearFocus()
+                }
+            }
+            galleryClearBtn = clearBtn
+            searchRow.addView(clearBtn, LinearLayout.LayoutParams(ui.dp(32), ui.dp(32)))
+
+            if (scan != null) {
+                ui.icon(searchRow, "barcode", "Ler ISBN com a câmera", 36) { scan.invoke() }.apply {
+                    tag = "search-scan-isbn"
+                    setPadding(ui.dp(6), ui.dp(6), ui.dp(2), ui.dp(6))
+                }
+            }
+
+            val underline = View(activity).apply { setBackgroundColor(ui.galleryHairline(140)) }
+            parent.addView(underline, LinearLayout.LayoutParams(-1, ui.dp(1).coerceAtLeast(1)).apply { bottomMargin = ui.dp(12) })
+            field.setOnFocusChangeListener { _, hasFocus ->
+                underline.setBackgroundColor(if (hasFocus) ui.accent else ui.galleryHairline(140))
+            }
+
+            wishToggle.setOnClickListener {
+                if (query.trim().length >= 3) {
+                    browseTab = "wishlist"
+                    field.setText("")
+                } else {
+                    browseTab = if (browseTab == "wishlist") "discover" else "wishlist"
+                    repaintSubtabs()
+                    drawBrowse()
+                }
+            }
+            subtabBar = null
+        } else {
+            val header = ui.row()
+            parent.addView(header)
+            ui.label(header, if (ui.rectilinear) "PESQUISA" else "Pesquisa", if (ui.rectilinear) 30 else 36, bold = true).apply {
+                typeface = Typeface.create("serif", if (ui.rectilinear) Typeface.NORMAL else Typeface.BOLD)
+                layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            }
+            ui.action(header, "+ Cadastrar") { openManualCreate() }.apply {
+                layoutParams = LinearLayout.LayoutParams(-2, ui.dp(44))
+                minHeight = ui.dp(44)
+                textSize = 12f
+                background = ui.outlined()
+            }
+            ui.label(parent, "Encontre sua próxima leitura", 13, ui.muted)
+
+            field = EditText(activity).apply {
+                hint = "Título, autor, saga ou ISBN"
+                setText(query)
+                textSize = 15f
+                setTextColor(ui.text)
+                setHintTextColor(ui.muted)
+                isSingleLine = true
+                imeOptions = EditorInfo.IME_ACTION_SEARCH
+                setCompoundDrawables(ui.symbol("search", ui.muted, 20), null, null, null)
+                compoundDrawablePadding = ui.dp(10)
+                setPadding(ui.dp(14), ui.dp(14), ui.dp(14), ui.dp(14))
+                background = ui.outlined(ui.surface)
+            }
+            val queryRow = ui.row()
+            parent.addView(queryRow, LinearLayout.LayoutParams(-1, ui.dp(56)).apply {
+                topMargin = ui.dp(16)
+                bottomMargin = ui.dp(10)
+            })
+            queryRow.addView(field, LinearLayout.LayoutParams(0, -1, 1f))
+            if (scan != null) ui.icon(queryRow, "barcode", "Ler ISBN com a câmera", 52) { scan.invoke() }.apply {
+                tag = "search-scan-isbn"
+            }
+
+            val horizontal = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
+            val chips = ui.row()
+            horizontal.addView(chips)
+            parent.addView(horizontal, LinearLayout.LayoutParams(-1, -2))
+            fun repaintChips() {
+                chips.removeAllViews()
+                labels.forEach { (key, label) ->
+                    val change = {
+                        if (kind != key) {
+                            kind = key
+                            repaintChips()
+                            if (query.trim().length >= 3) schedule(0) else drawBrowse()
+                        }
+                    }
+                    if (ui.rectilinear) {
+                        val tab = ui.column().apply {
+                            isSelected = key == kind
+                            isFocusable = true
+                            contentDescription = label
+                            setOnClickListener { change() }
+                        }
+                        chips.addView(tab, LinearLayout.LayoutParams(ui.dp(if (key == "comic") 94 else 72), -2))
+                        ui.label(tab, label, 11, if (key == kind) ui.accent else ui.muted).apply {
+                            gravity = Gravity.CENTER
+                            minHeight = ui.dp(38)
+                            maxLines = 1
+                            setOnClickListener { change() }
+                            (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
+                        }
+                        tab.addView(
+                            View(activity).apply { setBackgroundColor(if (key == kind) ui.accent else ui.lineColor) },
+                            LinearLayout.LayoutParams(-1, ui.dp(if (key == kind) 2 else 1)),
+                        )
+                    } else ui.action(chips, label, key == kind) { change() }.apply {
+                        layoutParams = LinearLayout.LayoutParams(-2, ui.dp(40)).apply { marginEnd = ui.dp(6) }
+                        minHeight = ui.dp(40)
+                        setPadding(ui.dp(15), 0, ui.dp(15), 0)
+                        if (key != kind) background = ui.outlined(0x33151515)
+                    }
+                }
+            }
+            repaintChips()
+
+            subtabBar = ui.row().also { bar ->
+                parent.addView(bar, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(10) })
+            }
         }
 
         status = ui.label(parent, "", 12, ui.muted).apply {
-            setPadding(0, ui.dp(10), 0, ui.dp(8))
+            setPadding(0, ui.dp(if (gallery) 4 else 10), 0, ui.dp(8))
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
         rows = ui.column().also {
@@ -208,6 +347,7 @@ class SearchPanel(
             override fun afterTextChanged(s: Editable?) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                 query = s.toString()
+                galleryClearBtn?.visibility = if (query.isNotEmpty()) View.VISIBLE else View.GONE
                 schedule()
             }
         })
@@ -230,6 +370,24 @@ class SearchPanel(
     }
 
     private fun repaintSubtabs() {
+        val gBtn = galleryWishBtn
+        if (gBtn != null) {
+            val searching = query.trim().length >= 3
+            gBtn.visibility = if (!catalog.configured) View.GONE else View.VISIBLE
+            val wishCount = wishlistItems.size
+            val activeWish = !searching && browseTab == "wishlist"
+            val label = if (wishCount > 0) "Comprar $wishCount" else "Comprar"
+            gBtn.text = android.text.SpannableStringBuilder(label).apply {
+                setSpan(android.text.style.ForegroundColorSpan(if (activeWish) ui.accent else ui.muted), 0, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                if (wishCount > 0 && !activeWish) {
+                    val idx = label.indexOf(' ')
+                    if (idx >= 0) setSpan(android.text.style.ForegroundColorSpan(ui.accent), idx + 1, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+            }
+            gBtn.typeface = Typeface.create(if (activeWish) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
+            gBtn.isSelected = activeWish
+            return
+        }
         val bar = subtabBar ?: return
         val searching = query.trim().length >= 3
         bar.visibility = if (searching || !catalog.configured) View.GONE else View.VISIBLE
@@ -474,6 +632,10 @@ class SearchPanel(
             return
         }
         status?.visibility = View.GONE
+        if (isGallery()) {
+            drawRecommendationsGallery(target, data)
+            return
+        }
 
         // Subtle anchor banner showing which book drives the recommendations + refresh button.
         val banner = ui.row().apply {
@@ -672,9 +834,338 @@ class SearchPanel(
         }
     }
 
+    /** Galeria v2 Discover: Featured #1 Spotlight Hero + pure borderless cover rails (zero card boxes). */
+    private fun drawRecommendationsGallery(target: LinearLayout, data: CatalogRecommendations) {
+        val hairline = ui.galleryHairline(105)
+        val cacheKey = "$kind:$recSeed"
+        val epoch = recGeneration
+        val savedIds = wishlistIds()
+
+        // 1) Quiet borderless anchor header + refresh button
+        val anchorRow = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        target.addView(anchorRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
+        val anchorText = if (data.anchorTitle.isNotBlank()) {
+            android.text.SpannableStringBuilder("POR CAUSA DE ").apply {
+                setSpan(android.text.style.ForegroundColorSpan(ui.muted), 0, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                val s = length; append(data.anchorTitle.uppercase(java.util.Locale("pt", "BR")))
+                setSpan(android.text.style.ForegroundColorSpan(ui.text), s, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        } else {
+            "SUGESTÕES DO CATÁLOGO"
+        }
+        anchorRow.addView(
+            gText(anchorText, 10.5f, ui.muted).apply {
+                letterSpacing = 0.05f; maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+            },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) },
+        )
+        anchorRow.addView(
+            gText("↻", 16f, ui.accent).apply {
+                tag = "search-refresh-recs"
+                contentDescription = "Atualizar recomendações"
+                gravity = Gravity.CENTER
+                background = ui.pillRipple(Color.TRANSPARENT, 16)
+                isFocusable = true
+                setOnClickListener { recSeed = (recSeed + 1) % 100; drawBrowse() }
+            },
+            LinearLayout.LayoutParams(ui.dp(32), ui.dp(32)),
+        )
+
+        // 2) Featured Spotlight Hero (#1 recommended book)
+        val spotlight = data.sections.firstOrNull()?.items?.firstOrNull()
+        if (spotlight != null) {
+            val isSaved = spotlight.id in savedIds
+            val heroRow = ui.row().apply {
+                tag = "rec-book:${spotlight.id}"
+                gravity = Gravity.TOP
+                isFocusable = true
+                contentDescription = "Destaque: ${spotlight.title}"
+                setOnClickListener { openBookDialog(spotlight) }
+            }
+            target.addView(heroRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(18) })
+
+            val cov = ImageView(activity).apply {
+                setImageDrawable(ViblioBookMarkDrawable(ui.accent, Color.WHITE, scale = 0.46f, backgroundColor = ui.activeSurface))
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                background = ui.pillShape(ui.activeSurface, 6)
+                clipToOutline = true
+                elevation = ui.dp(12).toFloat()
+                contentDescription = "Capa de ${spotlight.title}"
+            }
+            heroRow.addView(cov, LinearLayout.LayoutParams(ui.dp(100), ui.dp(148)).apply { marginEnd = ui.dp(16) })
+            covers.bind(cov, spotlight.coverUrl)
+
+            val info = ui.column()
+            heroRow.addView(info, LinearLayout.LayoutParams(0, -2, 1f).apply { topMargin = ui.dp(2) })
+            info.addView(
+                gText("EM DESTAQUE", 10f, ui.accent, medium = true).apply { letterSpacing = 0.08f },
+                LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(4) },
+            )
+            info.addView(
+                gText(spotlight.title, 20f, ui.text, serif = true).apply {
+                    maxLines = 2; ellipsize = TextUtils.TruncateAt.END; setLineSpacing(0f, 1.06f)
+                },
+                LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(3) },
+            )
+            if (spotlight.author.isNotBlank()) {
+                info.addView(
+                    gText(spotlight.author, 12f, ui.muted).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
+                    LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(4) },
+                )
+            }
+            val meta = CatalogSearch.edition(spotlight)
+            if (meta.isNotBlank()) {
+                info.addView(
+                    gText(meta, 10.5f, ui.tint(ui.muted, 195)).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
+                    LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(12) },
+                )
+            } else {
+                info.addView(View(activity), LinearLayout.LayoutParams(1, ui.dp(10)))
+            }
+
+            val btns = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+            info.addView(btns, LinearLayout.LayoutParams(-1, -2))
+            btns.addView(
+                gText("+ Estante", 11.5f, ui.background, medium = true).apply {
+                    gravity = Gravity.CENTER
+                    setPadding(ui.dp(14), ui.dp(8), ui.dp(14), ui.dp(8))
+                    background = ui.pillRipple(ui.accent, 20, darkRipple = true)
+                    isFocusable = true
+                    setOnClickListener { add(spotlight) }
+                },
+                LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(8) },
+            )
+            btns.addView(
+                gText(if (isSaved) "✓ Salvo" else "Salvar", 11.5f, if (isSaved) Color.rgb(126, 224, 164) else ui.text, medium = isSaved).apply {
+                    gravity = Gravity.CENTER
+                    setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8))
+                    background = ui.pillRipple(
+                        if (isSaved) Color.argb(34, 79, 166, 116) else Color.TRANSPARENT,
+                        20,
+                        if (isSaved) Color.argb(120, 126, 224, 164) else ui.galleryHairline(145),
+                    )
+                    isFocusable = true
+                    setOnClickListener { toggleWishlist(spotlight) }
+                },
+                LinearLayout.LayoutParams(-2, -2),
+            )
+
+            target.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1).apply { bottomMargin = ui.dp(18) })
+        }
+
+        // 3) Pure Borderless Cover Rails (ZERO outer box, ZERO buttons cluttering covers!)
+        val covW = ui.dp(96)
+        val covH = ui.dp(142)
+        val gapPx = ui.dp(14)
+
+        fun addPureCover(rail: LinearLayout, book: CatalogBook) {
+            val col = ui.column().apply {
+                tag = "rec-book:${book.id}"
+                isFocusable = true
+                contentDescription = "Recomendação: ${book.title}"
+                setOnClickListener { openBookDialog(book) }
+            }
+            rail.addView(col, LinearLayout.LayoutParams(covW, -2).apply { marginEnd = gapPx })
+
+            val cov = ImageView(activity).apply {
+                setImageDrawable(ViblioBookMarkDrawable(ui.accent, Color.WHITE, scale = 0.46f, backgroundColor = ui.activeSurface))
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                background = ui.pillShape(ui.activeSurface, 6)
+                clipToOutline = true
+                elevation = ui.dp(8).toFloat()
+                contentDescription = "Capa de ${book.title}"
+            }
+            col.addView(cov, LinearLayout.LayoutParams(covW, covH).apply { bottomMargin = ui.dp(8) })
+            covers.bind(cov, book.coverUrl)
+
+            col.addView(
+                gText(book.title, 12f, ui.text, serif = true).apply {
+                    maxLines = 2; ellipsize = TextUtils.TruncateAt.END; setLineSpacing(0f, 1.1f)
+                },
+                LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(2) },
+            )
+            if (book.author.isNotBlank()) {
+                col.addView(
+                    gText(book.author, 10f, ui.muted).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
+                    LinearLayout.LayoutParams(-1, -2),
+                )
+            }
+        }
+
+        data.sections.forEachIndexed { secIdx, sec ->
+            val initialItems = if (secIdx == 0 && spotlight != null) sec.items.filterNot { it.id == spotlight.id } else sec.items
+            if (initialItems.isEmpty() && !sec.hasMore) return@forEachIndexed
+
+            val secHead = ui.row().apply { gravity = Gravity.BOTTOM }
+            target.addView(secHead, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
+            secHead.addView(
+                gText(sec.title, 17.5f, ui.text, serif = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
+                LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) },
+            )
+            if (sec.tag.isNotBlank()) {
+                secHead.addView(
+                    gText(sec.tag, 10.5f, ui.accent).apply { maxLines = 1 },
+                    LinearLayout.LayoutParams(-2, -2),
+                )
+            }
+
+            var onRailScroll: (() -> Unit)? = null
+            val railScroll = object : HorizontalScrollView(activity) {
+                override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
+                    super.onScrollChanged(l, t, oldl, oldt)
+                    onRailScroll?.invoke()
+                }
+            }.apply { isHorizontalScrollBarEnabled = false; clipToPadding = false }
+            val rail = ui.row()
+            railScroll.addView(rail)
+            target.addView(railScroll, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(22) })
+
+            val loadedItems = sec.items.toMutableList()
+            val seenIds = loadedItems.mapTo(HashSet()) { it.id }
+            var hasMore = sec.hasMore
+            var nextCursor = sec.nextCursor
+            var loadingMore = false
+            var loaderTile: View? = null
+
+            initialItems.forEach { book -> addPureCover(rail, book) }
+
+            fun fetchMore() {
+                if (!hasMore || loadingMore || loadedItems.size >= 200 || !active || closed) return
+                loadingMore = true
+                val tile = gText("…", 18f, ui.muted).apply { gravity = Gravity.CENTER }
+                loaderTile = tile
+                rail.addView(tile, LinearLayout.LayoutParams(ui.dp(42), covH).apply { marginEnd = gapPx })
+
+                catalog.recommendationsMore(
+                    section = sec.key,
+                    term = sec.term,
+                    kind = sec.effectiveKind,
+                    cursor = nextCursor,
+                    seed = recSeed,
+                    excludeIds = loadedItems.map { it.id },
+                ) { res ->
+                    loadingMore = false
+                    loaderTile?.let { rail.removeView(it) }
+                    loaderTile = null
+                    if (!active || closed || recGeneration != epoch || rail.parent !== railScroll) return@recommendationsMore
+                    res.fold({ page ->
+                        val fresh = page.items.filter { seenIds.add(it.id) }
+                        fresh.forEach { book ->
+                            loadedItems.add(book)
+                            addPureCover(rail, book)
+                        }
+                        hasMore = page.hasMore && fresh.isNotEmpty() && loadedItems.size < 200
+                        nextCursor = page.nextCursor
+                        recsCache[cacheKey]?.let { prev ->
+                            val updatedSections = prev.sections.toMutableList()
+                            if (secIdx in updatedSections.indices && updatedSections[secIdx].key == sec.key) {
+                                updatedSections[secIdx] = updatedSections[secIdx].copy(
+                                    items = loadedItems.toList(),
+                                    hasMore = hasMore,
+                                    nextCursor = nextCursor,
+                                )
+                                recsCache[cacheKey] = prev.copy(sections = updatedSections)
+                            }
+                        }
+                    }, {
+                        hasMore = false
+                    })
+                }
+            }
+
+            if (hasMore) {
+                onRailScroll = {
+                    if (hasMore && !loadingMore && active && !closed && railScroll.width > 0) {
+                        val remaining = rail.width - (railScroll.scrollX + railScroll.width)
+                        if (remaining <= covW * 3) fetchMore()
+                    }
+                }
+            }
+        }
+    }
+
     private fun drawWishlist(target: LinearLayout) {
         target.removeAllViews()
         val shown = CatalogSearch.filter(wishlistItems, kind)
+        if (isGallery()) {
+            val top = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+            target.addView(top, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
+            top.addView(gText("Quero comprar", 20f, ui.text, serif = true), LinearLayout.LayoutParams(0, -2, 1f))
+            top.addView(
+                gText("← Descobrir", 11.5f, ui.accent, medium = true).apply {
+                    tag = "search-subtab:discover"
+                    setPadding(ui.dp(8), ui.dp(4), 0, ui.dp(4)); isFocusable = true
+                    setOnClickListener { browseTab = "discover"; repaintSubtabs(); drawBrowse() }
+                },
+                LinearLayout.LayoutParams(-2, -2),
+            )
+            if (!wishlistLoaded && wishlistLoading) {
+                status?.visibility = View.VISIBLE; status?.text = "Carregando…"; return
+            }
+            if (shown.isEmpty()) {
+                status?.visibility = View.VISIBLE
+                status?.text = if (wishlistItems.isEmpty()) "Lista vazia" else "Nenhum item neste filtro"
+                return
+            }
+            status?.visibility = View.GONE
+            val hairline = ui.galleryHairline(105)
+            shown.forEachIndexed { idx, book ->
+                val row = ui.row().apply {
+                    tag = "wishlist-book:${book.id}"
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, ui.dp(12), 0, ui.dp(12))
+                    isFocusable = true
+                    setOnClickListener { openBookDialog(book) }
+                }
+                target.addView(row, LinearLayout.LayoutParams(-1, -2))
+                val cov = ImageView(activity).apply {
+                    setImageDrawable(ViblioBookMarkDrawable(ui.accent, Color.WHITE, scale = 0.46f, backgroundColor = ui.activeSurface))
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    background = ui.pillShape(ui.activeSurface, 5)
+                    clipToOutline = true; elevation = ui.dp(6).toFloat()
+                    contentDescription = "Capa de ${book.title}"
+                }
+                row.addView(cov, LinearLayout.LayoutParams(ui.dp(48), ui.dp(72)).apply { marginEnd = ui.dp(14) })
+                covers.bind(cov, book.coverUrl)
+
+                val col = ui.column()
+                row.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
+                col.addView(
+                    gText(book.title, 15.5f, ui.text, serif = true).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END },
+                    LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(2) },
+                )
+                val sub = listOf(book.author, CatalogSearch.edition(book)).filter(String::isNotBlank).joinToString(" · ")
+                if (sub.isNotBlank()) {
+                    col.addView(
+                        gText(sub, 11f, ui.muted).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
+                        LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(8) },
+                    )
+                }
+                val acts = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+                col.addView(acts, LinearLayout.LayoutParams(-1, -2))
+                acts.addView(
+                    gText("Comprei → Estante", 11f, ui.background, medium = true).apply {
+                        setPadding(ui.dp(12), ui.dp(6), ui.dp(12), ui.dp(6))
+                        background = ui.pillRipple(ui.accent, 18, darkRipple = true)
+                        isFocusable = true
+                        setOnClickListener { toggleWishlist(book); add(book) }
+                    },
+                    LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(12) },
+                )
+                acts.addView(
+                    gText("Remover", 11f, ui.muted).apply {
+                        setPadding(ui.dp(4), ui.dp(6), ui.dp(4), ui.dp(6)); isFocusable = true
+                        setOnClickListener { toggleWishlist(book) }
+                    },
+                    LinearLayout.LayoutParams(-2, -2),
+                )
+                if (idx < shown.lastIndex) {
+                    target.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
+                }
+            }
+            return
+        }
+
         if (!wishlistLoaded && wishlistLoading) {
             status?.visibility = View.VISIBLE
             status?.text = "Carregando lista Quero comprar…"
@@ -756,6 +1247,7 @@ class SearchPanel(
     private fun openBookDialog(book: CatalogBook) {
         if (infoDialog?.isShowing == true) return
         val dialogCovers = SearchCoverLoader(activity)
+        var chosenBook = book
         infoDialog = BookInfoDialog.show(
             activity,
             ui,
@@ -769,13 +1261,35 @@ class SearchPanel(
             ),
             bind = { image, root ->
                 dialogCovers.attach(root)
-                dialogCovers.bind(image, book.coverUrl)
+                dialogCovers.bind(image, chosenBook.coverUrl)
             },
             onClose = {
                 dialogCovers.close()
                 if (infoDialog?.isShowing != true) infoDialog = null
             },
-            add = { add(book) },
+            add = { add(chosenBook) },
+            isWishlisted = chosenBook.id in wishlistIds(),
+            onToggleWishlist = if (catalog.configured) {
+                {
+                    toggleWishlist(chosenBook)
+                    chosenBook.id in wishlistIds()
+                }
+            } else null,
+            onChooseCover = if (catalog.configured) {
+                { applyUrl ->
+                    catalog.chooseCover(chosenBook.id, chosenBook.source) { chosen ->
+                        if (active && !closed) {
+                            chosen.fold({ choice ->
+                                chosenBook = chosenBook.copy(coverUrl = choice.url)
+                                applyUrl(choice.url)
+                            }, {
+                                Toast.makeText(activity, it.message ?: "Não foi possível listar as capas.", Toast.LENGTH_LONG).show()
+                            })
+                        }
+                    }
+                }
+            } else null,
+            rebindCover = { image, url -> dialogCovers.bind(image, url) },
         )
     }
 
@@ -791,8 +1305,80 @@ class SearchPanel(
             return
         }
         status?.visibility = View.VISIBLE
-        status?.text = if (shown.isEmpty()) "Nenhum resultado neste filtro. Você pode cadastrar manualmente." else "${shown.size} edições encontradas · “$resultsQuery”"
+        status?.text = if (shown.isEmpty()) "Nenhum resultado neste filtro." else "${shown.size} edições encontradas"
         val savedIds = wishlistIds()
+
+        if (isGallery()) {
+            val hairline = ui.galleryHairline(105)
+            shown.forEachIndexed { idx, book ->
+                val row = ui.row().apply {
+                    tag = "search-book:${book.id}"
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, ui.dp(12), 0, ui.dp(12))
+                    isFocusable = true
+                    contentDescription = "Informações de ${book.title}"
+                    setOnClickListener { openBookDialog(book) }
+                }
+                target.addView(row, LinearLayout.LayoutParams(-1, -2))
+
+                val cov = ImageView(activity).apply {
+                    setImageDrawable(ViblioBookMarkDrawable(ui.accent, Color.WHITE, scale = 0.46f, backgroundColor = ui.activeSurface))
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    background = ui.pillShape(ui.activeSurface, 5)
+                    clipToOutline = true; elevation = ui.dp(6).toFloat()
+                    contentDescription = "Capa de ${book.title}"
+                }
+                row.addView(cov, LinearLayout.LayoutParams(ui.dp(48), ui.dp(72)).apply { marginEnd = ui.dp(14) })
+                covers.bind(cov, book.coverUrl)
+
+                val col = ui.column()
+                row.addView(col, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(10) })
+                col.addView(
+                    gText(book.title, 16f, ui.text, serif = true).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END },
+                    LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(2) },
+                )
+                if (book.author.isNotBlank()) {
+                    col.addView(
+                        gText(book.author, 11.5f, ui.muted).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
+                        LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(2) },
+                    )
+                }
+                val meta = CatalogSearch.edition(book)
+                if (meta.isNotBlank()) {
+                    col.addView(
+                        gText(meta, 10.5f, ui.tint(ui.muted, 190)).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
+                        LinearLayout.LayoutParams(-1, -2),
+                    )
+                }
+
+                row.addView(
+                    gText("+", 18f, ui.accent, medium = true).apply {
+                        gravity = Gravity.CENTER
+                        contentDescription = "Adicionar ${book.title} à Estante"
+                        background = ui.pillRipple(ui.tint(ui.accent, 34), 17)
+                        isFocusable = true
+                        setOnClickListener { add(book) }
+                    },
+                    LinearLayout.LayoutParams(ui.dp(34), ui.dp(34)),
+                )
+
+                if (idx < shown.lastIndex) {
+                    target.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
+                }
+            }
+            if (resultsNextCursor != null) {
+                target.addView(
+                    gText(if (resultsLoadingMore) "Carregando…" else "Carregar mais", 12.5f, ui.accent, medium = true).apply {
+                        gravity = Gravity.CENTER; isEnabled = !resultsLoadingMore
+                        setPadding(0, ui.dp(14), 0, ui.dp(14)); isFocusable = true
+                        setOnClickListener { loadMoreResults() }
+                    },
+                    LinearLayout.LayoutParams(-1, -2),
+                )
+            }
+            return
+        }
+
         shown.forEach { book ->
             val card = ui.row().apply {
                 gravity = Gravity.TOP

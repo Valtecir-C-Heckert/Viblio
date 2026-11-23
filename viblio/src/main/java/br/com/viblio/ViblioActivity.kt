@@ -448,12 +448,12 @@ class ViblioActivity : Activity() {
     private fun applyBackground(theme:DisplayUi){
         val libraryVisible=tab=="shelf" && !needsLogin()
         val friendsVisible=tab=="friends" && !needsLogin()
-        val statsGlow=tab=="stats" && !needsLogin() && br.com.centralcasa.data.LocalSettings(this).galleryUiStyle()
+        val topGlow=(tab=="stats" || tab=="search") && !needsLogin() && br.com.centralcasa.data.LocalSettings(this).galleryUiStyle()
         val color=if(libraryVisible)library.detailBackgroundColor() ?: theme.background else theme.background
         val backdrop=when {
             libraryVisible->library.screenBackground()
             friendsVisible->friends.screenBackground()
-            statsGlow->object:android.graphics.drawable.Drawable() {
+            topGlow->object:android.graphics.drawable.Drawable() {
                 private val basePaint=android.graphics.Paint().apply {this.color=color}
                 private val glowPaint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
                 private var lastW=0;private var lastH=0;private var radius=0f

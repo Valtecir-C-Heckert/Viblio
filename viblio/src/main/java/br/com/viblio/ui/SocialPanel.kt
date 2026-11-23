@@ -58,10 +58,42 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     val canReplaceLibrary get()=draft.isBlank() && dialogs.isEmpty() && !busy
     val displayTheme get()=if(tab=="friends" && !people)friends.displayTheme else ui
     val hideNavigation get()=active && !closed && !people && tab=="clubs" && club!=null && stage!=null
+    private fun isGalleryMode()=ui.rectilinear && br.com.centralcasa.data.LocalSettings(activity).galleryUiStyle()
+    private fun wantClubBackdrop()=active && !closed && !people && tab=="clubs" && club!=null && (stage!=null || isGalleryMode())
     fun screenBackground():Drawable? {
-        if(!hideNavigation || themeCover.isBlank() || backdropPath!=themeCover)return null
-        val bitmap=backdropBitmap?.takeIf {!it.isRecycled} ?: return null
-        return ClubCoverBackdrop(bitmap,ui.background)
+        if(!wantClubBackdrop())return null
+        if(themeCover.isNotBlank() && backdropPath==themeCover){
+            val bitmap=backdropBitmap?.takeIf {!it.isRecycled}
+            if(bitmap!=null)return ClubCoverBackdrop(bitmap,ui.background)
+        }
+        if(!isGalleryMode())return null
+        val color=ui.background
+        return object:Drawable() {
+            private val basePaint=android.graphics.Paint().apply {this.color=color}
+            private val glowPaint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+            private var lastW=0;private var lastH=0;private var radius=0f
+            override fun draw(canvas:android.graphics.Canvas){
+                val b=bounds;val w=b.width();val h=b.height()
+                canvas.drawRect(b,basePaint)
+                if(w<=0 || h<=0)return
+                val cx=b.left+w*0.5f;val top=b.top.toFloat()
+                if(w!=lastW || h!=lastH){
+                    lastW=w;lastH=h
+                    radius=(w*0.78f).coerceAtLeast(ui.dp(260).toFloat())
+                    glowPaint.shader=android.graphics.RadialGradient(
+                        cx,top,radius,
+                        intArrayOf(ui.tint(ui.accent,44),ui.tint(ui.accent,18),Color.TRANSPARENT),
+                        floatArrayOf(0f,0.48f,1f),
+                        android.graphics.Shader.TileMode.CLAMP,
+                    )
+                }
+                canvas.save();canvas.scale(1f,0.78f,cx,top);canvas.drawCircle(cx,top,radius,glowPaint);canvas.restore()
+            }
+            override fun setAlpha(alpha:Int){}
+            override fun setColorFilter(colorFilter:android.graphics.ColorFilter?){}
+            @Deprecated("Deprecated in Java")
+            override fun getOpacity()=android.graphics.PixelFormat.OPAQUE
+        }
     }
     private fun who()=LibraryProfiles.database(activity)+":"+accounts.catalogToken().orEmpty()
     private fun JsonObject.s(k:String)=get(k)?.takeUnless {it.isJsonNull}?.runCatching {asString}?.getOrNull().orEmpty()
@@ -102,18 +134,32 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         parent.addView(box,LinearLayout.LayoutParams(ui.dp(sizeDp),ui.dp(sizeDp)).apply {marginEnd=ui.dp(marginEndDp)})
         return box
     }
+    private fun monogramCircle(parent:LinearLayout,label:String,sizeDp:Int,palette:DisplayUi=ui,textSizeSp:Float=11f,marginEndDp:Int=10,highlight:Boolean=false):TextView {
+        val circle=TextView(activity).apply {
+            text=label;gravity=Gravity.CENTER;textSize=textSizeSp
+            setTextColor(if(highlight)palette.accent else palette.text)
+            typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+            background=android.graphics.drawable.GradientDrawable().apply {
+                shape=android.graphics.drawable.GradientDrawable.OVAL
+                setColor(if(highlight)palette.tint(palette.accent,38) else palette.activeSurface)
+                setStroke(ui.dp(1).coerceAtLeast(1),if(highlight)palette.tint(palette.accent,135) else palette.galleryHairline(130))
+            }
+        }
+        parent.addView(circle,LinearLayout.LayoutParams(ui.dp(sizeDp),ui.dp(sizeDp)).apply {marginEnd=ui.dp(marginEndDp)})
+        return circle
+    }
     private fun clearBackdrop(){
         backdropPath="";backdropRequest=""
         backdropBitmap=null
     }
     private fun ensureBackdrop(){
-        if(!hideNavigation || themeCover.isBlank())return
+        if(!wantClubBackdrop() || themeCover.isBlank())return
         val path=themeCover
         if((backdropPath==path && backdropBitmap?.isRecycled==false) || backdropRequest==path)return
         backdropRequest=path
-        val profile=identity;val selectedClub=club;val selectedStage=stage
+        val profile=identity;val selectedClub=club
         images?.bitmap(path,eager=true){source->
-            if(!active || closed || identity!=profile || who()!=profile || club!=selectedClub || stage!=selectedStage || themeCover!=path){
+            if(!active || closed || identity!=profile || who()!=profile || club!=selectedClub || themeCover!=path){
                 if(backdropRequest==path)backdropRequest="";return@bitmap
             }
             if(source==null || source.isRecycled){if(backdropRequest==path)backdropRequest="";return@bitmap}
@@ -123,7 +169,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 copy.recycle()
                 handler.post {
                     if(backdropRequest==path)backdropRequest=""
-                    if(active && !closed && identity==profile && who()==profile && club==selectedClub && stage==selectedStage && themeCover==path && rendered!=null){
+                    if(active && !closed && identity==profile && who()==profile && club==selectedClub && themeCover==path && rendered!=null){
                         backdropBitmap=rendered;backdropPath=path
                         onBackdrop()
                     }else rendered?.recycle()
@@ -155,7 +201,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 }
             }
         }
-        if(stage!=null && themeCover.isNotBlank())ensureBackdrop()
+        if(wantClubBackdrop() && themeCover.isNotBlank())ensureBackdrop()
     }
     private fun date(ms:Long,pattern:String="dd/MM 'às' HH'h'mm")=SimpleDateFormat(pattern,Locale("pt","BR")).format(Date(ms))
     private fun shortDate(ms:Long)=SimpleDateFormat("dd MMM",Locale("pt","BR")).format(Date(ms)).replace(".","")
@@ -279,7 +325,17 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         }else {
             val header=ui.row().apply {gravity=Gravity.CENTER_VERTICAL};parent.addView(header,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(if(gallery && !people && club==null) 16 else 14)})
             if(people || club!=null)ui.icon(header,"back","Voltar",40){back()}.apply {layoutParams=LinearLayout.LayoutParams(ui.dp(40),ui.dp(40)).apply {marginEnd=ui.dp(4)}}
-            if(gallery && !people && club==null){
+            if(gallery && !people && club!=null){
+                header.addView(
+                    gText(data.s("name").ifBlank {"Clube"},21f,ui.text,serif=true).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},
+                    LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)},
+                )
+                ui.icon(header,"more","Opções do clube",38){clubOptions()}.apply {
+                    tag="club-options";background=ui.pillRipple(ui.gallerySurface(185),19,ui.galleryHairline(130))
+                    setPadding(ui.dp(8),ui.dp(8),ui.dp(8),ui.dp(8))
+                    layoutParams=LinearLayout.LayoutParams(ui.dp(38),ui.dp(38)).apply {marginStart=ui.dp(4)}
+                }
+            }else if(gallery && !people && club==null){
                 header.addView(
                     gText("Amigos",26f,ui.text,serif=true).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},
                     LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)},
@@ -361,6 +417,46 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         if(!loaded && !busy && error.isBlank())handler.post {if(active && !loaded && !busy)load()}
     }
     private fun renderDiscussionHeader(parent:LinearLayout){
+        val selected=data.list("proposals",30).firstOrNull {it.s("id")==data.o("round").s("selected_id")}
+        val cover=selected?.s("cover").orEmpty()
+        val stages=data.list("stages",20)
+        val stageIndex=(stages.indexOfFirst {it.s("id")==stage}.takeIf {it>=0} ?: 0)+1
+        if(isGalleryMode()){
+            val header=ui.row().apply {gravity=Gravity.CENTER_VERTICAL;setPadding(0,0,0,ui.dp(10))}
+            parent.addView(header,LinearLayout.LayoutParams(-1,-2))
+            ui.icon(header,"back","Voltar",38){back()}.apply {layoutParams=LinearLayout.LayoutParams(ui.dp(38),ui.dp(38)).apply {marginEnd=ui.dp(6)}}
+            if(cover.isNotBlank()){
+                val mini=ImageView(activity).apply {
+                    scaleType=ImageView.ScaleType.CENTER_CROP
+                    background=ui.pillShape(ui.activeSurface,4)
+                    clipToOutline=true;elevation=ui.dp(4).toFloat()
+                }
+                header.addView(mini,LinearLayout.LayoutParams(ui.dp(26),ui.dp(39)).apply {marginEnd=ui.dp(10)})
+                images?.bind(mini,cover)
+            }
+            val meta=ui.column();header.addView(meta,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)})
+            meta.addView(
+                gText(selected?.s("title")?.ifBlank {null} ?: data.s("name").ifBlank {"Conversa"},16f,ui.text,serif=true).apply {
+                    maxLines=1;ellipsize=TextUtils.TruncateAt.END
+                },
+                LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)},
+            )
+            val baseSub=if(stageInfo.n("page_limit")>0)"Etapa $stageIndex · até pág. ${stageInfo.n("page_limit")}" else data.s("name")
+            val liveSuffix=if(stageInfo.y("is_open"))" · ● Ao vivo" else " · Encerrada"
+            meta.addView(
+                gText(baseSub+liveSuffix,10.5f,if(stageInfo.y("is_open"))ui.accent else ui.muted,medium=stageInfo.y("is_open")).apply {
+                    maxLines=1;ellipsize=TextUtils.TruncateAt.END
+                },
+                LinearLayout.LayoutParams(-1,-2),
+            )
+            ui.icon(header,"more","Opções do clube",38){clubOptions()}.apply {
+                tag="club-options";background=ui.pillRipple(ui.gallerySurface(185),19,ui.galleryHairline(130))
+                setPadding(ui.dp(8),ui.dp(8),ui.dp(8),ui.dp(8))
+                layoutParams=LinearLayout.LayoutParams(ui.dp(38),ui.dp(38))
+            }
+            parent.addView(View(activity).apply {setBackgroundColor(ui.galleryHairline(105))},LinearLayout.LayoutParams(-1,1).apply {bottomMargin=ui.dp(10)})
+            return
+        }
         val header=ui.row().apply {
             gravity=Gravity.CENTER_VERTICAL
             setPadding(ui.dp(4),ui.dp(4),ui.dp(4),ui.dp(6))
@@ -368,15 +464,11 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         }
         parent.addView(header,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(8)})
         ui.icon(header,"back","Voltar",40){back()}.apply {layoutParams=LinearLayout.LayoutParams(ui.dp(40),ui.dp(40)).apply {marginEnd=ui.dp(4)}}
-        val selected=data.list("proposals",30).firstOrNull {it.s("id")==data.o("round").s("selected_id")}
-        val cover=selected?.s("cover").orEmpty()
         if(cover.isNotBlank()){
             val mini=ImageView(activity).apply {scaleType=ImageView.ScaleType.CENTER_CROP;background=ui.outlined(ui.activeSurface,ui.lineColor,0)}
             header.addView(mini,LinearLayout.LayoutParams(ui.dp(28),ui.dp(42)).apply {marginEnd=ui.dp(10)})
             images?.bind(mini,cover)
         }
-        val stages=data.list("stages",20)
-        val stageIndex=(stages.indexOfFirst {it.s("id")==stage}.takeIf {it>=0} ?: 0)+1
         val meta=ui.column();header.addView(meta,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(6)})
         title(meta,selected?.s("title")?.ifBlank {null} ?: data.s("name").ifBlank {"Conversa"},17).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END}
         val limitLabel=if(stageInfo.n("page_limit")>0)"Etapa $stageIndex · até pág. ${stageInfo.n("page_limit")}" else data.s("name")
@@ -969,10 +1061,26 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         val r=data.o("round");val state=r.s("state");val selected=data.list("proposals",30).firstOrNull {it.s("id")==r.s("selected_id")}
         if(state=="voting"){clubVoting(root);return}
         if(state=="completed" && round==null){
-            val panel=card(root,"club-completed");title(panel,"Leitura encerrada",24);action(panel,"Histórico de leituras"){clubNavigate("history")}
+            if(isGalleryMode()){
+                root.addView(gText("Leitura encerrada",22f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
+                root.addView(
+                    gText("Histórico de leituras",12.5f,ui.background,medium=true).apply {
+                        gravity=Gravity.CENTER;setPadding(ui.dp(18),ui.dp(10),ui.dp(18),ui.dp(10))
+                        background=ui.pillRipple(ui.accent,20,darkRipple=true);isFocusable=true
+                        setOnClickListener {clubNavigate("history")}
+                    },
+                    LinearLayout.LayoutParams(-2,-2),
+                )
+            }else {
+                val panel=card(root,"club-completed");title(panel,"Leitura encerrada",24);action(panel,"Histórico de leituras"){clubNavigate("history")}
+            }
             return
         }
         if(selected==null)return
+        if(isGalleryMode()){
+            clubViewGallery(root,r,state,selected)
+            return
+        }
         val members=data.list("members",100).filter {it.s("status")=="active"}
         val pages=selected.n("pages").coerceAtLeast(1)
         val average=if(members.isEmpty())0 else (members.sumOf {it.n("page").coerceAtMost(pages)}*100/(members.size*pages)).toInt()
@@ -1143,9 +1251,370 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         if(clubFeed.isEmpty() && !busy)text(root,"Nenhuma atividade nesta leitura ainda.",12,ui.muted)
         if(clubFeedCursor!=null && clubFeed.size<200)action(root,"Mais atividades"){loadClubFeed(more=true)}
     }
+
+    /** Galeria v2 Club Home: Open atmospheric book hero + Living Participant Reading Track + Vertical Stages Timeline + Borderless Feed. */
+    private fun clubViewGallery(root:LinearLayout,r:JsonObject,state:String,selected:JsonObject){
+        val members=data.list("members",100).filter {it.s("status")=="active"}
+        val stages=data.list("stages",20)
+        val currentIdx=ClubFormatting.activeStageIndex(stages.map {it.y("is_open")})
+        val pages=selected.n("pages").coerceAtLeast(1)
+        val average=if(members.isEmpty())0 else (members.sumOf {it.n("page").coerceAtMost(pages)}*100/(members.size*pages)).toInt()
+        val myPage=members.firstOrNull {it.s("username")==accounts.username}?.n("page") ?: 0
+        val myPct=((myPage.coerceAtMost(pages)*100)/pages).toInt()
+        val dueMs=instant(r.s("due_at"))
+        val remainingMs=dueMs-System.currentTimeMillis()
+        val hairline=ui.galleryHairline(105)
+
+        // 1) Open Atmospheric Book Hero (ZERO outer box!)
+        val hero=ui.row().apply {tag="club-reading-card";gravity=Gravity.TOP}
+        root.addView(hero,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(20)})
+        picture(hero,selected.s("cover"),82,122,marginEndDp=16,roundedDp=7)
+
+        val hInfo=ui.column()
+        hero.addView(hInfo,LinearLayout.LayoutParams(0,-2,1f).apply {topMargin=ui.dp(2)})
+        val deadlineLabel=if(state=="completed") "Concluída · ${date(dueMs,"dd/MM")}" else "${ClubFormatting.remainingLabel(state,remainingMs)} · ${date(dueMs,"dd/MM")}"
+        hInfo.addView(
+            gText(deadlineLabel,11f,ui.accent,medium=true).apply {tag="club-final-deadline";fontFeatureSettings="tnum"},
+            LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)},
+        )
+        hInfo.addView(
+            gText(selected.s("title"),22f,ui.text,serif=true).apply {maxLines=2;ellipsize=TextUtils.TruncateAt.END;setLineSpacing(0f,1.06f)},
+            LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)},
+        )
+        if(selected.s("author").isNotBlank()){
+            hInfo.addView(
+                gText(selected.s("author"),12f,ui.muted).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},
+                LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(6)},
+            )
+        }
+        val finishedCount=members.count {it.n("page")>=pages}
+        hInfo.addView(
+            gText("$pages págs · $finishedCount/${members.size} concluíram",11f,ui.tint(ui.muted,195)).apply {fontFeatureSettings="tnum"},
+            LinearLayout.LayoutParams(-1,-2),
+        )
+
+        // 2) Living Participant Reading Track (Avatars positioned on exact page % + Stage Ticks)
+        val trackHead=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+        root.addView(trackHead,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(6)})
+        val avgSpan=android.text.SpannableStringBuilder("POSIÇÃO DO GRUPO · MÉDIA ").apply {
+            setSpan(android.text.style.ForegroundColorSpan(ui.muted),0,length,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            val s=length;append("$average%")
+            setSpan(android.text.style.ForegroundColorSpan(ui.accent),s,length,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        trackHead.addView(
+            TextView(activity).apply {
+                text=avgSpan;textSize=10.5f;letterSpacing=0.05f;includeFontPadding=false;fontFeatureSettings="tnum"
+                typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+            },
+            LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)},
+        )
+        trackHead.addView(
+            gText("${ClubFormatting.countLabel(members.size.toLong(),"leitor","leitores")} ›",11.5f,ui.accent,medium=true).apply {
+                setPadding(ui.dp(6),ui.dp(4),0,ui.dp(4));isFocusable=true
+                setOnClickListener {clubNavigate("members")}
+            },
+            LinearLayout.LayoutParams(-2,-2),
+        )
+
+        val trackMembers=members.map {m->
+            ClubTrackMember(
+                monogram=ClubFormatting.monogram(m.s("username"),1),
+                page=m.n("page"),
+                isMe=m.s("username")==accounts.username,
+            )
+        }
+        val trackStages=stages.mapIndexed {idx,s->
+            ClubTrackStage(number=idx+1,pageLimit=s.n("page_limit"),isCurrent=idx==currentIdx)
+        }
+        root.addView(
+            ClubReadingTrackView(activity,ui,pages,trackMembers,trackStages),
+            LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)},
+        )
+
+        if(state=="reading"){
+            val myRow=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+            root.addView(myRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(18)})
+            val mySpan=android.text.SpannableStringBuilder("Você: ").apply {
+                setSpan(android.text.style.ForegroundColorSpan(ui.muted),0,length,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                val s1=length;append("pág. $myPage")
+                setSpan(android.text.style.ForegroundColorSpan(ui.text),s1,length,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                val s2=length;append("  $myPct%")
+                setSpan(android.text.style.ForegroundColorSpan(ui.accent),s2,length,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            myRow.addView(
+                TextView(activity).apply {
+                    text=mySpan;textSize=13f;includeFontPadding=false;fontFeatureSettings="tnum"
+                    typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                },
+                LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(10)},
+            )
+            myRow.addView(
+                gText("Atualizar",12f,ui.background,medium=true).apply {
+                    gravity=Gravity.CENTER;setPadding(ui.dp(16),ui.dp(8),ui.dp(16),ui.dp(8))
+                    background=ui.pillRipple(ui.accent,20,darkRipple=true);isFocusable=true
+                    setOnClickListener {
+                        val body=ui.column().apply {setPadding(ui.dp(20),ui.dp(8),ui.dp(20),0)}
+                        val page=input(body,"Página atual",myPage.toString(),numeric=true,limit=6)
+                        tracked(AlertDialog.Builder(activity).setTitle("Meu progresso · $pages páginas").setView(body).setPositiveButton("Salvar"){_,_->mutate("/v1/clubs/$club/progress","PATCH",JsonObject().apply {addProperty("page",page.text.toString().toIntOrNull() ?: -1)})}.setNegativeButton("Cancelar",null).create())
+                    }
+                },
+                LinearLayout.LayoutParams(-2,-2),
+            )
+        }else {
+            root.addView(View(activity),LinearLayout.LayoutParams(1,ui.dp(10)))
+        }
+        root.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {bottomMargin=ui.dp(20)})
+
+        // 3) Vertical Timeline of Stages (continuous spine, ZERO stacked boxes!)
+        root.addView(gText("Etapas",18.5f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+        if(stages.isEmpty()){
+            root.addView(gText("Sem etapas definidas",12f,ui.muted),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(20)})
+        }else {
+            stages.forEachIndexed {index,s->
+                val isOpen=s.y("is_open")
+                val isCurrent=index==currentIdx
+                val isPast=isOpen && index<currentIdx
+                val isLast=index==stages.lastIndex
+                val reached=members.count {it.n("page")>=s.n("page_limit")}
+                val comments=s.n("comments")
+                val unread=s.n("unread")
+
+                val tRow=ui.row().apply {
+                    tag="club-stage:${s.s("id")}"
+                    gravity=Gravity.TOP
+                    if(!isCurrent && isPast){
+                        isFocusable=true;setOnClickListener {if(!busy)openDiscussion(s)}
+                    }
+                }
+                root.addView(tRow,LinearLayout.LayoutParams(-1,-2))
+
+                // Left vertical timeline rail + node
+                val railCol=ui.column().apply {gravity=Gravity.CENTER_HORIZONTAL}
+                tRow.addView(railCol,LinearLayout.LayoutParams(ui.dp(22),-1).apply {marginEnd=ui.dp(12)})
+
+                val node=TextView(activity).apply {
+                    gravity=Gravity.CENTER;textSize=9f;includeFontPadding=false
+                    when {
+                        isCurrent -> {
+                            text=""
+                            background=android.graphics.drawable.GradientDrawable().apply {
+                                shape=android.graphics.drawable.GradientDrawable.OVAL
+                                setColor(ui.accent)
+                                setStroke(ui.dp(3),ui.tint(ui.accent,60))
+                            }
+                        }
+                        isPast -> {
+                            text="✓";setTextColor(ui.accent)
+                            background=android.graphics.drawable.GradientDrawable().apply {
+                                shape=android.graphics.drawable.GradientDrawable.OVAL
+                                setColor(ui.surface)
+                                setStroke(ui.dp(1).coerceAtLeast(1),ui.accent)
+                            }
+                        }
+                        else -> {
+                            text=""
+                            background=android.graphics.drawable.GradientDrawable().apply {
+                                shape=android.graphics.drawable.GradientDrawable.OVAL
+                                setColor(ui.background)
+                                setStroke(ui.dp(1).coerceAtLeast(1),ui.galleryHairline(165))
+                            }
+                        }
+                    }
+                }
+                railCol.addView(node,LinearLayout.LayoutParams(ui.dp(16),ui.dp(16)).apply {topMargin=ui.dp(2)})
+                if(!isLast){
+                    railCol.addView(
+                        View(activity).apply {setBackgroundColor(if(isPast)ui.tint(ui.accent,100) else hairline)},
+                        LinearLayout.LayoutParams(ui.dp(2).coerceAtLeast(2),0,1f).apply {topMargin=ui.dp(4)},
+                    )
+                }
+
+                // Right stage content
+                val contentCol=ui.column().apply {setPadding(0,0,0,ui.dp(if(isLast) 8 else 18))}
+                tRow.addView(contentCol,LinearLayout.LayoutParams(0,-2,1f))
+
+                if(isCurrent){
+                    val headLine=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+                    contentCol.addView(headLine,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)})
+                    headLine.addView(
+                        gText("Até pág. ${s.n("page_limit")}",18f,ui.text,serif=true),
+                        LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)},
+                    )
+                    headLine.addView(
+                        gText(if(isOpen)"● Aberta" else "Agendada",10.5f,if(isOpen)ui.accent else ui.muted,medium=isOpen),
+                        LinearLayout.LayoutParams(-2,-2),
+                    )
+                    val metaParts=mutableListOf(date(instant(s.s("discuss_at")),"dd/MM · HH'h'mm"),"$reached/${members.size} chegaram")
+                    if(comments>0) metaParts.add(ClubFormatting.countLabel(comments,"comentário","comentários"))
+                    if(unread>0) metaParts.add("${ClubFormatting.countLabel(unread,"nova","novas")}")
+                    contentCol.addView(
+                        gText(metaParts.joinToString(" · "),11f,if(unread>0)ui.accent else ui.muted).apply {fontFeatureSettings="tnum"},
+                        LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)},
+                    )
+                    contentCol.addView(
+                        gText("Conversar →",12f,if(isOpen)ui.background else ui.muted,medium=true).apply {
+                            tag="club-discussion:${s.s("id")}"
+                            isEnabled=isOpen && !busy;isFocusable=isOpen
+                            setPadding(ui.dp(16),ui.dp(8),ui.dp(16),ui.dp(8))
+                            background=if(isOpen) ui.pillRipple(ui.accent,20,darkRipple=true) else ui.pillShape(ui.activeSurface,20,hairline)
+                            setOnClickListener {if(isOpen && !busy) openDiscussion(s)}
+                        },
+                        LinearLayout.LayoutParams(-2,-2),
+                    )
+                }else if(isPast){
+                    val rowLine=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+                    contentCol.addView(rowLine,LinearLayout.LayoutParams(-1,-2))
+                    val left=ui.column()
+                    rowLine.addView(left,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)})
+                    left.addView(gText("Até pág. ${s.n("page_limit")} · ${date(instant(s.s("discuss_at")),"dd/MM")}",13f,ui.text),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
+                    left.addView(gText("$reached/${members.size} chegaram",10.5f,ui.muted),LinearLayout.LayoutParams(-1,-2))
+                    val badge=if(unread>0)"$comments · $unread novas ›" else "$comments ›"
+                    rowLine.addView(
+                        gText(badge,11.5f,ui.accent,medium=true).apply {
+                            tag="club-discussion:${s.s("id")}";isEnabled=!busy;isFocusable=true
+                            setPadding(ui.dp(8),ui.dp(6),0,ui.dp(6))
+                            setOnClickListener {openDiscussion(s)}
+                        },
+                        LinearLayout.LayoutParams(-2,-2),
+                    )
+                }else {
+                    val rowLine=ui.row().apply {gravity=Gravity.CENTER_VERTICAL;alpha=0.62f}
+                    contentCol.addView(rowLine,LinearLayout.LayoutParams(-1,-2))
+                    val left=ui.column()
+                    rowLine.addView(left,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)})
+                    left.addView(gText("Até pág. ${s.n("page_limit")} · ${date(instant(s.s("discuss_at")),"dd/MM")}",13f,ui.muted),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
+                    left.addView(gText("$reached/${members.size} chegaram",10.5f,ui.muted),LinearLayout.LayoutParams(-1,-2))
+                    rowLine.addView(
+                        ImageView(activity).apply {
+                            tag="club-discussion:${s.s("id")}";isEnabled=false
+                            setImageDrawable(ui.symbol("lock",ui.muted,14))
+                        },
+                        LinearLayout.LayoutParams(ui.dp(15),ui.dp(15)),
+                    )
+                }
+            }
+        }
+
+        // 4) Borderless Club Reading Feed
+        root.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {topMargin=ui.dp(12);bottomMargin=ui.dp(18)})
+        root.addView(gText("Nesta leitura",18.5f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
+        if(clubFeed.isNotEmpty()){
+            clubFeed.forEachIndexed {idx,event->
+                val panel=ui.row().apply {
+                    tag="club-feed:${event.s("id")}";gravity=Gravity.TOP
+                    setPadding(0,ui.dp(10),0,ui.dp(10))
+                }
+                root.addView(panel,LinearLayout.LayoutParams(-1,-2))
+                val actorName=event.o("actor").s("username")
+                monogramCircle(panel,ClubFormatting.monogram(actorName,1),26,ui,10.5f,10,highlight=actorName==accounts.username)
+                val bodyCol=ui.column();panel.addView(bodyCol,LinearLayout.LayoutParams(0,-2,1f))
+                val head=ui.row().apply {gravity=Gravity.CENTER_VERTICAL};bodyCol.addView(head,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)})
+                head.addView(gText("@$actorName",12f,if(actorName==accounts.username)ui.accent else ui.text,medium=true),LinearLayout.LayoutParams(0,-2,1f))
+                head.addView(gText(date(event.n("occurred_at"),"dd/MM HH'h'mm"),10f,ui.muted).apply {fontFeatureSettings="tnum"},LinearLayout.LayoutParams(-2,-2))
+                val body=event.o("data")
+                when(event.s("kind")){
+                    "progress"->{
+                        bodyCol.addView(gText("Página ${body.n("page")} de $pages",15.5f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
+                        bodyCol.addView(gText(if(body.n("page")>=body.n("previous_page"))"Atualizou a leitura" else "Corrigiu o progresso",11f,ui.muted),LinearLayout.LayoutParams(-1,-2))
+                    }
+                    "comment"->{
+                        bodyCol.addView(gText("Comentou · até pág. ${body.n("page_limit")}",10.5f,ui.accent),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
+                        bodyCol.addView(gText(body.s("body"),13f,ui.text).apply {maxLines=3;ellipsize=TextUtils.TruncateAt.END},LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
+                        bodyCol.addView(
+                            gText("Ver conversa →",11f,ui.accent,medium=true).apply {
+                                isFocusable=true;setOnClickListener {stages.firstOrNull {it.s("id")==event.s("stage_id")}?.let(::openDiscussion)}
+                            },
+                            LinearLayout.LayoutParams(-2,-2),
+                        )
+                    }
+                    "read"->{
+                        val durStr=if(body.n("duration_ms")>0)" · ${duration(body.n("duration_ms"))}" else ""
+                        bodyCol.addView(gText("${body.n("pages")} páginas$durStr",15.5f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
+                        bodyCol.addView(gText("pág. ${body.n("start_page")} → ${body.n("end_page")}",11f,ui.muted),LinearLayout.LayoutParams(-1,-2))
+                    }
+                    "finished"->{
+                        bodyCol.addView(gText("Terminou de ler",15.5f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2))
+                        if(body.n("total_duration_ms")>0)bodyCol.addView(gText(duration(body.n("total_duration_ms")),11f,ui.accent),LinearLayout.LayoutParams(-1,-2))
+                    }
+                    "rated"->bodyCol.addView(gText("Avaliou ★ ${body.s("rating")}",15f,ui.accent,serif=true),LinearLayout.LayoutParams(-1,-2))
+                    "started"->bodyCol.addView(gText("Começou a leitura",15f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2))
+                    "schedule"->bodyCol.addView(gText("Prazo atualizado · ${date(instant(body.s("due_at")),"dd/MM")}",14f,ui.accent,serif=true),LinearLayout.LayoutParams(-1,-2))
+                    "stage"->bodyCol.addView(gText("Nova etapa · pág. ${body.n("page_limit")}",14.5f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2))
+                    "completed"->bodyCol.addView(gText("Leitura concluída pelo clube",15f,ui.accent,serif=true),LinearLayout.LayoutParams(-1,-2))
+                }
+                if(idx<clubFeed.lastIndex){
+                    root.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1))
+                }
+            }
+        }
+        if(clubFeed.isEmpty() && !busy)root.addView(gText("Sem atividades ainda",12f,ui.muted),LinearLayout.LayoutParams(-1,-2))
+        if(clubFeedCursor!=null && clubFeed.size<200){
+            root.addView(
+                gText("Mais atividades",12f,ui.accent,medium=true).apply {
+                    gravity=Gravity.CENTER;setPadding(0,ui.dp(12),0,ui.dp(8));isFocusable=true
+                    setOnClickListener {loadClubFeed(more=true)}
+                },
+                LinearLayout.LayoutParams(-1,-2),
+            )
+        }
+    }
+
     private fun clubVoting(root:LinearLayout){
         val proposals=data.list("proposals",30)
         val totalVotes=proposals.sumOf {it.n("votes")}
+        if(isGalleryMode()){
+            val hairline=ui.galleryHairline(105)
+            val head=ui.row().apply {tag="club-voting-header";gravity=Gravity.CENTER_VERTICAL}
+            root.addView(head,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+            val hCol=ui.column()
+            head.addView(hCol,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(10)})
+            hCol.addView(gText("Próxima leitura",22f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
+            hCol.addView(gText("${ClubFormatting.countLabel(proposals.size.toLong(),"indicação","indicações")} · ${ClubFormatting.countLabel(totalVotes,"voto","votos")}",11.5f,ui.muted),LinearLayout.LayoutParams(-1,-2))
+            head.addView(
+                gText("+ Indicar",12f,ui.background,medium=true).apply {
+                    tag="club-propose";gravity=Gravity.CENTER;setPadding(ui.dp(14),ui.dp(8),ui.dp(14),ui.dp(8))
+                    background=ui.pillRipple(ui.accent,20,darkRipple=true);isFocusable=true
+                    setOnClickListener {chooseBook()}
+                },
+                LinearLayout.LayoutParams(-2,-2),
+            )
+            root.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {bottomMargin=ui.dp(6)})
+            proposals.forEachIndexed {idx,p->
+                val palette=if(p.s("cover").isNotBlank())coverPalette(p.s("cover"),fallbackToBase=true) else ui
+                val row=ui.row().apply {tag="club-proposal:${p.s("id")}";gravity=Gravity.TOP;setPadding(0,ui.dp(12),0,ui.dp(12))}
+                root.addView(row,LinearLayout.LayoutParams(-1,-2))
+                picture(row,p.s("cover"),54,81,palette,marginEndDp=14,roundedDp=6)
+                val col=ui.column();row.addView(col,LinearLayout.LayoutParams(0,-2,1f))
+                col.addView(gText(p.s("title"),17f,palette.text,serif=true).apply {maxLines=2;ellipsize=TextUtils.TruncateAt.END},LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
+                val proposedBy=p.s("proposed_by")
+                val meta=listOf(p.s("author"),"${p.n("pages")} págs",if(proposedBy.isNotBlank())"@$proposedBy" else "").filter(String::isNotBlank).joinToString(" · ")
+                col.addView(gText(meta,11f,palette.muted).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(8)})
+                val votes=p.n("votes");val share=ClubFormatting.voteShare(votes,totalVotes)
+                val track=FrameLayout(activity).apply {background=palette.pillShape(palette.galleryHairline(85),3);clipToOutline=true}
+                val bRow=ui.row()
+                if(share>0)bRow.addView(View(activity).apply {setBackgroundColor(palette.accent)},LinearLayout.LayoutParams(0,-1,share.toFloat()))
+                if(share<100)bRow.addView(View(activity),LinearLayout.LayoutParams(0,-1,(100-share).toFloat()))
+                track.addView(bRow,FrameLayout.LayoutParams(-1,-1))
+                col.addView(track,LinearLayout.LayoutParams(-1,ui.dp(3).coerceAtLeast(3)).apply {bottomMargin=ui.dp(8)})
+                val foot=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+                col.addView(foot,LinearLayout.LayoutParams(-1,-2))
+                val voteText=ClubFormatting.countLabel(votes,"voto","votos")+(if(totalVotes>0)" ($share%)" else "")
+                foot.addView(gText(voteText,11.5f,palette.accent,medium=true).apply {fontFeatureSettings="tnum"},LinearLayout.LayoutParams(0,-2,1f))
+                val mine=p.y("mine")
+                foot.addView(
+                    gText(if(mine)"✓ Seu voto" else "Votar",11.5f,if(mine)palette.background else palette.accent,medium=true).apply {
+                        tag="club-vote:${p.s("id")}";isEnabled=!busy;isFocusable=true
+                        setPadding(ui.dp(14),ui.dp(6),ui.dp(14),ui.dp(6))
+                        background=if(mine) palette.pillRipple(palette.accent,18,darkRipple=true) else palette.pillRipple(Color.TRANSPARENT,18,palette.tint(palette.accent,130))
+                        setOnClickListener {mutate("/v1/clubs/$club/vote",body=JsonObject().apply {addProperty("proposal_id",p.s("id"))})}
+                    },
+                    LinearLayout.LayoutParams(-2,-2),
+                )
+                if(idx<proposals.lastIndex)root.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1))
+            }
+            if(loaded && !busy && proposals.isEmpty() && error.isBlank())root.addView(gText("Nenhum livro indicado",12f,ui.muted).apply {setPadding(0,ui.dp(12),0,0)},LinearLayout.LayoutParams(-1,-2))
+            return
+        }
         val headerCard=card(root,"club-voting-header",ui)
         text(headerCard,"VOTAÇÃO ABERTA",9,ui.accent).apply {letterSpacing=0.08f}
         title(headerCard,"Próxima leitura",24)
@@ -1187,8 +1656,36 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         if(loaded && !busy && proposals.isEmpty() && error.isBlank())text(root,"Nenhum livro indicado ainda.",12,ui.muted)
     }
     private fun clubHistory(root:LinearLayout){
-        section(root,"HISTÓRICO DE LEITURAS")
         val history=data.list("history",100).filter {it.s("state")=="completed"}
+        if(isGalleryMode()){
+            val hairline=ui.galleryHairline(105)
+            root.addView(gText("Histórico",22f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
+            history.forEachIndexed {idx,item->
+                val palette=if(item.s("cover").isNotBlank())coverPalette(item.s("cover"),fallbackToBase=true) else ui
+                val row=ui.row().apply {
+                    tag="club-history:${item.s("id")}";gravity=Gravity.CENTER_VERTICAL;setPadding(0,ui.dp(12),0,ui.dp(12))
+                    isFocusable=true;setOnClickListener {round=id(item.s("id"));clubNavigate("home")}
+                }
+                root.addView(row,LinearLayout.LayoutParams(-1,-2))
+                picture(row,item.s("cover"),52,78,palette,marginEndDp=14,roundedDp=6)
+                val col=ui.column();row.addView(col,LinearLayout.LayoutParams(0,-2,1f))
+                col.addView(gText(item.s("title"),17f,palette.text,serif=true).apply {maxLines=2;ellipsize=TextUtils.TruncateAt.END},LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
+                if(item.s("author").isNotBlank())col.addView(gText(item.s("author"),11.5f,palette.muted),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
+                val doneLabel=item.s("completed_at").takeIf {it.isNotBlank()}?.let {"Concluído em "+date(instant(it),"dd/MM/yyyy")} ?: "Concluído"
+                col.addView(gText(doneLabel,10.5f,palette.accent),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(6)})
+                col.addView(
+                    gText("Ver discussões →",11.5f,palette.accent,medium=true).apply {
+                        tag="club-history-open:${item.s("id")}";isFocusable=true
+                        setOnClickListener {round=id(item.s("id"));clubNavigate("home")}
+                    },
+                    LinearLayout.LayoutParams(-2,-2),
+                )
+                if(idx<history.lastIndex)root.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1))
+            }
+            if(history.isEmpty())root.addView(gText("Nenhuma leitura concluída",12f,ui.muted),LinearLayout.LayoutParams(-1,-2))
+            return
+        }
+        section(root,"HISTÓRICO DE LEITURAS")
         history.forEach {item->
             val palette=if(item.s("cover").isNotBlank())coverPalette(item.s("cover"),fallbackToBase=true) else ui
             val panel=stripeCard(root,"club-history:${item.s("id")}",palette)
@@ -1203,13 +1700,44 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         if(history.isEmpty())text(root,"Nenhuma leitura concluída ainda.",12,ui.muted)
     }
     private fun clubMembers(root:LinearLayout){
-        section(root,"PARTICIPANTES")
         val admin=data.s("role")=="admin"
         val selected=data.list("proposals",30).firstOrNull {it.s("id")==data.o("round").s("selected_id")}
         val pages=selected?.n("pages")?.takeIf {it>0} ?: 0L
+        val members=data.list("members",100)
+        if(isGalleryMode()){
+            val hairline=ui.galleryHairline(105)
+            root.addView(gText("Participantes",22f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
+            members.forEachIndexed {idx,m->
+                val row=ui.row().apply {gravity=Gravity.CENTER_VERTICAL;setPadding(0,ui.dp(11),0,ui.dp(11))}
+                root.addView(row,LinearLayout.LayoutParams(-1,-2))
+                val uname=m.s("username")
+                monogramCircle(row,ClubFormatting.monogram(uname,1),34,ui,12f,12,highlight=uname==accounts.username)
+                val col=ui.column();row.addView(col,LinearLayout.LayoutParams(0,-2,1f))
+                val top=ui.row().apply {gravity=Gravity.CENTER_VERTICAL};col.addView(top,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
+                top.addView(gText("@$uname",13.5f,if(uname==accounts.username)ui.accent else ui.text,medium=true),LinearLayout.LayoutParams(0,-2,1f))
+                val page=m.n("page")
+                val roleLabel=if(m.s("status")=="invited")"Convidado" else if(m.s("role")=="admin")"Admin" else "Membro"
+                if(m.s("status")=="active" && pages>0){
+                    val pct=((page.coerceAtMost(pages)*100)/pages).toInt().coerceIn(0,100)
+                    top.addView(gText("$pct%",11.5f,ui.accent,medium=true).apply {fontFeatureSettings="tnum"},LinearLayout.LayoutParams(-2,-2))
+                    col.addView(gText("$roleLabel · pág. $page / $pages",11f,ui.muted).apply {fontFeatureSettings="tnum"},LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(5)})
+                    val track=FrameLayout(activity).apply {background=ui.pillShape(ui.galleryHairline(85),3);clipToOutline=true}
+                    val bar=ui.row()
+                    if(pct>0)bar.addView(View(activity).apply {setBackgroundColor(ui.accent)},LinearLayout.LayoutParams(0,-1,pct.toFloat()))
+                    if(pct<100)bar.addView(View(activity),LinearLayout.LayoutParams(0,-1,(100-pct).toFloat()))
+                    track.addView(bar,FrameLayout.LayoutParams(-1,-1))
+                    col.addView(track,LinearLayout.LayoutParams(-1,ui.dp(3).coerceAtLeast(3)))
+                }else {
+                    col.addView(gText(if(m.s("status")=="invited")roleLabel else "$roleLabel · pág. $page",11f,ui.muted),LinearLayout.LayoutParams(-1,-2))
+                }
+                if(admin && m.s("status")=="active")ui.icon(row,"more","Gerenciar @$uname",38){memberMenu(m)}
+                if(idx<members.lastIndex)root.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1))
+            }
+            return
+        }
+        section(root,"PARTICIPANTES")
         val container=ui.column().apply {background=ui.outlined(ui.surface,ui.lineColor,0)}
         root.addView(container,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
-        val members=data.list("members",100)
         members.forEachIndexed {idx,m->
             if(idx>0)container.addView(View(activity).apply {setBackgroundColor(ui.lineColor)},LinearLayout.LayoutParams(-1,ui.dp(1).coerceAtLeast(1)))
             val row=ui.row().apply {gravity=Gravity.CENTER_VERTICAL;setPadding(ui.dp(12),ui.dp(10),ui.dp(12),ui.dp(10))}
@@ -1246,11 +1774,56 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     }
     private fun clubSettings(root:LinearLayout){
         if(data.s("role")!="admin"){clubPage="home";clubView(root);return}
+        val r=data.o("round");val state=r.s("state")
+        if(isGalleryMode()){
+            val hairline=ui.galleryHairline(105)
+            fun settingRow(label:String,sub:String="",accentText:Boolean=false,danger:Boolean=false,tagName:String?=null,onClick:()->Unit){
+                val row=ui.row().apply {
+                    if(tagName!=null)tag=tagName
+                    gravity=Gravity.CENTER_VERTICAL;setPadding(0,ui.dp(13),0,ui.dp(13));isFocusable=true
+                    setOnClickListener {onClick()}
+                }
+                root.addView(row,LinearLayout.LayoutParams(-1,-2))
+                val col=ui.column();row.addView(col,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)})
+                val colTxt=when {danger->Color.rgb(220,131,115);accentText->ui.accent;else->ui.text}
+                col.addView(gText(label,14f,colTxt,medium=accentText),LinearLayout.LayoutParams(-1,-2))
+                if(sub.isNotBlank())col.addView(gText(sub,11f,ui.muted),LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(2)})
+                row.addView(gText("›",17f,if(danger)Color.rgb(220,131,115) else ui.muted),LinearLayout.LayoutParams(-2,-2))
+                root.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1))
+            }
+            root.addView(gText("Configurações",22f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
+            root.addView(gText("PARTICIPANTES",10f,ui.muted,medium=true).apply {letterSpacing=0.08f},LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
+            settingRow("Adicionar participantes",tagName="club-invite"){inviteClub=club;this.people=true;invited.clear();reset(preserveClub=true);load()}
+            settingRow("Gerenciar participantes"){clubNavigate("members")}
+
+            root.addView(gText(if(state=="voting")"VOTAÇÃO" else "LEITURA",10f,ui.muted,medium=true).apply {letterSpacing=0.08f},LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(18);bottomMargin=ui.dp(4)})
+            if(state=="voting"){
+                settingRow("Ver votação"){clubNavigate("home")}
+                val proposals=data.list("proposals",30)
+                if(proposals.any {it.n("votes")>0})settingRow("Definir livro e prazo final",accentText=true){
+                    val most=proposals.maxOf {it.n("votes")};val winners=proposals.filter {it.n("votes")==most}
+                    if(winners.size==1)startReading(winners[0])else tracked(AlertDialog.Builder(activity).setTitle("Desempatar votação").setItems(winners.map {it.s("title")}.toTypedArray()){_,i->startReading(winners[i])}.setNegativeButton("Cancelar",null).create())
+                }
+            }else if(state=="reading"){
+                settingRow("Alterar prazo final",date(instant(r.s("due_at")),"dd/MM/yyyy 'às' HH'h'mm")){adjustDeadline(r)}
+                settingRow("Encerrar leitura e guardar no histórico"){confirm("Concluir esta leitura do clube?"){mutate("/v1/clubs/$club/complete"){clubPage="history";round=null}}}
+                root.addView(gText("ETAPAS",10f,ui.muted,medium=true).apply {letterSpacing=0.08f},LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(18);bottomMargin=ui.dp(4)})
+                settingRow("Criar etapa",accentText=true){stageEditor(null)}
+                data.list("stages",20).forEach {s->
+                    settingRow("Até página ${s.n("page_limit")}",date(instant(s.s("discuss_at")))){stageEditor(s)}
+                }
+            }else {
+                settingRow("Abrir nova votação",accentText=true){mutate("/v1/clubs/$club/rounds"){round=null;clubPage="home"}}
+            }
+
+            root.addView(gText("CLUBE",10f,ui.muted,medium=true).apply {letterSpacing=0.08f},LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(18);bottomMargin=ui.dp(4)})
+            settingRow("Excluir clube",danger=true){confirm("Excluir o clube e suas discussões?"){mutate("/v1/clubs/$club","DELETE"){club=null;round=null;clubPage="home"}}}
+            return
+        }
         section(root,"CONFIGURAÇÕES DO CLUBE")
         val peopleCard=card(root);title(peopleCard,"Participantes",21)
         action(peopleCard,"Adicionar participantes"){inviteClub=club;this.people=true;invited.clear();reset(preserveClub=true);load()}.tag="club-invite"
         action(peopleCard,"Gerenciar participantes"){clubNavigate("members")}
-        val r=data.o("round");val state=r.s("state")
         val reading=card(root);title(reading,if(state=="voting")"Votação" else "Leitura",21)
         if(state=="voting"){
             action(reading,"Ver votação"){clubNavigate("home")}
@@ -1351,17 +1924,20 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     private fun discussionView(parent:LinearLayout){
         ensureBackdrop()
         if(stageInfo.s("id").isBlank())return
+        val gallery=isGalleryMode()
         val barBg=alphaColor(ui.background,212)
-        val borderColor=alphaColor(ui.lineColor,196)
-        val context=ui.row().apply {
-            gravity=Gravity.CENTER_VERTICAL
-            setPadding(ui.dp(12),ui.dp(8),ui.dp(12),ui.dp(8))
-            background=ui.outlined(barBg,borderColor,0)
+        val borderColor=if(gallery) ui.galleryHairline(115) else alphaColor(ui.lineColor,196)
+        if(!gallery){
+            val context=ui.row().apply {
+                gravity=Gravity.CENTER_VERTICAL
+                setPadding(ui.dp(12),ui.dp(8),ui.dp(12),ui.dp(8))
+                background=ui.outlined(barBg,borderColor,0)
+            }
+            parent.addView(context,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
+            val liveLabel=if(stageInfo.y("is_open"))"● Conversa aberta · Ao vivo" else "Conversa encerrada"
+            text(context,liveLabel,10,if(stageInfo.y("is_open"))ui.accent else ui.muted,bold=true).layoutParams=LinearLayout.LayoutParams(0,-2,1f)
+            text(context,date(instant(stageInfo.s("discuss_at")),"dd/MM · HH'h'mm"),10,ui.muted).apply {gravity=Gravity.END;layoutParams=LinearLayout.LayoutParams(-2,-2)}
         }
-        parent.addView(context,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
-        val liveLabel=if(stageInfo.y("is_open"))"● Conversa aberta · Ao vivo" else "Conversa encerrada"
-        text(context,liveLabel,10,if(stageInfo.y("is_open"))ui.accent else ui.muted,bold=true).layoutParams=LinearLayout.LayoutParams(0,-2,1f)
-        text(context,date(instant(stageInfo.s("discuss_at")),"dd/MM · HH'h'mm"),10,ui.muted).apply {gravity=Gravity.END;layoutParams=LinearLayout.LayoutParams(-2,-2)}
 
         val list=ui.column();parent.addView(list,LinearLayout.LayoutParams(-1,-2));messageList=list;renderMessages(list)
 
@@ -1369,10 +1945,10 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         val composerCard=ui.column().apply {
             if(dock!=null){
                 setPadding(ui.dp(14),ui.dp(8),ui.dp(14),ui.dp(10))
-                setBackgroundColor(alphaColor(ui.surface,246))
+                setBackgroundColor(alphaColor(ui.surface,if(gallery) 238 else 246))
             }else {
                 setPadding(ui.dp(12),ui.dp(10),ui.dp(12),ui.dp(10))
-                background=ui.outlined(alphaColor(ui.surface,236),borderColor,0)
+                background=if(gallery) ui.pillShape(alphaColor(ui.surface,236),18,borderColor) else ui.outlined(alphaColor(ui.surface,236),borderColor,0)
             }
         }
         if(dock!=null){
@@ -1386,12 +1962,15 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             parent.addView(composerCard,LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(10);bottomMargin=ui.dp(8)})
         }
 
-        liveStatus=text(composerCard,error,11,ui.muted).apply {layoutParams=LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)}}
+        liveStatus=text(composerCard,error,11,ui.muted).apply {
+            layoutParams=LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=if(error.isNotBlank()) ui.dp(4) else 0}
+            visibility=if(error.isNotBlank()) View.VISIBLE else View.GONE
+        }
 
         val banner=ui.row().apply {
             gravity=Gravity.CENTER_VERTICAL
             setPadding(ui.dp(10),ui.dp(5),ui.dp(8),ui.dp(5))
-            background=ui.outlined(alphaColor(ui.activeSurface,230),borderColor,0)
+            background=if(gallery) ui.pillShape(alphaColor(ui.activeSurface,225),12,borderColor) else ui.outlined(alphaColor(ui.activeSurface,230),borderColor,0)
             visibility=View.GONE
         }
         composerCard.addView(banner,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(6)})
@@ -1422,8 +2001,8 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             filters=arrayOf(InputFilter.LengthFilter(2000))
             tag="club-message"
             isEnabled=stageInfo.y("is_open")
-            background=ui.outlined(alphaColor(ui.background,230),borderColor,0)
-            setPadding(ui.dp(10),ui.dp(9),ui.dp(10),ui.dp(9))
+            background=if(gallery) ui.pillShape(alphaColor(ui.background,220),20,borderColor) else ui.outlined(alphaColor(ui.background,230),borderColor,0)
+            setPadding(ui.dp(if(gallery) 14 else 10),ui.dp(9),ui.dp(if(gallery) 14 else 10),ui.dp(9))
             minHeight=ui.dp(40)
             setOnFocusChangeListener {_,hasFocus->
                 if(hasFocus)activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll)?.post {
@@ -1434,18 +2013,38 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         inputRow.addView(field,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)})
         composer=field
 
-        val send=action(inputRow,"Publicar",primary=true){
-            val payload=JsonObject().apply {
-                addProperty("body",draft)
-                replyToId?.let {addProperty("reply_to_id",it)}
+        val send=if(gallery){
+            Button(activity).apply {
+                text="Enviar";isAllCaps=false;textSize=12.5f;gravity=Gravity.CENTER
+                setTextColor(ui.background)
+                typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                background=ui.pillRipple(ui.accent,20,darkRipple=true)
+                tag="club-send";minHeight=ui.dp(40);minimumHeight=ui.dp(40)
+                setPadding(ui.dp(16),ui.dp(8),ui.dp(16),ui.dp(8))
+                setOnClickListener {
+                    val payload=JsonObject().apply {
+                        addProperty("body",draft)
+                        replyToId?.let {addProperty("reply_to_id",it)}
+                    }
+                    scrollToBottom=true
+                    mutate("/v1/clubs/$club/stages/$stage/messages",body=payload){draft="";replyToId=null;replyToUser="";messageBefore=null}
+                }
+                inputRow.addView(this,LinearLayout.LayoutParams(-2,-2))
             }
-            scrollToBottom=true
-            mutate("/v1/clubs/$club/stages/$stage/messages",body=payload){draft="";replyToId=null;replyToUser="";messageBefore=null}
-        }.apply {
-            tag="club-send"
-            minHeight=ui.dp(40)
-            setPadding(ui.dp(14),ui.dp(9),ui.dp(14),ui.dp(9))
-            layoutParams=LinearLayout.LayoutParams(-2,-2)
+        }else {
+            action(inputRow,"Publicar",primary=true){
+                val payload=JsonObject().apply {
+                    addProperty("body",draft)
+                    replyToId?.let {addProperty("reply_to_id",it)}
+                }
+                scrollToBottom=true
+                mutate("/v1/clubs/$club/stages/$stage/messages",body=payload){draft="";replyToId=null;replyToUser="";messageBefore=null}
+            }.apply {
+                tag="club-send"
+                minHeight=ui.dp(40)
+                setPadding(ui.dp(14),ui.dp(9),ui.dp(14),ui.dp(9))
+                layoutParams=LinearLayout.LayoutParams(-2,-2)
+            }
         }
         sendComment=send
         field.addTextChangedListener(object:TextWatcher {override fun beforeTextChanged(s:CharSequence?,a:Int,c:Int,f:Int){};override fun onTextChanged(s:CharSequence?,a:Int,b:Int,c:Int){draft=s.toString();editedAt=SystemClock.elapsedRealtime();discussionControls()};override fun afterTextChanged(s:Editable?){} })
@@ -1456,21 +2055,122 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         val scroll=activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll);val position=scroll?.scrollY ?: 0
         val wasNearBottom=scroll!=null && scroll.childCount>0 && (scroll.getChildAt(0).bottom-(scroll.height+position))<=ui.dp(80)
         parent.removeAllViews()
+        val gallery=isGalleryMode()
         val cardBg=alphaColor(ui.surface,216)
         val borderColor=alphaColor(ui.lineColor,196)
-        if(cursor!=null)action(parent,"Mensagens anteriores"){val before=cursor;stopLive();messageBefore=before;load()}
+        val hairline=ui.galleryHairline(95)
+
+        if(cursor!=null){
+            if(gallery){
+                parent.addView(
+                    gText("Mensagens anteriores",11.5f,ui.accent,medium=true).apply {
+                        gravity=Gravity.CENTER;setPadding(0,ui.dp(6),0,ui.dp(12));isFocusable=true
+                        setOnClickListener {val before=cursor;stopLive();messageBefore=before;load()}
+                    },
+                    LinearLayout.LayoutParams(-1,-2),
+                )
+            }else action(parent,"Mensagens anteriores"){val before=cursor;stopLive();messageBefore=before;load()}
+        }
         var day=""
-        rows.asReversed().forEach {m->
+        val ordered=rows.asReversed()
+        ordered.forEachIndexed {idx,m->
             val sentMs=instant(m.s("sent_at"))
             if(sentMs>0){
                 val key=ReadingDays.at(sentMs)
                 if(key!=day){
                     day=key
                     val today=ReadingDays.at(System.currentTimeMillis());val yesterday=ReadingDays.at(System.currentTimeMillis()-86400000)
-                    section(parent,when(key){today->"HOJE";yesterday->"ONTEM";else->ReadingDays.label(key).uppercase()})
+                    val dayText=when(key){today->"HOJE";yesterday->"ONTEM";else->ReadingDays.label(key).uppercase()}
+                    if(gallery){
+                        parent.addView(
+                            gText(dayText,10f,ui.tint(ui.muted,185),medium=true).apply {letterSpacing=0.10f},
+                            LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(if(idx==0) 2 else 12);bottomMargin=ui.dp(8)},
+                        )
+                    }else section(parent,dayText)
                 }
             }
             val replyTo=m.o("reply_to");val hasReply=replyTo.n("id")>0
+            val username=m.s("username")
+            val isMine=username==accounts.username
+
+            if(gallery){
+                // Literary Margin Notes Stream (ZERO rectangular boxes! Hairline separated, 2dp accent left rule on replies)
+                val rowHost=ui.row().apply {tag="club-discussion-message:${m.n("id")}";gravity=Gravity.TOP}
+                parent.addView(rowHost,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
+                if(hasReply){
+                    rowHost.addView(
+                        View(activity).apply {setBackgroundColor(ui.accent)},
+                        LinearLayout.LayoutParams(ui.dp(2).coerceAtLeast(2),-1).apply {marginStart=ui.dp(8);marginEnd=ui.dp(12)},
+                    )
+                }
+                val msgCol=ui.column()
+                rowHost.addView(msgCol,LinearLayout.LayoutParams(0,-2,1f))
+
+                if(hasReply){
+                    val snippet=replyTo.s("body").take(80)
+                    val quoteStr=if(snippet.isNotBlank())"↳ @${replyTo.s("username")}: $snippet" else "↳ em resposta a @${replyTo.s("username")}"
+                    msgCol.addView(
+                        gText(quoteStr,10.5f,ui.muted).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},
+                        LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)},
+                    )
+                }
+
+                val hRow=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+                msgCol.addView(hRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
+                if(!hasReply){
+                    monogramCircle(hRow,ClubFormatting.monogram(username,1),22,ui,9.5f,8,highlight=isMine)
+                }
+                hRow.addView(
+                    gText("@$username",12f,if(isMine)ui.accent else ui.text,medium=true),
+                    LinearLayout.LayoutParams(0,-2,1f),
+                )
+                if(sentMs>0){
+                    hRow.addView(
+                        gText(date(sentMs,"HH'h'mm"),10f,ui.muted).apply {fontFeatureSettings="tnum"},
+                        LinearLayout.LayoutParams(-2,-2),
+                    )
+                }
+
+                val bodyPadStart=if(hasReply) 0 else ui.dp(30)
+                msgCol.addView(
+                    gText(m.s("body"),14f,ui.text).apply {
+                        tag="club-message:${m.n("id")}"
+                        setLineSpacing(0f,1.22f)
+                        setPadding(bodyPadStart,0,0,0)
+                        if(m.y("can_delete"))setOnLongClickListener {confirm("Apagar esta mensagem?"){mutate("/v1/clubs/$club/stages/$stage/messages/${m.n("id")}","DELETE")};true}
+                    },
+                    LinearLayout.LayoutParams(-1,-2),
+                )
+
+                if(stageInfo.y("is_open") || m.y("can_delete")){
+                    val foot=ui.row().apply {setPadding(bodyPadStart,ui.dp(5),0,0)}
+                    msgCol.addView(foot,LinearLayout.LayoutParams(-1,-2))
+                    if(stageInfo.y("is_open")){
+                        foot.addView(
+                            gText("Responder",10.5f,ui.muted,medium=true).apply {
+                                setPadding(0,ui.dp(2),ui.dp(12),ui.dp(2));isFocusable=true
+                                setOnClickListener {replyToId=m.n("id");replyToUser=username;updateReplyBanner();composer?.requestFocus()}
+                            },
+                            LinearLayout.LayoutParams(-2,-2),
+                        )
+                    }
+                    if(m.y("can_delete")){
+                        foot.addView(
+                            gText("Apagar",10.5f,ui.muted,medium=true).apply {
+                                setPadding(0,ui.dp(2),ui.dp(8),ui.dp(2));isFocusable=true
+                                setOnClickListener {confirm("Apagar esta mensagem?"){mutate("/v1/clubs/$club/stages/$stage/messages/${m.n("id")}","DELETE")}}
+                            },
+                            LinearLayout.LayoutParams(-2,-2),
+                        )
+                    }
+                }
+
+                if(idx<ordered.lastIndex){
+                    parent.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {bottomMargin=ui.dp(12)})
+                }
+                return@forEachIndexed
+            }
+
             val message=ui.column().apply {
                 tag="club-discussion-message:${m.n("id")}"
                 setPadding(ui.dp(12),ui.dp(10),ui.dp(12),ui.dp(10))
@@ -1486,9 +2186,8 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 if(snippet.isNotBlank())text(message,snippet,11,ui.muted).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END;layoutParams=LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(6)}}
             }
             val header=ui.row().apply {gravity=Gravity.CENTER_VERTICAL};message.addView(header,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
-            val username=m.s("username")
             monogramBox(header,ClubFormatting.monogram(username,1),22,ui,10f,8)
-            text(header,"@$username",12,if(username==accounts.username)ui.accent else ui.text,bold=true).layoutParams=LinearLayout.LayoutParams(0,-2,1f)
+            text(header,"@$username",12,if(isMine)ui.accent else ui.text,bold=true).layoutParams=LinearLayout.LayoutParams(0,-2,1f)
             text(header,if(sentMs>0)date(sentMs,"HH'h'mm") else "",10,ui.muted).apply {gravity=Gravity.END;layoutParams=LinearLayout.LayoutParams(-2,-2)}
             text(message,m.s("body"),14,ui.text).apply {
                 tag="club-message:${m.n("id")}"
@@ -1515,14 +2214,28 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 }
             }
         }
-        if(messageBefore!=null)action(parent,"Mensagens recentes"){messageBefore=null;stopLive();load()}
+        if(messageBefore!=null){
+            if(gallery){
+                parent.addView(
+                    gText("Mensagens recentes",11.5f,ui.accent,medium=true).apply {
+                        gravity=Gravity.CENTER;setPadding(0,ui.dp(8),0,ui.dp(8));isFocusable=true
+                        setOnClickListener {messageBefore=null;stopLive();load()}
+                    },
+                    LinearLayout.LayoutParams(-1,-2),
+                )
+            }else action(parent,"Mensagens recentes"){messageBefore=null;stopLive();load()}
+        }
         if(loaded && !busy && rows.isEmpty() && error.isBlank()){
-            val emptyBox=ui.column().apply {
-                setPadding(ui.dp(14),ui.dp(14),ui.dp(14),ui.dp(14))
-                background=ui.outlined(cardBg,borderColor,0)
+            if(gallery){
+                parent.addView(gText("Nenhum comentário ainda",13f,ui.muted).apply {setPadding(0,ui.dp(12),0,ui.dp(12))},LinearLayout.LayoutParams(-1,-2))
+            }else {
+                val emptyBox=ui.column().apply {
+                    setPadding(ui.dp(14),ui.dp(14),ui.dp(14),ui.dp(14))
+                    background=ui.outlined(cardBg,borderColor,0)
+                }
+                parent.addView(emptyBox,LinearLayout.LayoutParams(-1,-2))
+                text(emptyBox,"Nenhum comentário ainda.",13,ui.muted)
             }
-            parent.addView(emptyBox,LinearLayout.LayoutParams(-1,-2))
-            text(emptyBox,"Nenhum comentário ainda.",13,ui.muted)
         }
         val shouldScrollBottom=messageBefore==null && (scrollToBottom || (wasNearBottom && rows.isNotEmpty()))
         if(loaded)scrollToBottom=false

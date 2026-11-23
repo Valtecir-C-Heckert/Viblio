@@ -534,8 +534,11 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         }
         else->null
     }
-    private fun bookPalette(book: LibraryBook?): DisplayUi =
-        DisplayUi(activity).apply { scopedReadingColor(book?.cover?.takeIf(String::isNotBlank)?.let(images::coverColor)) }
+    private fun bookPalette(book: LibraryBook?): DisplayUi {
+        val coverColor = book?.cover?.takeIf(String::isNotBlank)?.let(images::coverColor)
+        if (coverColor == null && settings.galleryUiStyle()) return baseUi
+        return DisplayUi(activity).apply { scopedReadingColor(coverColor) }
+    }
     fun displayTheme(): DisplayUi {
         if (!baseUi.rectilinear || busy) return baseUi
         val book = backgroundBook() ?: return baseUi
@@ -2041,6 +2044,10 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     private fun collectionEdit(parent: LinearLayout) {
         val c = collectionEditor ?: return
         collectionFields.clear(); editingGenre = c.genre; editingSubgenres.clear(); editingSubgenres.addAll(c.subgenres)
+        if (baseUi.rectilinear && settings.galleryUiStyle()) {
+            collectionEditGallery(parent, c)
+            return
+        }
         val noun = when (c.kind) { "manga" -> "mangá"; "comic" -> "quadrinho"; "book" -> "light novel"; else -> "título" }
         val header = row(parent)
         ui.icon(header, "back", "Cancelar edição", 40) { back() }
@@ -2415,6 +2422,23 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                     gravity = Gravity.CENTER
                 },
                 LinearLayout.LayoutParams(-1, -2),
+            )
+        }
+        if (repository.currentId() != b.id) {
+            hero.addView(
+                galleryText("Tornar livro atual", 11.5f, accent, medium = true).apply {
+                    tag = "book-set-current"
+                    gravity = Gravity.CENTER
+                    setPadding(ui.dp(14), ui.dp(7), ui.dp(14), ui.dp(7))
+                    background = palette.pillRipple(palette.tint(accent, 30), 20, palette.tint(accent, 115))
+                    isFocusable = true
+                    setOnClickListener {
+                        repository.setCurrent(b.id)
+                        toast("Definido como livro atual")
+                        changed()
+                    }
+                },
+                LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(12) },
             )
         }
 
@@ -2981,6 +3005,10 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     private fun edit(parent: LinearLayout) {
         val b = editor ?: return
         fields.clear(); editingGenre = b.genre; editingSubgenres.clear(); editingSubgenres.addAll(b.selectedSubgenres)
+        if (baseUi.rectilinear && settings.galleryUiStyle()) {
+            editGallery(parent, b)
+            return
+        }
         val header = row(parent)
         ui.icon(header, "back", "Cancelar edição", 40) { back() }
         ui.label(header, if (b.collectionId.isNotBlank()) (if (newBook) "Adicionar volume" else "Editar volume") else if (newBook) "Adicionar livro" else "Editar livro", 26, bold = true).apply {
@@ -3034,6 +3062,613 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             AlertDialog.Builder(activity).setTitle("Excluir ${b.title}?").setMessage(if(usePersonalArchive) "O item sairá da Estante. Nota e histórico serão guardados em Conta → Removidos da Estante." else "O livro, suas sessões e datas de leitura serão removidos deste aparelho. Exporte um backup para guardá-los.")
                 .setPositiveButton(if(usePersonalArchive)"Remover" else "Excluir") { _, _ -> attempt {if(usePersonalArchive)repository.archive(b.id) else repository.delete(b.id); editor = null; fields.clear(); selected = null; show("library")} }.setNegativeButton("Cancelar", null).show()
         }
+    }
+
+    /** Galeria v2 Live Book Sheet helpers: the book itself IS the editor (zero stacked form boxes). */
+    private fun editorText(value: CharSequence, sp: Float, color: Int, serif: Boolean = false, medium: Boolean = false) = TextView(activity).apply {
+        text = value; textSize = sp; setTextColor(color); includeFontPadding = false
+        typeface = when {
+            serif -> Typeface.create("serif", Typeface.NORMAL)
+            medium -> Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            else -> Typeface.create("sans-serif", Typeface.NORMAL)
+        }
+    }
+
+    private fun editorColophonInputRow(
+        parent: LinearLayout,
+        palette: DisplayUi,
+        label: String,
+        value: String,
+        hint: String,
+        numeric: Boolean = false,
+        vocabulary: List<String> = emptyList(),
+    ): EditText {
+        val hairline = palette.galleryHairline(105)
+        val r = ui.row().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, ui.dp(8), 0, ui.dp(8))
+        }
+        parent.addView(r, LinearLayout.LayoutParams(-1, -2))
+        r.addView(
+            editorText(label, 12.5f, palette.muted),
+            LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(12) },
+        )
+        val inputView: EditText = if (vocabulary.isNotEmpty()) {
+            AutoCompleteTextView(activity).apply {
+                setText(value); this.hint = hint; setTextColor(palette.text); setHintTextColor(palette.tint(palette.muted, 130))
+                textSize = 13.5f; gravity = Gravity.END or Gravity.CENTER_VERTICAL
+                threshold = 1; isSingleLine = true; minHeight = ui.dp(36)
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                background = null; setPadding(ui.dp(6), ui.dp(4), 0, ui.dp(4))
+                setAdapter(BookMetadataAdapter(activity, vocabulary))
+                setOnClickListener { showDropDown() }
+                setOnFocusChangeListener { _, focused -> if (focused) showDropDown() }
+            }
+        } else {
+            EditText(activity).apply {
+                setText(value); this.hint = hint; setTextColor(palette.text); setHintTextColor(palette.tint(palette.muted, 130))
+                textSize = 13.5f; gravity = Gravity.END or Gravity.CENTER_VERTICAL
+                isSingleLine = true; minHeight = ui.dp(36)
+                inputType = if (numeric) InputType.TYPE_CLASS_NUMBER else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                if (numeric) filters = arrayOf(android.text.InputFilter.LengthFilter(6))
+                background = null; setPadding(ui.dp(6), ui.dp(4), 0, ui.dp(4))
+            }
+        }
+        r.addView(inputView, LinearLayout.LayoutParams(0, -2, 1f))
+        parent.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
+        return inputView
+    }
+
+    private fun genreColophonRowsGallery(parent: LinearLayout, palette: DisplayUi) {
+        subgenreInput = null
+        val hairline = palette.galleryHairline(105)
+        val books = repository.books() + repository.collections().map { it.shelfBook(emptyList()) }
+
+        // Genre key-value row
+        val gRow = ui.row().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, ui.dp(12), 0, ui.dp(12))
+            isFocusable = true
+            setOnClickListener {
+                val canCreateLightNovel = screen == "editor" && editor?.kind == "book" && editor?.collectionId.orEmpty().isBlank()
+                val genres = BookGenres.suggestions(books.map { it.genre } + editingGenre)
+                val options = genres + (if (canCreateLightNovel) listOf("Light novel · por volumes") else emptyList()) + "+ Criar novo gênero"
+                fun choose(name: String) {
+                    if (canCreateLightNovel && ShelfFilters.key(name) in listOf("light novel", "light novels")) { startLightNovel(); return }
+                    captureClassification()
+                    val category = BookGenres.split(genres.firstOrNull { ShelfFilters.key(it) == ShelfFilters.key(name) } ?: name)
+                    if (category.subgenre.isNotBlank() && editingSubgenres.none { ShelfFilters.key(it) == ShelfFilters.key(category.subgenre) }) {
+                        if (editingSubgenres.size >= 3) { toast("Remova um subgênero para adicionar outro."); return }
+                        editingSubgenres.add(category.subgenre)
+                    }
+                    editingGenre = category.genre; captureClassification(); changed()
+                }
+                AlertDialog.Builder(activity).setTitle("Gênero principal").setItems(options.toTypedArray()) { _, index ->
+                    if (index < genres.size) choose(genres[index])
+                    else if (canCreateLightNovel && index == genres.size) startLightNovel()
+                    else createMetadata("Novo gênero", "Nome do gênero", ::choose)
+                }.setNeutralButton("Sem gênero") { _, _ -> subgenreInput?.setText(""); editingGenre = ""; editingSubgenres.clear(); captureClassification(); changed() }
+                    .setNegativeButton("Cancelar", null).show()
+            }
+        }
+        parent.addView(gRow, LinearLayout.LayoutParams(-1, -2))
+        gRow.addView(editorText("Gênero", 12.5f, palette.muted), LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(12) })
+        gRow.addView(
+            editorText("${editingGenre.ifBlank { "Selecionar" }} ▾", 13.5f, if (editingGenre.isBlank()) palette.muted else palette.accent, medium = editingGenre.isNotBlank()).apply {
+                gravity = Gravity.END; maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+            },
+            LinearLayout.LayoutParams(0, -2, 1f),
+        )
+        parent.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
+
+        // Subgenres row + inline chips + inline autocomplete
+        val sgWrap = ui.column().apply { setPadding(0, ui.dp(12), 0, ui.dp(12)) }
+        parent.addView(sgWrap, LinearLayout.LayoutParams(-1, -2))
+        val sgHead = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        sgWrap.addView(sgHead, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(if (editingSubgenres.isNotEmpty() || editingGenre.isNotBlank()) 8 else 0) })
+        sgHead.addView(editorText("Subgêneros", 12.5f, palette.muted), LinearLayout.LayoutParams(0, -2, 1f))
+        sgHead.addView(editorText("${editingSubgenres.size}/3", 11f, palette.muted).apply { fontFeatureSettings = "tnum" }, LinearLayout.LayoutParams(-2, -2))
+
+        if (editingSubgenres.isNotEmpty()) {
+            val chipScroll = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
+            val chips = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+            chipScroll.addView(chips)
+            sgWrap.addView(chipScroll, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(if (editingSubgenres.size < 3) 8 else 0) })
+            editingSubgenres.toList().forEachIndexed { idx, name ->
+                val pill = editorText("$name  ×", 11.5f, palette.accent, medium = true).apply {
+                    setPadding(ui.dp(12), ui.dp(6), ui.dp(12), ui.dp(6))
+                    background = palette.pillRipple(palette.tint(palette.accent, 34), 18, palette.tint(palette.accent, 110))
+                    contentDescription = "Remover subgênero $name"
+                    isFocusable = true
+                    setOnClickListener { editingSubgenres.remove(name); captureClassification(); changed() }
+                }
+                chips.addView(pill, LinearLayout.LayoutParams(-2, -2).apply { if (idx < editingSubgenres.lastIndex) marginEnd = ui.dp(6) })
+            }
+        }
+
+        val vocabulary = BookGenres.suggestions(BookGenres.subgenres(books, editingGenre) + settings.savedSubgenres(editingGenre) + editingSubgenres)
+        settings.rememberSubgenres(editingGenre, vocabulary)
+        if (editingSubgenres.size < 3) {
+            subgenreInputGenre = editingGenre
+            val sgField = AutoCompleteTextView(activity).apply {
+                hint = if (editingGenre.isBlank()) "Escolha um gênero acima" else "+ adicionar subgênero"
+                setTextColor(palette.text); setHintTextColor(palette.tint(palette.muted, 150))
+                textSize = 12.5f; isSingleLine = true; minHeight = ui.dp(38); threshold = 1
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+                background = palette.pillShape(palette.gallerySurface(160), 12, palette.galleryHairline(105))
+                setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8))
+                isEnabled = editingGenre.isNotBlank(); alpha = if (isEnabled) 1f else 0.5f
+                setAdapter(BookMetadataAdapter(activity, vocabulary.filter { cand -> editingSubgenres.none { ShelfFilters.key(it) == ShelfFilters.key(cand) } }))
+                setOnClickListener { if (isEnabled) showDropDown() }
+                setOnItemClickListener { _, _, _, _ -> if (consumeTypedSubgenre()) { captureClassification(); changed() } }
+                setOnEditorActionListener { _, action, event ->
+                    if (action == android.view.inputmethod.EditorInfo.IME_ACTION_DONE || event?.keyCode == android.view.KeyEvent.KEYCODE_ENTER) {
+                        if (consumeTypedSubgenre()) { captureClassification(); changed() }
+                        true
+                    } else false
+                }
+            }
+            subgenreInput = sgField
+            sgWrap.addView(sgField, LinearLayout.LayoutParams(-1, -2))
+        }
+        parent.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
+    }
+
+    private fun editGallery(parent: LinearLayout, b: LibraryBook) {
+        val palette = bookPalette(b)
+        val accent = palette.accent
+        val hairline = palette.galleryHairline(105)
+        val kindLabel = when {
+            b.collectionId.isNotBlank() -> "VOLUME"
+            b.kind == "manga" -> "MANGÁ"
+            b.kind == "comic" -> "QUADRINHO"
+            else -> "LIVRO"
+        }
+
+        // Top bar: ← · LIVRO · optional ISBN · Salvar
+        val topBar = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        parent.addView(topBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(16) })
+        ui.action(topBar, "") { back() }.apply {
+            setCompoundDrawables(palette.symbol("back", accent), null, null, null)
+            contentDescription = "Cancelar edição"
+            layoutParams = LinearLayout.LayoutParams(ui.dp(40), ui.dp(40))
+            background = ui.ripple(Color.TRANSPARENT)
+        }
+        topBar.addView(
+            editorText(kindLabel, 11f, palette.muted, medium = true).apply {
+                gravity = Gravity.CENTER; letterSpacing = 0.12f
+            },
+            LinearLayout.LayoutParams(0, -2, 1f),
+        )
+        val gateway = catalog
+        if (gateway != null && newBook && b.collectionId.isBlank() && gateway.supportsIsbnScan) {
+            ui.icon(topBar, "barcode", "Ler ISBN com a câmera", 38) { gateway.scanIsbn() }.apply {
+                tag = "editor-scan-isbn"
+                layoutParams = LinearLayout.LayoutParams(ui.dp(38), ui.dp(38)).apply { marginEnd = ui.dp(6) }
+            }
+        }
+        topBar.addView(
+            editorText("Salvar", 12f, palette.background, medium = true).apply {
+                gravity = Gravity.CENTER
+                setPadding(ui.dp(16), ui.dp(8), ui.dp(16), ui.dp(8))
+                background = palette.pillRipple(accent, 20, darkRipple = true)
+                isFocusable = true
+                setOnClickListener { saveEditor() }
+            },
+            LinearLayout.LayoutParams(-2, -2),
+        )
+
+        // Cover picker sheet (replaces 5 stacked buttons!)
+        fun openCoverPicker() {
+            showBottomSheet(palette) { body, dialog ->
+                sheetSectionHeader(body, palette, "Capa")
+                sheetRow(body, palette, "Tirar foto") {
+                    dialog.dismiss(); catalogGeneration++; captureEditor()
+                    launchPhoto(b, "cover", br.com.viblio.camera.BookPhotoCropActivity.SOURCE_CAMERA)
+                }
+                sheetRow(body, palette, "Escolher da galeria") {
+                    dialog.dismiss(); catalogGeneration++; captureEditor()
+                    launchPhoto(b, "cover", br.com.viblio.camera.BookPhotoCropActivity.SOURCE_GALLERY)
+                }
+                if (catalog != null) {
+                    sheetRow(body, palette, "Capas do catálogo", accent = true) {
+                        dialog.dismiss()
+                        openCatalogCovers(b) { choice ->
+                            if (screen == "editor" && editor?.id == b.id) {
+                                captureEditor()
+                                editor = editor?.copy(cover = choice.cover, catalogId = choice.catalogId, catalogSource = choice.catalogSource)
+                                fields.clear(); changed()
+                            }
+                        }
+                    }
+                }
+                sheetRow(body, palette, "Buscar na web") {
+                    dialog.dismiss(); captureEditor()
+                    launchDocument(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?tbm=isch&q=" + Uri.encode(requireNotNull(editor).let { CoverSearch.query(it.title, it.author, it.kind, it.sequenceNumber, it.publisher) }))), WEB)
+                }
+                if (b.cover.isNotBlank()) {
+                    sheetRow(body, palette, "Remover capa", danger = true) {
+                        dialog.dismiss(); catalogGeneration++; captureEditor()
+                        editor = editor?.copy(cover = "", background = if (editor?.background == "cover") "black" else editor!!.background)
+                        changed()
+                    }
+                }
+            }
+        }
+
+        // LIVE BOOK HERO: Centered Cover with "Capa ✎" badge + Inline borderless Serif Title & Author
+        val hero = ui.column().apply { gravity = Gravity.CENTER_HORIZONTAL }
+        parent.addView(hero, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(18) })
+
+        val coverFrame = FrameLayout(activity).apply {
+            clipChildren = false; clipToPadding = false; isFocusable = true
+            contentDescription = "Alterar capa"
+            setOnClickListener { openCoverPicker() }
+        }
+        val covContainer = ui.column()
+        cover(covContainer, b.copy(title = b.title.ifBlank { "Nova leitura" }), 104, 154)
+        val covView = covContainer.getChildAt(0)
+        covContainer.removeView(covView)
+        covView.background = palette.pillShape(palette.activeSurface, 7)
+        covView.clipToOutline = true
+        covView.elevation = ui.dp(14).toFloat()
+        (covView as? ImageView)?.scaleType = ImageView.ScaleType.CENTER_CROP
+        coverFrame.addView(covView, FrameLayout.LayoutParams(ui.dp(104), ui.dp(154), Gravity.CENTER))
+        coverFrame.addView(
+            editorText("Capa ✎", 10.5f, accent, medium = true).apply {
+                setPadding(ui.dp(10), ui.dp(4), ui.dp(10), ui.dp(4))
+                background = palette.pillShape(palette.surface, 14, palette.tint(accent, 145))
+                elevation = ui.dp(16).toFloat()
+            },
+            FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END),
+        )
+        hero.addView(coverFrame, LinearLayout.LayoutParams(ui.dp(122), ui.dp(166)).apply { bottomMargin = ui.dp(12) })
+
+        val titleField = EditText(activity).apply {
+            setText(b.title); hint = "Título *"; setTextColor(palette.text); setHintTextColor(palette.tint(palette.muted, 145))
+            textSize = 23f; typeface = Typeface.create("serif", Typeface.NORMAL); gravity = Gravity.CENTER
+            isSingleLine = false; maxLines = 3
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            background = null; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
+        }
+        fields["title"] = titleField
+        hero.addView(titleField, LinearLayout.LayoutParams(-1, -2))
+        val titleLine = View(activity).apply { setBackgroundColor(palette.galleryHairline(115)) }
+        hero.addView(titleLine, LinearLayout.LayoutParams(ui.dp(160), ui.dp(1).coerceAtLeast(1)).apply { bottomMargin = ui.dp(8) })
+        titleField.setOnFocusChangeListener { _, focused -> titleLine.setBackgroundColor(if (focused) accent else palette.galleryHairline(115)) }
+
+        val authorField = AutoCompleteTextView(activity).apply {
+            setText(b.author); hint = if (b.kind == "manga") "Mangaká" else "Autor"
+            setTextColor(palette.muted); setHintTextColor(palette.tint(palette.muted, 130))
+            textSize = 13.5f; gravity = Gravity.CENTER; threshold = 1; isSingleLine = true
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            background = null; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
+            setAdapter(BookMetadataAdapter(activity, repository.books().map { it.author }))
+            setOnClickListener { showDropDown() }
+            setOnFocusChangeListener { _, focused -> if (focused) showDropDown() }
+        }
+        fields["author"] = authorField
+        hero.addView(authorField, LinearLayout.LayoutParams(-1, -2))
+
+        // Compact live catalog autocomplete for brand-new standalone books
+        if (gateway != null && newBook && b.collectionId.isBlank()) {
+            val sugBox = ui.column()
+            parent.addView(sugBox, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
+            val sugList = ui.column()
+            val sugScroll = ScrollView(activity).apply { addView(sugList); visibility = View.GONE; isNestedScrollingEnabled = true }
+            sugBox.addView(sugScroll, LinearLayout.LayoutParams(-1, ui.dp(180)))
+            val formBook = editor?.id
+            fun valid(gen: Int) = !destroyed && screen == "editor" && editor?.id == formBook && catalogGeneration == gen && fields["title"] === titleField
+            fun choose(record: br.com.centralcasa.books.catalog.CatalogBook) {
+                captureEditor()
+                val cur = editor ?: return
+                val manualCover = cur.cover.takeIf { it.isNotBlank() && (!newBook || it != catalogCover) }.orEmpty()
+                editor = record.fill(cur).copy(cover = manualCover)
+                fields.clear(); changed()
+                val gen = ++catalogGeneration
+                if (manualCover.isBlank() && record.coverUrl.isNotBlank()) {
+                    gateway.loadCover(record) { loaded ->
+                        if (!destroyed && screen == "editor" && editor?.id == cur.id && catalogGeneration == gen) {
+                            captureEditor()
+                            if (editor?.cover.isNullOrBlank()) loaded.onSuccess { name -> catalogCover = name; editor = editor?.copy(cover = name); fields.clear(); changed() }
+                        }
+                    }
+                }
+            }
+            fun runSearch(isbn: String = "") {
+                val q = if (isbn.isNotBlank()) "" else titleField.text.toString().trim()
+                val gen = ++catalogGeneration; sugList.removeAllViews(); sugScroll.visibility = View.GONE
+                if (!gateway.configured || (q.length < 3 && isbn.isBlank())) return
+                val deliver: (Result<List<br.com.centralcasa.books.catalog.CatalogBook>>) -> Unit = { res ->
+                    if (valid(gen)) res.onSuccess { items ->
+                        val matching = items.filter { it.kind == editor?.kind }
+                        if (isbn.isNotBlank() && matching.size == 1) { choose(matching.single()); return@onSuccess }
+                        sugScroll.visibility = if (matching.isEmpty()) View.GONE else View.VISIBLE
+                        matching.forEach { rec ->
+                            sugList.addView(
+                                editorText(listOf(rec.title, rec.author, rec.publisher).filter(String::isNotBlank).joinToString(" · "), 12f, palette.text).apply {
+                                    setPadding(ui.dp(12), ui.dp(9), ui.dp(12), ui.dp(9))
+                                    background = palette.pillRipple(palette.surface, 10, hairline)
+                                    isFocusable = true; setOnClickListener { choose(rec) }
+                                },
+                                LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(6) },
+                            )
+                        }
+                    }
+                }
+                if (isbn.isNotBlank()) gateway.searchIsbn(isbn, deliver) else gateway.search(q, "", done = deliver)
+            }
+            var pendingSug: Runnable? = null
+            titleField.addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    catalogGeneration++; pendingSug?.let(handler::removeCallbacks); sugList.removeAllViews(); sugScroll.visibility = View.GONE
+                    if (gateway.configured && s.toString().trim().length >= 3) {
+                        pendingSug = Runnable { if (screen == "editor" && fields["title"] === titleField) runSearch() }
+                        handler.postDelayed(pendingSug!!, 400)
+                    }
+                }
+                override fun afterTextChanged(s: Editable?) {}
+            })
+            pendingScannedIsbn?.let { isbn ->
+                pendingScannedIsbn = null
+                handler.post { if (!destroyed && screen == "editor" && fields["title"] === titleField && editor?.id == formBook) runSearch(isbn) }
+            }
+        }
+
+        // EDITORIAL NUMBERS STRIP: Página atual / Total * (big 28sp serif inline, ZERO boxes!)
+        parent.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
+        val numRow = ui.row().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, ui.dp(14), 0, ui.dp(14))
+        }
+        parent.addView(numRow, LinearLayout.LayoutParams(-1, -2))
+
+        fun numCol(caption: String, key: String, value: String, color: Int): LinearLayout {
+            val col = ui.column().apply { gravity = Gravity.CENTER_HORIZONTAL }
+            col.addView(editorText(caption, 10f, palette.muted).apply { letterSpacing = 0.08f }, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = ui.dp(2) })
+            val et = EditText(activity).apply {
+                setText(value); hint = "0"; setTextColor(color); setHintTextColor(palette.tint(palette.muted, 110))
+                textSize = 28f; typeface = Typeface.create("serif", Typeface.NORMAL); fontFeatureSettings = "tnum"
+                gravity = Gravity.CENTER; isSingleLine = true; inputType = InputType.TYPE_CLASS_NUMBER
+                filters = arrayOf(android.text.InputFilter.LengthFilter(6))
+                background = null; setPadding(ui.dp(6), ui.dp(2), ui.dp(6), ui.dp(2))
+            }
+            fields[key] = et
+            col.addView(et, LinearLayout.LayoutParams(-1, -2))
+            return col
+        }
+        numRow.addView(numCol("PÁGINA ATUAL", "page", b.currentPage.toString(), accent), LinearLayout.LayoutParams(0, -2, 1f))
+        numRow.addView(editorText("/", 22f, palette.tint(palette.muted, 130), serif = true), LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(6); marginEnd = ui.dp(6) })
+        numRow.addView(numCol("TOTAL *", "total", if (b.totalPages == 0 || !b.pagesKnown) "" else b.totalPages.toString(), palette.text), LinearLayout.LayoutParams(0, -2, 1f))
+        parent.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
+
+        // CATALOG COLOPHON ROWS (Key-Value hairline table — ZERO heavy boxes!)
+        fields["publisher"] = editorColophonInputRow(parent, palette, "Editora", b.publisher, "Opcional", vocabulary = repository.books().map { it.publisher } + repository.collections().map { it.publisher })
+        genreColophonRowsGallery(parent, palette)
+        fields["saga"] = editorColophonInputRow(parent, palette, "Saga", b.saga, "Opcional", vocabulary = repository.books().map { it.saga })
+        fields["sequence"] = editorColophonInputRow(parent, palette, if (b.collectionId.isNotBlank()) "Volume" else "Número", b.sequenceNumber?.toString().orEmpty(), "Opcional", numeric = true)
+
+        // Footer
+        parent.addView(
+            editorText(if (b.collectionId.isNotBlank()) "Salvar volume" else "Salvar alterações", 13f, palette.background, medium = true).apply {
+                gravity = Gravity.CENTER; isFocusable = true
+                setPadding(ui.dp(20), ui.dp(12), ui.dp(20), ui.dp(12))
+                background = palette.pillRipple(accent, 24, darkRipple = true)
+                setOnClickListener { saveEditor() }
+            },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(22); bottomMargin = ui.dp(10) },
+        )
+        if (!newBook) {
+            parent.addView(
+                editorText(if (usePersonalArchive) "Remover da Estante" else "Excluir livro", 12f, Color.rgb(220, 131, 115)).apply {
+                    gravity = Gravity.CENTER; isFocusable = true
+                    setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8))
+                    setOnClickListener {
+                        AlertDialog.Builder(activity).setTitle("Excluir ${b.title}?")
+                            .setMessage(if (usePersonalArchive) "O item sairá da Estante. Nota e histórico serão guardados em Conta → Removidos da Estante." else "O livro, suas sessões e datas de leitura serão removidos deste aparelho.")
+                            .setPositiveButton(if (usePersonalArchive) "Remover" else "Excluir") { _, _ ->
+                                attempt {
+                                    if (usePersonalArchive) repository.archive(b.id) else repository.delete(b.id)
+                                    editor = null; fields.clear(); selected = null; show("library")
+                                }
+                            }.setNegativeButton("Cancelar", null).show()
+                    }
+                },
+                LinearLayout.LayoutParams(-1, -2),
+            )
+        }
+    }
+
+    private fun collectionEditGallery(parent: LinearLayout, c: CollectionTitle) {
+        val sampleBook = c.shelfBook(emptyList()).copy(title = c.title.ifBlank { "Novo título" }, cover = c.cover)
+        val palette = bookPalette(sampleBook)
+        val accent = palette.accent
+        val hairline = palette.galleryHairline(105)
+        val all = repository.collections()
+        val books = repository.books()
+        val kindLabel = when (c.kind) { "manga" -> "MANGÁ"; "comic" -> "QUADRINHO"; "book" -> "LIGHT NOVEL"; else -> "COLEÇÃO" }
+        val noun = when (c.kind) { "manga" -> "mangá"; "comic" -> "quadrinho"; "book" -> "light novel"; else -> "título" }
+
+        fun saveCollection() {
+            attempt {
+                captureCollectionEditor(); val input = requireNotNull(collectionEditor)
+                val owned = if (collectionEditorNew) collectionOwned.toIntOrNull() ?: throw IllegalArgumentException("Informe quantos volumes você possui.") else 0
+                val updated = input.copy(title = input.title.trim(), author = input.author.trim(), publisher = input.publisher.trim(), genre = input.genre.trim(), updatedAt = System.currentTimeMillis()).validated()
+                if (collectionEditorNew && updated.kind == "book" && editor != null) repository.createLightNovel(updated, requireNotNull(editor), owned)
+                else if (collectionEditorNew) repository.createCollection(updated, owned) else repository.saveTitleCover(updated)
+                repository.books().filter { it.collectionId == updated.id && (it.cover.isNotBlank() || it.catalogId != null) }.forEach { catalog?.saved(it) }
+                collectionFields.clear(); collectionEditor = null; editor = null; selectedCollection = updated.id; show("collection")
+            }
+        }
+
+        // Top bar
+        val topBar = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        parent.addView(topBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(16) })
+        ui.action(topBar, "") { back() }.apply {
+            setCompoundDrawables(palette.symbol("back", accent), null, null, null)
+            contentDescription = "Cancelar edição"
+            layoutParams = LinearLayout.LayoutParams(ui.dp(40), ui.dp(40))
+            background = ui.ripple(Color.TRANSPARENT)
+        }
+        topBar.addView(
+            editorText(kindLabel, 11f, palette.muted, medium = true).apply { gravity = Gravity.CENTER; letterSpacing = 0.12f },
+            LinearLayout.LayoutParams(0, -2, 1f),
+        )
+        topBar.addView(
+            editorText("Salvar", 12f, palette.background, medium = true).apply {
+                gravity = Gravity.CENTER
+                setPadding(ui.dp(16), ui.dp(8), ui.dp(16), ui.dp(8))
+                background = palette.pillRipple(accent, 20, darkRipple = true)
+                isFocusable = true
+                setOnClickListener { saveCollection() }
+            },
+            LinearLayout.LayoutParams(-2, -2),
+        )
+
+        fun openCollectionCoverPicker() {
+            showBottomSheet(palette) { body, dialog ->
+                sheetSectionHeader(body, palette, "Capa da coleção")
+                sheetRow(body, palette, if (c.cover.isBlank()) "Escolher imagem" else "Trocar imagem") {
+                    dialog.dismiss(); captureCollectionEditor()
+                    launchDocument(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "image/*" }, COLLECTION_COVER)
+                }
+                val vol1 = books.firstOrNull { it.collectionId == c.id && it.sequenceNumber == 1 }
+                if (catalog != null && vol1 != null) {
+                    sheetRow(body, palette, "Capas do catálogo", accent = true) {
+                        dialog.dismiss()
+                        openCatalogCovers(vol1) { choice ->
+                            if (screen == "collection_editor" && collectionEditor?.id == c.id) {
+                                captureCollectionEditor()
+                                collectionEditor = collectionEditor?.copy(cover = choice.cover)
+                                collectionFields.clear(); changed()
+                            }
+                        }
+                    }
+                }
+                sheetRow(body, palette, "Buscar na web") {
+                    dialog.dismiss(); captureCollectionEditor()
+                    launchDocument(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?tbm=isch&q=" + Uri.encode(requireNotNull(collectionEditor).let { CoverSearch.query(it.title, it.author, it.kind, 1, it.publisher) }))), WEB)
+                }
+                if (c.cover.isNotBlank()) {
+                    sheetRow(body, palette, "Remover capa", danger = true) {
+                        dialog.dismiss(); captureCollectionEditor()
+                        collectionEditor = collectionEditor?.copy(cover = "")
+                        collectionFields.clear(); changed()
+                    }
+                }
+            }
+        }
+
+        // LIVE COLLECTION HERO
+        val hero = ui.column().apply { gravity = Gravity.CENTER_HORIZONTAL }
+        parent.addView(hero, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(18) })
+
+        val coverFrame = FrameLayout(activity).apply {
+            clipChildren = false; clipToPadding = false; isFocusable = true
+            contentDescription = "Alterar capa"
+            setOnClickListener { openCollectionCoverPicker() }
+        }
+        val covContainer = ui.column()
+        cover(covContainer, sampleBook, 104, 154)
+        val covView = covContainer.getChildAt(0)
+        covContainer.removeView(covView)
+        covView.background = palette.pillShape(palette.activeSurface, 7)
+        covView.clipToOutline = true
+        covView.elevation = ui.dp(14).toFloat()
+        (covView as? ImageView)?.scaleType = ImageView.ScaleType.CENTER_CROP
+        coverFrame.addView(covView, FrameLayout.LayoutParams(ui.dp(104), ui.dp(154), Gravity.CENTER))
+        coverFrame.addView(
+            editorText("Capa ✎", 10.5f, accent, medium = true).apply {
+                setPadding(ui.dp(10), ui.dp(4), ui.dp(10), ui.dp(4))
+                background = palette.pillShape(palette.surface, 14, palette.tint(accent, 145))
+                elevation = ui.dp(16).toFloat()
+            },
+            FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END),
+        )
+        hero.addView(coverFrame, LinearLayout.LayoutParams(ui.dp(122), ui.dp(166)).apply { bottomMargin = ui.dp(12) })
+
+        val titleField = EditText(activity).apply {
+            setText(c.title); hint = "Título *"; setTextColor(palette.text); setHintTextColor(palette.tint(palette.muted, 145))
+            textSize = 23f; typeface = Typeface.create("serif", Typeface.NORMAL); gravity = Gravity.CENTER
+            isSingleLine = false; maxLines = 3
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            background = null; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
+        }
+        collectionFields["title"] = titleField
+        hero.addView(titleField, LinearLayout.LayoutParams(-1, -2))
+        val titleLine = View(activity).apply { setBackgroundColor(palette.galleryHairline(115)) }
+        hero.addView(titleLine, LinearLayout.LayoutParams(ui.dp(160), ui.dp(1).coerceAtLeast(1)).apply { bottomMargin = ui.dp(8) })
+        titleField.setOnFocusChangeListener { _, focused -> titleLine.setBackgroundColor(if (focused) accent else palette.galleryHairline(115)) }
+
+        val authorField = AutoCompleteTextView(activity).apply {
+            setText(c.author); hint = if (c.kind == "manga") "Mangaká" else "Autor"
+            setTextColor(palette.muted); setHintTextColor(palette.tint(palette.muted, 130))
+            textSize = 13.5f; gravity = Gravity.CENTER; threshold = 1; isSingleLine = true
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            background = null; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(4))
+            setAdapter(BookMetadataAdapter(activity, all.map { it.author } + books.map { it.author }))
+            setOnClickListener { showDropDown() }
+            setOnFocusChangeListener { _, focused -> if (focused) showDropDown() }
+        }
+        collectionFields["author"] = authorField
+        hero.addView(authorField, LinearLayout.LayoutParams(-1, -2))
+
+        // EDITORIAL VOLUMES STRIP: Tenho | Faltam
+        parent.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
+        val volRow = ui.row().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, ui.dp(14), 0, ui.dp(14))
+        }
+        parent.addView(volRow, LinearLayout.LayoutParams(-1, -2))
+
+        val ownedCol = ui.column().apply { gravity = Gravity.CENTER_HORIZONTAL }
+        ownedCol.addView(editorText("TENHO", 10f, palette.muted).apply { letterSpacing = 0.08f }, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = ui.dp(2) })
+        if (collectionEditorNew) {
+            val ownedInput = EditText(activity).apply {
+                setText(collectionOwned); hint = "1"; setTextColor(accent); setHintTextColor(palette.tint(palette.muted, 110))
+                textSize = 28f; typeface = Typeface.create("serif", Typeface.NORMAL); fontFeatureSettings = "tnum"
+                gravity = Gravity.CENTER; isSingleLine = true; inputType = InputType.TYPE_CLASS_NUMBER
+                filters = arrayOf(android.text.InputFilter.LengthFilter(4))
+                background = null; setPadding(ui.dp(6), ui.dp(2), ui.dp(6), ui.dp(2))
+            }
+            collectionFields["owned"] = ownedInput
+            ownedCol.addView(ownedInput, LinearLayout.LayoutParams(-1, -2))
+        } else {
+            val ownedCount = books.count { it.collectionId == c.id }
+            ownedCol.addView(editorText(ownedCount.toString(), 28f, accent, serif = true).apply { fontFeatureSettings = "tnum" }, LinearLayout.LayoutParams(-2, -2))
+        }
+        volRow.addView(ownedCol, LinearLayout.LayoutParams(0, -2, 1f))
+        volRow.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(1, ui.dp(34)))
+
+        val missCol = ui.column().apply { gravity = Gravity.CENTER_HORIZONTAL }
+        missCol.addView(editorText("FALTAM", 10f, palette.muted).apply { letterSpacing = 0.08f }, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = ui.dp(2) })
+        val missInput = EditText(activity).apply {
+            setText(c.missingVolumes?.toString().orEmpty()); hint = "—"; setTextColor(palette.text); setHintTextColor(palette.tint(palette.muted, 110))
+            textSize = 28f; typeface = Typeface.create("serif", Typeface.NORMAL); fontFeatureSettings = "tnum"
+            gravity = Gravity.CENTER; isSingleLine = true; inputType = InputType.TYPE_CLASS_NUMBER
+            filters = arrayOf(android.text.InputFilter.LengthFilter(4))
+            background = null; setPadding(ui.dp(6), ui.dp(2), ui.dp(6), ui.dp(2))
+        }
+        collectionFields["missing"] = missInput
+        missCol.addView(missInput, LinearLayout.LayoutParams(-1, -2))
+        volRow.addView(missCol, LinearLayout.LayoutParams(0, -2, 1f))
+        parent.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
+
+        // CATALOG COLOPHON ROWS
+        collectionFields["publisher"] = editorColophonInputRow(parent, palette, "Editora", c.publisher, "Opcional", vocabulary = all.map { it.publisher } + books.map { it.publisher })
+        genreColophonRowsGallery(parent, palette)
+
+        parent.addView(
+            editorText("Salvar $noun", 13f, palette.background, medium = true).apply {
+                gravity = Gravity.CENTER; isFocusable = true
+                setPadding(ui.dp(20), ui.dp(12), ui.dp(20), ui.dp(12))
+                background = palette.pillRipple(accent, 24, darkRipple = true)
+                setOnClickListener { saveCollection() }
+            },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(22) },
+        )
     }
     private fun openCatalogCovers(book:LibraryBook,chosen:(LibraryBook)->Unit){
         val gateway=catalog ?: return

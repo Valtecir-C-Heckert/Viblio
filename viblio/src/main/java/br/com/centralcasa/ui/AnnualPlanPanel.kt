@@ -1503,6 +1503,10 @@ class AnnualPlanPanel(
 
     /** Single unified goal configuration dialog for [plan.year] (Books/month or year, Pages/day or month, and Purchase 3:1). */
     private fun openGoalConfigDialog(plan: AnnualReadingPlan, purchaseGoalEntry: ReadingGoalStore.Entry?) {
+        if (ui.rectilinear && br.com.centralcasa.data.LocalSettings(activity).galleryUiStyle()) {
+            openGoalConfigGallery(plan, purchaseGoalEntry)
+            return
+        }
         val body = ui.column().apply { setPadding(ui.dp(18), ui.dp(10), ui.dp(18), ui.dp(8)) }
         var bType = plan.booksGoalType
         var pType = plan.pagesGoalType
@@ -1700,6 +1704,371 @@ class AnnualPlanPanel(
                     goalConfigured = true,
                 ),
             )
+        }
+    }
+
+    /** Galeria v2 centered editorial modal for yearly goals: live reading-effort summary, big serif steppers, and 1-tap presets. */
+    private fun openGoalConfigGallery(plan: AnnualReadingPlan, purchaseGoalEntry: ReadingGoalStore.Entry?) {
+        var bType = plan.booksGoalType
+        var pType = plan.pagesGoalType
+        val hairline = ui.galleryHairline(105)
+        val msPerPage = ReadingSummary.from(repo.sessions()).millisPerPage?.coerceIn(20_000L, 600_000L) ?: 72_000L
+
+        fun mText(value: CharSequence, sp: Float, color: Int, serif: Boolean = false, medium: Boolean = false) = TextView(activity).apply {
+            text = value; textSize = sp; setTextColor(color); includeFontPadding = false
+            typeface = when {
+                serif -> Typeface.create("serif", Typeface.NORMAL)
+                medium -> Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                else -> Typeface.create("sans-serif", Typeface.NORMAL)
+            }
+        }
+
+        val outerWrap = FrameLayout(activity).apply {
+            setPadding(ui.dp(14), ui.dp(14), ui.dp(14), ui.dp(14))
+        }
+        val card = ui.column().apply {
+            background = ui.pillShape(ui.surface, 24, ui.galleryHairline(145))
+            setPadding(ui.dp(20), ui.dp(18), ui.dp(20), ui.dp(18))
+        }
+        val scroll = ScrollView(activity).apply {
+            isVerticalScrollBarEnabled = false
+            addView(card, FrameLayout.LayoutParams(-1, -2))
+        }
+        outerWrap.addView(scroll, FrameLayout.LayoutParams(-1, -2))
+
+        var dlg: AlertDialog? = null
+
+        // Header + live reading-effort line
+        val head = ui.row().apply { gravity = Gravity.TOP }
+        card.addView(head, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(14) })
+        val headLeft = ui.column()
+        head.addView(headLeft, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) })
+        headLeft.addView(mText("Metas de ${plan.year}", 22f, ui.text, serif = true), LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(4) })
+        val effortLabel = mText("", 11.5f, ui.accent, medium = true).apply { fontFeatureSettings = "tnum" }
+        headLeft.addView(effortLabel, LinearLayout.LayoutParams(-1, -2))
+        head.addView(
+            mText("×", 22f, ui.muted).apply {
+                gravity = Gravity.CENTER; contentDescription = "Fechar"; isFocusable = true
+                background = ui.pillRipple(Color.TRANSPARENT, 18)
+                setOnClickListener { dlg?.dismiss() }
+            },
+            LinearLayout.LayoutParams(ui.dp(34), ui.dp(34)),
+        )
+        card.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1).apply { bottomMargin = ui.dp(14) })
+
+        // --- SECTION 1: BOOKS ---
+        val bHead = ui.row().apply { gravity = Gravity.BOTTOM }
+        card.addView(bHead, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
+        bHead.addView(mText("Livros", 16.5f, ui.text, serif = true), LinearLayout.LayoutParams(0, -2, 1f))
+        val bModeRow = ui.row().apply { gravity = Gravity.BOTTOM }
+        bHead.addView(bModeRow, LinearLayout.LayoutParams(-2, -2))
+
+        val bControls = ui.column()
+        card.addView(bControls, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(14) })
+        val bStepperRow = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        bControls.addView(bStepperRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
+
+        val bInput = EditText(activity).apply {
+            isSingleLine = true
+            inputType = InputType.TYPE_CLASS_NUMBER
+            filters = arrayOf(android.text.InputFilter.LengthFilter(5))
+            gravity = Gravity.CENTER
+            textSize = 28f
+            typeface = Typeface.create("serif", Typeface.NORMAL)
+            fontFeatureSettings = "tnum"
+            setTextColor(ui.text)
+            background = null
+            setPadding(ui.dp(6), ui.dp(2), ui.dp(6), ui.dp(2))
+            setText(plan.booksGoalValue.toString())
+        }
+        val bPresetsRow = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        bControls.addView(bPresetsRow, LinearLayout.LayoutParams(-1, -2))
+
+        // --- SECTION 2: PAGES ---
+        card.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1).apply { bottomMargin = ui.dp(14) })
+        val pHead = ui.row().apply { gravity = Gravity.BOTTOM }
+        card.addView(pHead, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
+        pHead.addView(mText("Páginas", 16.5f, ui.text, serif = true), LinearLayout.LayoutParams(0, -2, 1f))
+        val pModeRow = ui.row().apply { gravity = Gravity.BOTTOM }
+        pHead.addView(pModeRow, LinearLayout.LayoutParams(-2, -2))
+
+        val pControls = ui.column()
+        card.addView(pControls, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(14) })
+        val pStepperRow = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        pControls.addView(pStepperRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
+
+        val pInput = EditText(activity).apply {
+            isSingleLine = true
+            inputType = InputType.TYPE_CLASS_NUMBER
+            filters = arrayOf(android.text.InputFilter.LengthFilter(6))
+            gravity = Gravity.CENTER
+            textSize = 28f
+            typeface = Typeface.create("serif", Typeface.NORMAL)
+            fontFeatureSettings = "tnum"
+            setTextColor(ui.text)
+            background = null
+            setPadding(ui.dp(6), ui.dp(2), ui.dp(6), ui.dp(2))
+            setText(plan.pagesGoalValue.toString())
+        }
+        val pPresetsRow = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        pControls.addView(pPresetsRow, LinearLayout.LayoutParams(-1, -2))
+
+        fun stepCircle(symbol: String, onTap: () -> Unit) = mText(symbol, 18f, ui.accent, medium = true).apply {
+            gravity = Gravity.CENTER; isFocusable = true
+            background = ui.pillRipple(ui.activeSurface, 18, ui.galleryHairline(120))
+            setOnClickListener { onTap() }
+        }
+
+        fun updateSummary() {
+            val bv = (bInput.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 5000)
+            val pv = (pInput.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 1_000_000)
+            val bPart = when (bType) {
+                BooksGoalType.NONE -> "Livros off"
+                BooksGoalType.PER_MONTH -> if (bv > 0) "${numbers.format(bv.toLong() * 12L)} livros/ano" else "Livros/mês"
+                BooksGoalType.PER_YEAR -> if (bv > 0) "${numbers.format(bv)} livros em ${plan.year}" else "Livros/ano"
+            }
+            val dailyPages = when (pType) {
+                PagesGoalType.NONE -> 0.0
+                PagesGoalType.PER_DAY -> pv.toDouble()
+                PagesGoalType.PER_MONTH -> pv / 30.0
+            }
+            val estMin = if (dailyPages > 0.0) kotlin.math.round((dailyPages * msPerPage) / 60_000.0).toInt().coerceAtLeast(1) else 0
+            val pPart = when (pType) {
+                PagesGoalType.NONE -> "Páginas off"
+                PagesGoalType.PER_DAY -> if (pv > 0) "${numbers.format(pv)} págs/dia (~${estMin}m)" else "Págs/dia"
+                PagesGoalType.PER_MONTH -> if (pv > 0) "${numbers.format(pv)} págs/mês (~${estMin}m/dia)" else "Págs/mês"
+            }
+            effortLabel.text = "$bPart · $pPart"
+        }
+
+        fun rebuildBooksPresets() {
+            bPresetsRow.removeAllViews()
+            val cur = bInput.text.toString().trim().toIntOrNull() ?: 0
+            val presets = if (bType == BooksGoalType.PER_MONTH) listOf(1, 2, 3, 4) else listOf(12, 24, 36, 52)
+            presets.forEachIndexed { idx, preset ->
+                val active = cur == preset
+                bPresetsRow.addView(
+                    mText(preset.toString(), 11.5f, if (active) ui.accent else ui.muted, medium = active).apply {
+                        gravity = Gravity.CENTER; fontFeatureSettings = "tnum"; isFocusable = true
+                        setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(6))
+                        background = ui.pillRipple(
+                            if (active) ui.tint(ui.accent, 36) else ui.activeSurface,
+                            16,
+                            if (active) ui.tint(ui.accent, 110) else Color.TRANSPARENT,
+                        )
+                        setOnClickListener {
+                            bInput.setText(preset.toString())
+                            bInput.setSelection(bInput.text.length)
+                        }
+                    },
+                    LinearLayout.LayoutParams(0, -2, 1f).apply { if (idx < presets.lastIndex) marginEnd = ui.dp(6) },
+                )
+            }
+        }
+
+        fun rebuildPagesPresets() {
+            pPresetsRow.removeAllViews()
+            val cur = pInput.text.toString().trim().toIntOrNull() ?: 0
+            val presets = if (pType == PagesGoalType.PER_DAY) listOf(15, 30, 50, 80) else listOf(500, 900, 1500, 2000)
+            presets.forEachIndexed { idx, preset ->
+                val active = cur == preset
+                pPresetsRow.addView(
+                    mText(numbers.format(preset), 11f, if (active) ui.accent else ui.muted, medium = active).apply {
+                        gravity = Gravity.CENTER; fontFeatureSettings = "tnum"; isFocusable = true
+                        setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6))
+                        background = ui.pillRipple(
+                            if (active) ui.tint(ui.accent, 36) else ui.activeSurface,
+                            16,
+                            if (active) ui.tint(ui.accent, 110) else Color.TRANSPARENT,
+                        )
+                        setOnClickListener {
+                            pInput.setText(preset.toString())
+                            pInput.setSelection(pInput.text.length)
+                        }
+                    },
+                    LinearLayout.LayoutParams(0, -2, 1f).apply { if (idx < presets.lastIndex) marginEnd = ui.dp(6) },
+                )
+            }
+        }
+
+        bStepperRow.addView(
+            stepCircle("−") {
+                val cur = (bInput.text.toString().trim().toIntOrNull() ?: 1)
+                val next = (cur - 1).coerceAtLeast(1)
+                bInput.setText(next.toString())
+            },
+            LinearLayout.LayoutParams(ui.dp(36), ui.dp(36)),
+        )
+        bStepperRow.addView(bInput, LinearLayout.LayoutParams(0, -2, 1f))
+        bStepperRow.addView(
+            stepCircle("+") {
+                val cur = (bInput.text.toString().trim().toIntOrNull() ?: 0)
+                val next = (cur + 1).coerceAtMost(5000)
+                bInput.setText(next.toString())
+            },
+            LinearLayout.LayoutParams(ui.dp(36), ui.dp(36)),
+        )
+
+        pStepperRow.addView(
+            stepCircle("−") {
+                val step = if (pType == PagesGoalType.PER_DAY) 5 else 50
+                val cur = (pInput.text.toString().trim().toIntOrNull() ?: step)
+                val next = (cur - step).coerceAtLeast(1)
+                pInput.setText(next.toString())
+            },
+            LinearLayout.LayoutParams(ui.dp(36), ui.dp(36)),
+        )
+        pStepperRow.addView(pInput, LinearLayout.LayoutParams(0, -2, 1f))
+        pStepperRow.addView(
+            stepCircle("+") {
+                val step = if (pType == PagesGoalType.PER_DAY) 5 else 50
+                val cur = (pInput.text.toString().trim().toIntOrNull() ?: 0)
+                val next = (cur + step).coerceAtMost(1_000_000)
+                pInput.setText(next.toString())
+            },
+            LinearLayout.LayoutParams(ui.dp(36), ui.dp(36)),
+        )
+
+        fun refreshBooksMode() {
+            bModeRow.removeAllViews()
+            listOf(BooksGoalType.NONE to "Off", BooksGoalType.PER_MONTH to "Mês", BooksGoalType.PER_YEAR to "Ano").forEachIndexed { idx, (t, lbl) ->
+                val on = t == bType
+                val col = ui.column().apply {
+                    isFocusable = true
+                    setOnClickListener {
+                        val prev = bType
+                        bType = t
+                        val cur = (bInput.text.toString().trim().toIntOrNull() ?: 0).coerceIn(0, 5000)
+                        if (prev != t && t == BooksGoalType.PER_MONTH && cur > 12) {
+                            bInput.setText(((cur + 11) / 12).coerceIn(1, 500).toString())
+                        } else if (prev == BooksGoalType.PER_MONTH && t == BooksGoalType.PER_YEAR) {
+                            bInput.setText(((if (cur > 0) cur else 2).toLong() * 12L).coerceIn(1L, 5000L).toString())
+                        }
+                        refreshBooksMode()
+                    }
+                }
+                col.addView(mText(lbl, 11.5f, if (on) ui.accent else ui.muted, medium = on).apply { setPadding(ui.dp(4), ui.dp(2), ui.dp(4), ui.dp(3)) }, LinearLayout.LayoutParams(-2, -2))
+                col.addView(View(activity).apply { setBackgroundColor(if (on) ui.accent else Color.TRANSPARENT) }, LinearLayout.LayoutParams(-1, ui.dp(2).coerceAtLeast(2)))
+                bModeRow.addView(col, LinearLayout.LayoutParams(-2, -2).apply { if (idx > 0) marginStart = ui.dp(10) })
+            }
+            bControls.visibility = if (bType == BooksGoalType.NONE) View.GONE else View.VISIBLE
+            rebuildBooksPresets()
+            updateSummary()
+        }
+
+        fun refreshPagesMode() {
+            pModeRow.removeAllViews()
+            listOf(PagesGoalType.NONE to "Off", PagesGoalType.PER_DAY to "Dia", PagesGoalType.PER_MONTH to "Mês").forEachIndexed { idx, (t, lbl) ->
+                val on = t == pType
+                val col = ui.column().apply {
+                    isFocusable = true
+                    setOnClickListener {
+                        val prev = pType
+                        pType = t
+                        if (prev == PagesGoalType.PER_DAY && t == PagesGoalType.PER_MONTH) {
+                            val cur = pInput.text.toString().toIntOrNull() ?: 30
+                            pInput.setText((cur * 30).toString())
+                        } else if (prev == PagesGoalType.PER_MONTH && t == PagesGoalType.PER_DAY) {
+                            val cur = pInput.text.toString().toIntOrNull() ?: 900
+                            pInput.setText(((cur + 29) / 30).coerceAtLeast(1).toString())
+                        }
+                        refreshPagesMode()
+                    }
+                }
+                col.addView(mText(lbl, 11.5f, if (on) ui.accent else ui.muted, medium = on).apply { setPadding(ui.dp(4), ui.dp(2), ui.dp(4), ui.dp(3)) }, LinearLayout.LayoutParams(-2, -2))
+                col.addView(View(activity).apply { setBackgroundColor(if (on) ui.accent else Color.TRANSPARENT) }, LinearLayout.LayoutParams(-1, ui.dp(2).coerceAtLeast(2)))
+                pModeRow.addView(col, LinearLayout.LayoutParams(-2, -2).apply { if (idx > 0) marginStart = ui.dp(10) })
+            }
+            pControls.visibility = if (pType == PagesGoalType.NONE) View.GONE else View.VISIBLE
+            rebuildPagesPresets()
+            updateSummary()
+        }
+
+        bInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) { rebuildBooksPresets(); updateSummary() }
+        })
+        pInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) { rebuildPagesPresets(); updateSummary() }
+        })
+        refreshBooksMode()
+        refreshPagesMode()
+
+        // --- SECTION 3: PURCHASE 3:1 ---
+        card.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
+        val gp = goalsHost()
+        val pGoal = purchaseGoalEntry?.goal
+        val purchaseRow = ui.row().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, ui.dp(12), 0, ui.dp(12))
+            isFocusable = true
+            setOnClickListener {
+                dlg?.dismiss()
+                if (purchaseGoalEntry != null) gp.openGoalDetailDialog(purchaseGoalEntry)
+                else gp.openCreateDialog(GoalMetric.PURCHASE)
+            }
+        }
+        card.addView(purchaseRow, LinearLayout.LayoutParams(-1, -2))
+        val pTitle = if (pGoal != null) "${pGoal.name} (${pGoal.target}:${pGoal.reward})" else "Meta de compra (3:1)"
+        purchaseRow.addView(mText(pTitle, 13f, ui.text).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) })
+        purchaseRow.addView(mText(if (pGoal != null) "Editar ›" else "+ Ativar", 12f, ui.accent, medium = true), LinearLayout.LayoutParams(-2, -2))
+        card.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1).apply { bottomMargin = ui.dp(16) })
+
+        // Footer actions
+        val foot = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        card.addView(foot, LinearLayout.LayoutParams(-1, -2))
+        foot.addView(
+            mText("Cancelar", 12.5f, ui.muted).apply {
+                gravity = Gravity.CENTER; isFocusable = true
+                setPadding(ui.dp(14), ui.dp(10), ui.dp(14), ui.dp(10))
+                setOnClickListener { dlg?.dismiss() }
+            },
+            LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(10) },
+        )
+        foot.addView(
+            mText("Salvar metas", 13f, ui.background, medium = true).apply {
+                gravity = Gravity.CENTER; isFocusable = true
+                setPadding(ui.dp(20), ui.dp(11), ui.dp(20), ui.dp(11))
+                background = ui.pillRipple(ui.accent, 22, darkRipple = true)
+                setOnClickListener {
+                    val bVal = if (bType == BooksGoalType.NONE) plan.booksGoalValue else bInput.text.toString().trim().toIntOrNull()
+                    if (bType != BooksGoalType.NONE && (bVal == null || bVal !in 1..5000)) {
+                        bInput.error = "Entre 1 e 5.000"
+                        return@setOnClickListener
+                    }
+                    val pVal = if (pType == PagesGoalType.NONE) plan.pagesGoalValue else pInput.text.toString().trim().toIntOrNull()
+                    if (pType != PagesGoalType.NONE && (pVal == null || pVal !in 1..1_000_000)) {
+                        pInput.error = "Entre 1 e 1.000.000"
+                        return@setOnClickListener
+                    }
+                    dlg?.dismiss()
+                    mutatePlan(
+                        plan.copy(
+                            booksGoalType = bType,
+                            booksGoalValue = bVal ?: plan.booksGoalValue,
+                            pagesGoalType = pType,
+                            pagesGoalValue = pVal ?: plan.pagesGoalValue,
+                            goalConfigured = true,
+                        ),
+                    )
+                }
+            },
+            LinearLayout.LayoutParams(0, -2, 1f),
+        )
+
+        val dialog = AlertDialog.Builder(activity).setView(outerWrap).create()
+        dlg = dialog
+        dialogs.add(dialog)
+        dialog.setOnDismissListener { dialogs.remove(dialog) }
+        dialog.show()
+        dialog.window?.apply {
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.CENTER)
+            setDimAmount(0.62f)
         }
     }
 
