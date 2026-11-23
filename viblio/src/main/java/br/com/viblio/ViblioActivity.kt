@@ -448,10 +448,40 @@ class ViblioActivity : Activity() {
     private fun applyBackground(theme:DisplayUi){
         val libraryVisible=tab=="shelf" && !needsLogin()
         val friendsVisible=tab=="friends" && !needsLogin()
+        val statsGlow=tab=="stats" && !needsLogin() && br.com.centralcasa.data.LocalSettings(this).galleryUiStyle()
         val color=if(libraryVisible)library.detailBackgroundColor() ?: theme.background else theme.background
         val backdrop=when {
             libraryVisible->library.screenBackground()
             friendsVisible->friends.screenBackground()
+            statsGlow->object:android.graphics.drawable.Drawable() {
+                private val basePaint=android.graphics.Paint().apply {this.color=color}
+                private val glowPaint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+                private var lastW=0;private var lastH=0;private var radius=0f
+                override fun draw(canvas:android.graphics.Canvas){
+                    val b=bounds;val w=b.width();val h=b.height()
+                    canvas.drawRect(b,basePaint)
+                    if(w<=0 || h<=0)return
+                    val cx=b.left+w*0.5f;val top=b.top.toFloat()
+                    if(w!=lastW || h!=lastH){
+                        lastW=w;lastH=h
+                        radius=(w*0.78f).coerceAtLeast(theme.dp(260).toFloat())
+                        glowPaint.shader=android.graphics.RadialGradient(
+                            cx, top, radius,
+                            intArrayOf(theme.tint(theme.accent,44), theme.tint(theme.accent,18), Color.TRANSPARENT),
+                            floatArrayOf(0f,0.48f,1f),
+                            android.graphics.Shader.TileMode.CLAMP,
+                        )
+                    }
+                    canvas.save()
+                    canvas.scale(1f,0.78f,cx,top)
+                    canvas.drawCircle(cx,top,radius,glowPaint)
+                    canvas.restore()
+                }
+                override fun setAlpha(alpha:Int){}
+                override fun setColorFilter(colorFilter:android.graphics.ColorFilter?){}
+                @Deprecated("Deprecated in Java")
+                override fun getOpacity()=android.graphics.PixelFormat.OPAQUE
+            }
             else->null
         }
         root.background=backdrop ?: theme.shape(color,0)

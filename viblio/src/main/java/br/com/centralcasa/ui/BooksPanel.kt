@@ -3440,13 +3440,13 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
 
         val metaStrip=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
         wrap.addView(metaStrip,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(18)})
-        metaStrip.addView(gText("${completedIds.size} ${if(completedIds.size==1)"concluído" else "concluídos"}",12f,ui.text).apply {tag="period-metric:3"},LinearLayout.LayoutParams(-2,-2))
-        metaStrip.addView(gText(" · ",12f,ui.muted),LinearLayout.LayoutParams(-2,-2))
-        metaStrip.addView(gText("${activeBookIds.size} ${if(activeBookIds.size==1)singleUnit else countUnit}",12f,ui.muted).apply {tag="period-metric:0"},LinearLayout.LayoutParams(-2,-2))
-        metaStrip.addView(gText(" · ",12f,ui.muted),LinearLayout.LayoutParams(-2,-2))
+        metaStrip.addView(gText("${completedIds.size} ${if(completedIds.size==1)"concluído" else "concluídos"}",11.5f,ui.text).apply {tag="period-metric:3";fontFeatureSettings="tnum"},LinearLayout.LayoutParams(-2,-2))
+        metaStrip.addView(gText(" · ",11.5f,ui.muted),LinearLayout.LayoutParams(-2,-2))
+        metaStrip.addView(gText("${activeBookIds.size} ${if(activeBookIds.size==1)singleUnit else countUnit}",11.5f,ui.muted).apply {tag="period-metric:0";fontFeatureSettings="tnum"},LinearLayout.LayoutParams(-2,-2))
+        metaStrip.addView(gText(" · ",11.5f,ui.muted),LinearLayout.LayoutParams(-2,-2))
         metaStrip.addView(
-            gText("${compactReadingTime(summary.durationMs)}$speedHint",12f,ui.muted).apply {
-                tag="period-metric:2";maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END
+            gText("${compactReadingTime(summary.durationMs)}$speedHint",11.5f,ui.muted).apply {
+                tag="period-metric:2";fontFeatureSettings="tnum";maxLines=2;ellipsize=android.text.TextUtils.TruncateAt.END
             },
             LinearLayout.LayoutParams(0,-2,1f),
         )
@@ -3485,9 +3485,15 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
 
         // 4) Borderless reading archive list with large 44x66 covers
         val rows=books.filter {it.id in activeBookIds}.sortedWith(compareBy<LibraryBook> {if(it.id in completedIds)0 else 1}.thenBy {ShelfFilters.key(it.title)})
+        val listTitle=when(readingPeriodUnit){
+            ReadingPeriodUnit.DAY -> "Lidos no dia"
+            ReadingPeriodUnit.WEEK -> "Lidos na semana"
+            ReadingPeriodUnit.MONTH -> "Lidos em ${AnnualPlanCalculator.fullName(readingPeriodAnchor.substring(5,7).toIntOrNull() ?: 1)}"
+            ReadingPeriodUnit.YEAR -> "Lidos em ${readingPeriodAnchor.take(4)}"
+        }
         val listHead=ui.row().apply {gravity=Gravity.BOTTOM}
         wrap.addView(listHead,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(8)})
-        listHead.addView(gText("Leituras no período",18f,ui.text,serif=true),LinearLayout.LayoutParams(0,-2,1f))
+        listHead.addView(gText(listTitle,18f,ui.text,serif=true),LinearLayout.LayoutParams(0,-2,1f))
         listHead.addView(gText("${rows.size} ${if(rows.size==1)singleUnit else countUnit}",11f,ui.muted),LinearLayout.LayoutParams(-2,-2))
 
         val shown=rows.take(periodVisibleBooks)
@@ -3525,7 +3531,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 if(book.pagesKnown) metaParts.add("${format.format(records.sumOf {it.pages})} págs")
                 if(records.sumOf {it.durationMs}>0L) metaParts.add(compactReadingTime(records.sumOf {it.durationMs}))
             } else if(!isDoneInPeriod){
-                metaParts.add("Leitura registrada")
+                metaParts.add("Data registrada")
             } else if(book.pagesKnown){
                 metaParts.add("${format.format(book.totalPages)} págs")
             }
@@ -3536,7 +3542,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 )
             }
             infoCol.addView(
-                gText(if(isDoneInPeriod)"✓ Concluído no período" else "Em leitura",10.5f,if(isDoneInPeriod)mint else ui.muted,medium=isDoneInPeriod),
+                gText(if(isDoneInPeriod)"✓ Concluído" else "Em leitura",10.5f,if(isDoneInPeriod)mint else ui.muted,medium=isDoneInPeriod),
                 LinearLayout.LayoutParams(-1,-2),
             )
             if(idx<shown.lastIndex){
@@ -3544,7 +3550,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             }
         }
         if(rows.isEmpty()){
-            wrap.addView(gText("Nenhuma leitura registrada neste período.",12f,ui.muted).apply {setPadding(0,ui.dp(8),0,0)},LinearLayout.LayoutParams(-1,-2))
+            wrap.addView(gText("Sem leituras",12f,ui.muted).apply {setPadding(0,ui.dp(8),0,0)},LinearLayout.LayoutParams(-1,-2))
         }
         if(rows.size>periodVisibleBooks){
             wrap.addView(
@@ -3832,6 +3838,221 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             }
         }
     }
+    private fun showReadingDayModal(
+        day:String,
+        books:List<LibraryBook>,
+        sessions:List<ReadingSession>,
+        dates:List<ReadingDate>,
+        mint:Int,
+    ){
+        val format=java.text.NumberFormat.getIntegerInstance(Locale("pt","BR"))
+        val ptBr=Locale("pt","BR")
+        val byId=books.associateBy {it.id}
+        val daySessions=sessions.filter {it.bookId in byId && (it.readingDay ?: ReadingDays.at(it.startedAt))==day}
+        val dayManualDates=dates.filter {it.bookId in byId && it.day==day}
+        val todayDay=ReadingDays.at(System.currentTimeMillis())
+        val yesterdayDay=ReadingDays.at(System.currentTimeMillis()-86400000L)
+        val parsedDate=runCatching {
+            java.text.SimpleDateFormat("yyyy-MM-dd",Locale.US).apply {isLenient=false}.parse(day)
+        }.getOrNull()
+        val currentYear=java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+        val dayYear=day.take(4).toIntOrNull() ?: currentYear
+        val eyebrow=when(day){
+            todayDay -> "Hoje"
+            yesterdayDay -> "Ontem"
+            else -> parsedDate?.let {
+                java.text.SimpleDateFormat("EEEE",ptBr).format(it).replaceFirstChar {c->c.titlecase(ptBr)}
+            }.orEmpty()
+        }
+        val dateTitle=parsedDate?.let {
+            val pat=if(dayYear==currentYear) "d 'de' MMMM" else "d 'de' MMM 'de' yyyy"
+            java.text.SimpleDateFormat(pat,ptBr).format(it)
+        } ?: runCatching {ReadingDays.label(day)}.getOrDefault(day)
+        val clockFmt=java.text.SimpleDateFormat("HH:mm",ptBr)
+
+        fun mText(value:CharSequence,sp:Float,color:Int,serif:Boolean=false,medium:Boolean=false)=TextView(activity).apply {
+            text=value;textSize=sp;setTextColor(color);includeFontPadding=false
+            typeface=when {
+                serif -> Typeface.create("serif",Typeface.NORMAL)
+                medium -> Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                else -> Typeface.create("sans-serif",Typeface.NORMAL)
+            }
+        }
+
+        val sessionsByBook=daySessions.groupBy {it.bookId}
+        val bookIds=(sessionsByBook.keys+dayManualDates.map {it.bookId}).distinct()
+        data class DayBookRow(
+            val book:LibraryBook,
+            val records:List<ReadingSession>,
+            val pages:Int,
+            val durationMs:Long,
+        )
+        val rows=bookIds.mapNotNull { id ->
+            val b=byId[id] ?: return@mapNotNull null
+            val recs=sessionsByBook[id].orEmpty().sortedBy {it.startedAt}
+            val p=if(b.pagesKnown) recs.sumOf {it.pages.coerceAtLeast(0)} else 0
+            val dur=recs.sumOf {it.durationMs.coerceAtLeast(0L)}
+            DayBookRow(b,recs,p,dur)
+        }.sortedWith(compareByDescending<DayBookRow> {it.pages}.thenByDescending {it.durationMs}.thenBy {ShelfFilters.key(it.book.title)})
+
+        val totalDayPages=rows.sumOf {it.pages}
+        val totalDayMs=rows.sumOf {it.durationMs}
+        val timedKnown=daySessions.filter {byId[it.bookId]?.pagesKnown==true}
+        val timedMs=timedKnown.sumOf {it.durationMs.coerceAtLeast(0L)}
+        val timedPages=timedKnown.sumOf {it.pages.coerceAtLeast(0).toLong()}
+        val hairline=ui.galleryHairline(105)
+
+        showBottomSheet(ui) { body, dialog ->
+            // Header: weekday + formatted date + close button
+            val head=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+            body.addView(head,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+            val headLeft=ui.column()
+            head.addView(headLeft,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(10)})
+            if(eyebrow.isNotBlank()){
+                headLeft.addView(
+                    mText(eyebrow,11f,mint,medium=true),
+                    LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)},
+                )
+            }
+            headLeft.addView(mText(dateTitle,21f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2))
+            head.addView(
+                mText("×",22f,ui.muted).apply {
+                    gravity=Gravity.CENTER;contentDescription="Fechar";isFocusable=true
+                    background=ui.pillRipple(Color.TRANSPARENT,18)
+                    setOnClickListener {dialog.dismiss()}
+                },
+                LinearLayout.LayoutParams(ui.dp(36),ui.dp(36)),
+            )
+
+            if(rows.isEmpty()){
+                body.addView(
+                    mText("Sem leituras neste dia",13f,ui.muted).apply {setPadding(0,ui.dp(8),0,ui.dp(12))},
+                    LinearLayout.LayoutParams(-1,-2),
+                )
+                return@showBottomSheet
+            }
+
+            // Day totals strip (pages · time · pace)
+            val statsBox=ui.row().apply {
+                gravity=Gravity.CENTER_VERTICAL
+                background=ui.pillShape(ui.activeSurface,12,ui.galleryHairline(125))
+                setPadding(ui.dp(12),ui.dp(11),ui.dp(12),ui.dp(11))
+            }
+            body.addView(statsBox,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+            fun addDayStat(value:String,caption:String,accentValue:Boolean){
+                val col=ui.column().apply {gravity=Gravity.CENTER_HORIZONTAL}
+                col.addView(
+                    mText(value,17f,if(accentValue)mint else ui.text,serif=true).apply {
+                        fontFeatureSettings="tnum";maxLines=1
+                    },
+                    LinearLayout.LayoutParams(-2,-2).apply {bottomMargin=ui.dp(2)},
+                )
+                col.addView(mText(caption,10f,ui.muted).apply {maxLines=1},LinearLayout.LayoutParams(-2,-2))
+                statsBox.addView(col,LinearLayout.LayoutParams(0,-2,1f))
+            }
+            addDayStat(if(totalDayPages>0) format.format(totalDayPages) else "—","páginas",true)
+            statsBox.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(1,ui.dp(28)))
+            addDayStat(if(totalDayMs>0L) compactReadingTime(totalDayMs) else "—","tempo",false)
+            statsBox.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(1,ui.dp(28)))
+            val dayPace=if(timedMs>0L && timedPages>0L) "${format.format(kotlin.math.round(timedPages*3600000.0/timedMs).toLong())} p/h" else "—"
+            addDayStat(dayPace,"ritmo",false)
+
+            // Books read on this day with real covers + detailed sessions
+            rows.forEachIndexed { idx, row ->
+                val b=row.book
+                val item=ui.row().apply {
+                    gravity=Gravity.TOP
+                    setPadding(0,ui.dp(11),0,ui.dp(11))
+                    isFocusable=true
+                    setOnClickListener {
+                        dialog.dismiss()
+                        onOpenPlannedBook?.invoke(b.id) ?: open(b.id)
+                    }
+                }
+                body.addView(item,LinearLayout.LayoutParams(-1,-2))
+
+                val thumb=ImageView(activity).apply {
+                    scaleType=ImageView.ScaleType.CENTER_CROP
+                    background=ui.pillShape(ui.activeSurface,5)
+                    clipToOutline=true
+                    elevation=ui.dp(6).toFloat()
+                    setImageDrawable(br.com.viblio.ui.ViblioBookMarkDrawable(mint,Color.WHITE,scale=0.46f,backgroundColor=ui.activeSurface))
+                    if(b.cover.isNotBlank()) images.thumbnail(b.cover)?.let(::setImageBitmap)
+                }
+                item.addView(thumb,LinearLayout.LayoutParams(ui.dp(46),ui.dp(69)).apply {marginEnd=ui.dp(14)})
+
+                val info=ui.column()
+                item.addView(info,LinearLayout.LayoutParams(0,-2,1f))
+
+                val topLine=ui.row().apply {gravity=Gravity.TOP}
+                info.addView(topLine,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
+                val titleStr=b.title+(b.sequenceNumber?.let {if(b.kind=="book" && b.collectionId.isBlank())" · Livro $it" else " · Vol. $it"} ?: "")
+                topLine.addView(
+                    mText(titleStr,15f,ui.text,serif=true).apply {
+                        maxLines=2;ellipsize=android.text.TextUtils.TruncateAt.END
+                    },
+                    LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)},
+                )
+                val badgeStr=when {
+                    row.pages>0 -> "+${format.format(row.pages)} págs"
+                    row.durationMs>0L -> compactReadingTime(row.durationMs)
+                    else -> "✓"
+                }
+                topLine.addView(
+                    mText(badgeStr,12f,mint,medium=true).apply {fontFeatureSettings="tnum";maxLines=1},
+                    LinearLayout.LayoutParams(-2,-2).apply {topMargin=ui.dp(2)},
+                )
+
+                if(b.author.isNotBlank()){
+                    info.addView(
+                        mText(b.author,11f,ui.muted).apply {maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END},
+                        LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(5)},
+                    )
+                }
+
+                if(row.records.isEmpty()){
+                    info.addView(mText("Data registrada",11f,ui.muted),LinearLayout.LayoutParams(-1,-2))
+                } else {
+                    val bookPace=if(b.pagesKnown && row.pages>0 && row.durationMs>=60_000L)
+                        "${format.format(kotlin.math.round(row.pages*3600000.0/row.durationMs).toLong())} pág/h" else null
+                    val summaryParts=mutableListOf<String>()
+                    if(row.durationMs>0L) summaryParts.add(compactReadingTime(row.durationMs))
+                    if(bookPace!=null) summaryParts.add(bookPace)
+                    if(row.records.size>1) summaryParts.add("${row.records.size} sessões")
+                    if(summaryParts.isNotEmpty()){
+                        info.addView(
+                            mText(summaryParts.joinToString(" · "),11.5f,ui.text).apply {fontFeatureSettings="tnum"},
+                            LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)},
+                        )
+                    }
+                    row.records.forEachIndexed { sIdx, s ->
+                        val sParts=mutableListOf<String>()
+                        if(s.startedAt>0L && s.finishedAt>s.startedAt){
+                            sParts.add("${clockFmt.format(java.util.Date(s.startedAt))}–${clockFmt.format(java.util.Date(s.finishedAt))}")
+                        }
+                        if(b.pagesKnown && (s.endPage>0 || s.startPage>0)){
+                            val rangeText=if(s.endPage>s.startPage) "pág. ${s.startPage} → ${s.endPage}" else "pág. ${s.endPage}"
+                            sParts.add(if(row.records.size>1 && s.pages>0) "$rangeText (+${s.pages})" else rangeText)
+                        }
+                        if(row.records.size>1 && s.durationMs>0L){
+                            sParts.add(compactReadingTime(s.durationMs))
+                        }
+                        if(sParts.isNotEmpty()){
+                            val prefix=if(row.records.size>1) "• " else ""
+                            info.addView(
+                                mText(prefix+sParts.joinToString(" · "),11f,ui.muted).apply {fontFeatureSettings="tnum"},
+                                LinearLayout.LayoutParams(-1,-2).apply {if(sIdx>0) topMargin=ui.dp(2)},
+                            )
+                        }
+                    }
+                }
+
+                if(idx<rows.lastIndex){
+                    body.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1))
+                }
+            }
+        }
+    }
     private fun summaryGallery(parent:LinearLayout,books:List<LibraryBook>,sessions:List<ReadingSession>,mint:Int){
         val format=java.text.NumberFormat.getIntegerInstance(Locale("pt","BR"))
         val byId=books.associateBy {it.id}
@@ -3843,9 +4064,6 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         val done=books.count {it.complete}
         val reading=books.count {it.currentPage>0 && !it.complete}
         val unread=books.size-done-reading
-        val authorsCount=books.map {ShelfFilters.key(it.author)}.filter {it.isNotBlank()}.distinct().size
-        val unitLabel=when(statisticsType){"book"->"livros";"all"->"exemplares";else->"volumes"}
-        val hairline=ui.galleryHairline(105)
 
         fun gText(value:CharSequence,sp:Float,color:Int,serif:Boolean=false,medium:Boolean=false)=TextView(activity).apply {
             text=value;textSize=sp;setTextColor(color);includeFontPadding=false
@@ -3859,41 +4077,54 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         val wrap=ui.column().apply {setPadding(ui.dp(20),ui.dp(4),ui.dp(20),ui.dp(20))}
         parent.addView(wrap,LinearLayout.LayoutParams(-1,-2))
 
-        // 1) Editorial lead spread (NO box, pure typography + razor-thin 3dp proportion line)
-        val leadRow=ui.row().apply {gravity=Gravity.BOTTOM}
-        wrap.addView(leadRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(8)})
-        leadRow.addView(
-            gText(format.format(pages),48f,mint,serif=true).apply {
-                tag="statistics-pages";fontFeatureSettings="tnum";letterSpacing=-0.04f
+        // 1) Asymmetric editorial lead spread: big pages count on LEFT, 3 clean stacked metrics on RIGHT
+        val heroSpread=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+        wrap.addView(heroSpread,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(16)})
+
+        val pagesStr=format.format(pages)
+        val pagesSp=when {
+            pagesStr.length>=8 -> 32f
+            pagesStr.length==7 -> 38f
+            else -> 44f
+        }
+        val leftHero=ui.column()
+        heroSpread.addView(leftHero,LinearLayout.LayoutParams(-2,-2))
+        leftHero.addView(
+            gText(pagesStr,pagesSp,mint,serif=true).apply {
+                tag="statistics-pages";fontFeatureSettings="tnum";letterSpacing=-0.04f;maxLines=1
             },
-            LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(10)},
+            LinearLayout.LayoutParams(-2,-2).apply {bottomMargin=ui.dp(2)},
         )
-        leadRow.addView(
-            gText("páginas",12.5f,ui.muted).apply {setPadding(0,0,0,ui.dp(7))},
+        leftHero.addView(
+            gText("páginas",12f,ui.muted),
             LinearLayout.LayoutParams(-2,-2),
         )
 
-        val paceStr=if(timedDuration>0L && timedPages>0L)"${format.format(kotlin.math.round(timedPages*3600000.0/timedDuration).toLong())} pág/h" else "—"
-        val narrative=android.text.SpannableStringBuilder().apply {
-            fun addLead(v:String){
-                val s=length;append(v)
-                setSpan(android.text.style.ForegroundColorSpan(ui.text),s,length,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-            fun addDim(v:String){
-                val s=length;append(v)
-                setSpan(android.text.style.ForegroundColorSpan(ui.muted),s,length,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-            addLead(compactReadingTime(totalDuration))
-            addDim(" de leitura · ")
-            addLead(paceStr)
-            addDim(" · ")
-            addLead("$done")
-            addDim(" de ${format.format(books.size)} $unitLabel concluídos")
-        }
-        wrap.addView(
-            gText(narrative,12.5f,ui.muted).apply {setLineSpacing(0f,1.25f)},
-            LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(16)},
+        heroSpread.addView(
+            View(activity).apply {setBackgroundColor(ui.galleryHairline(115))},
+            LinearLayout.LayoutParams(1,ui.dp(48)).apply {marginStart=ui.dp(14);marginEnd=ui.dp(14)},
         )
+
+        val paceStr=if(timedDuration>0L && timedPages>0L)"${format.format(kotlin.math.round(timedPages*3600000.0/timedDuration).toLong())} pág/h" else "—"
+        val rightMetrics=ui.column()
+        heroSpread.addView(rightMetrics,LinearLayout.LayoutParams(0,-2,1f))
+        fun addMetricLine(value:String,caption:String,bottomDp:Int){
+            val r=ui.row().apply {gravity=Gravity.BOTTOM}
+            r.addView(
+                gText(value,12.5f,ui.text,medium=true).apply {fontFeatureSettings="tnum";maxLines=1},
+                LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(6)},
+            )
+            r.addView(
+                gText(caption,11f,ui.muted).apply {
+                    gravity=Gravity.END;maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END
+                },
+                LinearLayout.LayoutParams(0,-2,1f),
+            )
+            rightMetrics.addView(r,LinearLayout.LayoutParams(-1,-2).apply {if(bottomDp>0)bottomMargin=ui.dp(bottomDp)})
+        }
+        addMetricLine(compactReadingTime(totalDuration),"leitura",5)
+        addMetricLine(paceStr,"ritmo",5)
+        addMetricLine("${format.format(done)}/${format.format(books.size)}","concluídos",0)
 
         val barHost=FrameLayout(activity).apply {
             background=ui.pillShape(ui.galleryHairline(85),4)
@@ -3910,13 +4141,16 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
 
         val propLegend=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
         wrap.addView(propLegend,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(26)})
-        propLegend.addView(gText("${format.format(done)} concluídos",10.5f,ui.muted).apply {fontFeatureSettings="tnum"},LinearLayout.LayoutParams(0,-2,1f))
-        propLegend.addView(gText("${format.format(reading)} lendo",10.5f,ui.muted).apply {gravity=Gravity.CENTER;fontFeatureSettings="tnum"},LinearLayout.LayoutParams(0,-2,1f))
-        propLegend.addView(gText("${format.format(unread)} na fila · ${format.format(authorsCount)} autores",10.5f,ui.muted).apply {gravity=Gravity.END;fontFeatureSettings="tnum";maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END},LinearLayout.LayoutParams(0,-2,1.6f))
+        propLegend.addView(gText("${format.format(done)} concluídos",10.5f,ui.muted).apply {fontFeatureSettings="tnum"},LinearLayout.LayoutParams(-2,-2))
+        propLegend.addView(View(activity),LinearLayout.LayoutParams(0,1,1f))
+        propLegend.addView(gText("${format.format(reading)} lendo",10.5f,ui.muted).apply {fontFeatureSettings="tnum"},LinearLayout.LayoutParams(-2,-2))
+        propLegend.addView(View(activity),LinearLayout.LayoutParams(0,1,1f))
+        propLegend.addView(gText("${format.format(unread)} na fila",10.5f,ui.muted).apply {fontFeatureSettings="tnum"},LinearLayout.LayoutParams(-2,-2))
 
-        // 2) Living Bullet-Journal Calendar in foreground (NO outer box, NO empty squares!)
+        // 2) Living Bullet-Journal Calendar in foreground (tapping any day opens rich book-by-book modal)
+        val allDates=repository.dates()
         val todayDay=ReadingDays.at(System.currentTimeMillis())
-        val hmSummary=ReadingHeatmap.forYear(heatmapYear,books,sessions,repository.dates(),todayDay=todayDay)
+        val hmSummary=ReadingHeatmap.forYear(heatmapYear,books,sessions,allDates,todayDay=todayDay)
         val hmMonthGrid=ReadingHeatmap.monthGrid(heatmapYear,heatmapMonth,hmSummary)
         val isCurrentYear=heatmapYear==java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
 
@@ -3967,54 +4201,44 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             val s=length;append(tail)
             setSpan(android.text.style.ForegroundColorSpan(ui.muted),s,length,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
-        wrap.addView(gText(streakLine,11.5f,ui.muted,medium=false),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+        wrap.addView(gText(streakLine,11.5f,ui.muted,medium=false),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
 
-        fun describeDay(day:String?):String {
-            if(day==null) return "Toque em um dia para ver detalhes"
-            val act=hmSummary.daysByDate[day]
-            val pretty=runCatching {ReadingDays.label(day)}.getOrDefault(day)
-            if(act==null) return "$pretty · Sem leitura registrada"
-            val parts=mutableListOf(pretty)
-            if(act.pages>0) parts.add("${format.format(act.pages)} págs")
-            if(act.durationMs>0L) parts.add(compactReadingTime(act.durationMs))
-            if(act.bookTitles.isNotEmpty()) parts.add(act.bookTitles.take(2).joinToString(", "))
-            return parts.joinToString(" · ")
-        }
-        val dayDetailLabel=gText(describeDay(heatmapSelectedDay),11f,ui.muted).apply {
-            maxLines=2;ellipsize=android.text.TextUtils.TruncateAt.END
-        }
         val hmView=ReadingHeatmapView(activity,ui,hmSummary,hmMonthGrid,mint,todayDay,heatmapSelectedDay,bulletJournal=true){ pickedDay->
             heatmapSelectedDay=pickedDay
-            dayDetailLabel.text=describeDay(pickedDay)
+            showReadingDayModal(pickedDay,books,sessions,allDates,mint)
         }
-        wrap.addView(hmView,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
-        wrap.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {bottomMargin=ui.dp(8)})
-        wrap.addView(dayDetailLabel,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(26)})
+        wrap.addView(hmView,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(24)})
 
-        // 3) Magazine Index: Gêneros | Subgêneros (inline switchable, 2dp razor bars)
+        // 3) Magazine Index: Gêneros | Subgêneros (active underline + 2dp razor bars)
         val genres=BookClassificationStats.genres(books)
         val subgenres=BookClassificationStats.subgenres(books)
         val entries=if(statsTaxonomyMode=="subgenres") subgenres else genres
         val taxHead=ui.row().apply {gravity=Gravity.BOTTOM}
         wrap.addView(taxHead,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
-        taxHead.addView(
-            gText("Gêneros",18f,if(statsTaxonomyMode=="genres")ui.text else ui.muted,serif=true).apply {
-                tag="statistics-toggle:stats";isFocusable=true;setPadding(0,ui.dp(2),ui.dp(14),ui.dp(2))
-                setOnClickListener {if(statsTaxonomyMode!="genres"){statsTaxonomyMode="genres";statsTaxonomyExpanded=false;changed()}}
-            },
-            LinearLayout.LayoutParams(-2,-2),
-        )
-        taxHead.addView(
-            gText("Subgêneros",18f,if(statsTaxonomyMode=="subgenres")ui.text else ui.muted,serif=true).apply {
-                tag="statistics-toggle:classification-tag";isFocusable=true;setPadding(0,ui.dp(2),ui.dp(8),ui.dp(2))
-                setOnClickListener {if(statsTaxonomyMode!="subgenres"){statsTaxonomyMode="subgenres";statsTaxonomyExpanded=false;changed()}}
-            },
-            LinearLayout.LayoutParams(0,-2,1f),
-        )
+        fun addTaxTab(label:String,mode:String,tagName:String,endDp:Int){
+            val active=statsTaxonomyMode==mode
+            val col=ui.column().apply {
+                tag=tagName;isFocusable=true
+                setPadding(0,ui.dp(2),0,0)
+                setOnClickListener {if(statsTaxonomyMode!=mode){statsTaxonomyMode=mode;statsTaxonomyExpanded=false;changed()}}
+            }
+            col.addView(
+                gText(label,18f,if(active)ui.text else ui.muted,serif=true).apply {setPadding(0,0,0,ui.dp(4))},
+                LinearLayout.LayoutParams(-2,-2),
+            )
+            col.addView(
+                View(activity).apply {setBackgroundColor(if(active)mint else Color.TRANSPARENT)},
+                LinearLayout.LayoutParams(-1,ui.dp(2).coerceAtLeast(2)),
+            )
+            taxHead.addView(col,LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(endDp)})
+        }
+        addTaxTab("Gêneros","genres","statistics-toggle:stats",16)
+        addTaxTab("Subgêneros","subgenres","statistics-toggle:classification-tag",8)
+        taxHead.addView(View(activity),LinearLayout.LayoutParams(0,1,1f))
         if(entries.size>4){
             taxHead.addView(
                 gText(if(statsTaxonomyExpanded)"Ver menos" else "Ver todos",11f,mint,medium=true).apply {
-                    isFocusable=true;setPadding(ui.dp(6),ui.dp(4),0,ui.dp(2))
+                    isFocusable=true;setPadding(ui.dp(6),ui.dp(4),0,ui.dp(4))
                     setOnClickListener {statsTaxonomyExpanded=!statsTaxonomyExpanded;changed()}
                 },
                 LinearLayout.LayoutParams(-2,-2),
@@ -4026,7 +4250,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         val peakCount=(entries.firstOrNull()?.books ?: 1).coerceAtLeast(1)
         val shownEntries=if(statsTaxonomyExpanded) entries else entries.take(4)
         if(shownEntries.isEmpty()){
-            taxList.addView(gText("Ainda sem dados neste filtro.",12f,ui.muted),LinearLayout.LayoutParams(-1,-2))
+            taxList.addView(gText("Sem dados",12f,ui.muted),LinearLayout.LayoutParams(-1,-2))
         }else {
             shownEntries.forEachIndexed { idx,entry ->
                 val line=ui.row().apply {gravity=Gravity.BOTTOM}
@@ -4056,10 +4280,20 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             }
         }
 
-        // 4) Retrospective Physical Collector Card (with 2 real tilted covers from the year!)
+        // 4) Retrospective Physical Collector Card (with 2 real tilted covers from the year, unclipped)
+        val yearRange=ReadingPeriodRange("$heatmapYear-01-01","$heatmapYear-12-31","$heatmapYear")
+        val yearSummary=PeriodReading.from(books,sessions,allDates,yearRange)
+        val yearCompletedIds=PeriodCompletions.completedBookIds(books,sessions,allDates,yearRange)
+        val yearCoverBooks=books
+            .filter {it.cover.isNotBlank() && (it.id in yearCompletedIds || it.id in yearSummary.bookIds)}
+            .sortedByDescending {if(it.id in yearCompletedIds) 1 else 0}
+            .take(2)
+            .ifEmpty {books.filter {it.cover.isNotBlank()}.sortedByDescending {if(it.complete) 1 else 0}.take(2)}
+
         val retroCard=ui.row().apply {
             tag="statistics-retrospective-card"
             gravity=Gravity.CENTER_VERTICAL
+            clipChildren=false;clipToPadding=false
             setPadding(ui.dp(16),ui.dp(14),ui.dp(16),ui.dp(14))
             background=android.graphics.drawable.GradientDrawable(
                 android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
@@ -4076,9 +4310,8 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         }
         wrap.addView(retroCard,LinearLayout.LayoutParams(-1,-2))
 
-        val yearCoverBooks=books.filter {it.cover.isNotBlank()}.sortedByDescending {if(it.complete) 1 else 0}.take(2)
         val fan=FrameLayout(activity).apply {clipChildren=false;clipToPadding=false}
-        retroCard.addView(fan,LinearLayout.LayoutParams(ui.dp(50),ui.dp(48)).apply {marginEnd=ui.dp(14)})
+        retroCard.addView(fan,LinearLayout.LayoutParams(ui.dp(56),ui.dp(52)).apply {marginEnd=ui.dp(12)})
         fun addTiltedCover(book:LibraryBook?,leftDp:Int,topDp:Int,angle:Float){
             val img=ImageView(activity).apply {
                 scaleType=ImageView.ScaleType.CENTER_CROP
@@ -4092,13 +4325,19 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             }
             fan.addView(img,FrameLayout.LayoutParams(ui.dp(30),ui.dp(44)).apply {marginStart=ui.dp(leftDp);topMargin=ui.dp(topDp)})
         }
-        addTiltedCover(yearCoverBooks.getOrNull(1),0,2,-8f)
-        addTiltedCover(yearCoverBooks.getOrNull(0),16,1,7f)
+        addTiltedCover(yearCoverBooks.getOrNull(1),3,4,-8f)
+        addTiltedCover(yearCoverBooks.getOrNull(0),20,3,7f)
 
+        val retroSub=when {
+            yearCompletedIds.isNotEmpty() || yearSummary.pages>0 ->
+                "${format.format(yearCompletedIds.size)} ${if(yearCompletedIds.size==1)"concluído" else "concluídos"} · ${format.format(yearSummary.pages)} págs"
+            hmSummary.totalActiveDays>0 -> "${format.format(hmSummary.totalActiveDays)} dias lidos"
+            else -> "${format.format(books.size)} na estante"
+        }
         val retroMid=ui.column()
         retroCard.addView(retroMid,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(10)})
         retroMid.addView(gText("Retrospectiva $heatmapYear",16.5f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)})
-        retroMid.addView(gText("Seu ano em livros · imagem pronta",11f,ui.muted).apply {maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END},LinearLayout.LayoutParams(-1,-2))
+        retroMid.addView(gText(retroSub,11f,ui.muted).apply {fontFeatureSettings="tnum";maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END},LinearLayout.LayoutParams(-1,-2))
         retroCard.addView(gText("→",18f,mint),LinearLayout.LayoutParams(-2,-2))
     }
     private fun redesignedStatistics(parent: LinearLayout) {
@@ -4106,14 +4345,23 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         val gallery=baseUi.rectilinear && settings.galleryUiStyle()
         if(gallery){
             parent.setPadding(0,0,0,0)
+            // Seamless ambient glow is painted edge-to-edge on root.background in ViblioActivity.applyBackground()
             val canvas=ui.column().apply {
                 setPadding(0,ui.dp(8),0,ui.dp(24))
-                background=android.graphics.drawable.GradientDrawable(
-                    android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
-                    intArrayOf(ui.tint(mint,32),ui.tint(mint,10),Color.TRANSPARENT),
-                )
             }
             parent.addView(canvas,LinearLayout.LayoutParams(-1,-2))
+
+            fun ensurePlanPanel():AnnualPlanPanel = annualPlanPanel ?: AnnualPlanPanel(
+                activity = activity,
+                ui = ui,
+                repo = repository,
+                catalogProvider = { planCatalogProvider() },
+                onOpenBook = onOpenPlannedBook,
+                onAddCatalogBook = onAddCatalogToShelf,
+                onPickBookFromShelf = onRequestShelfBookForPlan,
+            ) { if(!destroyed) changed() }.also { annualPlanPanel = it }
+
+            val activePlanPanel=if(statisticsTab=="plan") ensurePlanPanel() else null
 
             fun gText(value:String,sp:Float,color:Int,serif:Boolean=false,medium:Boolean=false)=TextView(activity).apply {
                 text=value;textSize=sp;setTextColor(color);includeFontPadding=false
@@ -4147,6 +4395,24 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 )
             }
             header.addView(View(activity),LinearLayout.LayoutParams(0,1,1f))
+            if(activePlanPanel!=null){
+                header.addView(
+                    gText("Lista",12f,ui.muted).apply {
+                        tag="plan-export-list";isFocusable=true
+                        setPadding(ui.dp(8),ui.dp(6),ui.dp(8),ui.dp(6))
+                        setOnClickListener {activePlanPanel.openExportListDialog()}
+                    },
+                    LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(4)},
+                )
+                header.addView(
+                    gText("Ajustar",12f,mint,medium=true).apply {
+                        tag="goal-configure";isFocusable=true
+                        setPadding(ui.dp(8),ui.dp(6),0,ui.dp(6))
+                        setOnClickListener {activePlanPanel.openConfigureDialog()}
+                    },
+                    LinearLayout.LayoutParams(-2,-2),
+                )
+            }
 
             val tabWrap=ui.column().apply {setPadding(ui.dp(20),0,ui.dp(20),0)}
             canvas.addView(tabWrap,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
@@ -4164,17 +4430,8 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             }
             tabWrap.addView(View(activity).apply {setBackgroundColor(ui.galleryHairline(115))},LinearLayout.LayoutParams(-1,1))
 
-            if(statisticsTab=="plan"){
-                val panel=annualPlanPanel ?: AnnualPlanPanel(
-                    activity = activity,
-                    ui = ui,
-                    repo = repository,
-                    catalogProvider = { planCatalogProvider() },
-                    onOpenBook = onOpenPlannedBook,
-                    onAddCatalogBook = onAddCatalogToShelf,
-                    onPickBookFromShelf = onRequestShelfBookForPlan,
-                ) { if(!destroyed) changed() }.also { annualPlanPanel = it }
-                panel.render(canvas)
+            if(activePlanPanel!=null){
+                activePlanPanel.render(canvas)
                 return
             }
             val books=repository.books().filter {statisticsType=="all" || it.kind==statisticsType}

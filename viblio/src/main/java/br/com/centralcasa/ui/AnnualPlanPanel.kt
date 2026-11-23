@@ -808,6 +808,28 @@ class AnnualPlanPanel(
         }
     }
 
+    fun openExportListDialog() {
+        if (closed) return
+        val plan = loadPlanForYear(selectedYear)
+        val summary = AnnualPlanCalculator.summarize(
+            plan = plan,
+            books = repo.books(true),
+            sessions = repo.sessions(),
+            dates = repo.dates(),
+            currentBookId = repo.currentId(),
+            nowMs = System.currentTimeMillis(),
+        )
+        val dlg = exportDialog ?: AnnualPlanExportDialog(activity, ui).also { exportDialog = it }
+        dlg.show(summary)
+    }
+
+    fun openConfigureDialog() {
+        if (closed) return
+        val plan = loadPlanForYear(selectedYear)
+        val purchaseGoalEntry = goalStore.entries().firstOrNull { it.goal?.metric == GoalMetric.PURCHASE }
+        openGoalConfigDialog(plan, purchaseGoalEntry)
+    }
+
     private fun renderGallery(
         parent: LinearLayout,
         plan: AnnualReadingPlan,
@@ -832,39 +854,7 @@ class AnnualPlanPanel(
         val wrap = ui.column().apply { setPadding(ui.dp(20), ui.dp(2), ui.dp(20), ui.dp(20)) }
         parent.addView(wrap, LinearLayout.LayoutParams(-1, -2))
 
-        // 1) Quiet top utility row: [ 2026 ▾ ]  ...  Lista · Ajustar
-        val topRow = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
-        wrap.addView(topRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(16) })
-        topRow.addView(
-            gText("$selectedYear ▾", 20f, ui.text, serif = true).apply {
-                tag = "plan-year-picker"; isFocusable = true
-                setPadding(0, ui.dp(2), ui.dp(8), ui.dp(2))
-                setOnClickListener { pickYear() }
-            },
-            LinearLayout.LayoutParams(-2, -2),
-        )
-        topRow.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f))
-        topRow.addView(
-            gText("Lista", 12f, ui.muted, medium = true).apply {
-                tag = "plan-export-list"; isFocusable = true
-                setPadding(ui.dp(8), ui.dp(6), ui.dp(8), ui.dp(6))
-                setOnClickListener {
-                    val dlg = exportDialog ?: AnnualPlanExportDialog(activity, ui).also { exportDialog = it }
-                    dlg.show(summary)
-                }
-            },
-            LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) },
-        )
-        topRow.addView(
-            gText("Ajustar", 12f, ui.accent, medium = true).apply {
-                tag = "goal-configure"; isFocusable = true
-                setPadding(ui.dp(8), ui.dp(6), 0, ui.dp(6))
-                setOnClickListener { openGoalConfigDialog(plan, purchaseGoalEntry) }
-            },
-            LinearLayout.LayoutParams(-2, -2),
-        )
-
-        // 2) Asymmetric Yearly Hero: Fine Editorial Arc + Pace (ZERO twin boxes!)
+        // 1) Asymmetric Yearly Hero matching v2 mockup: Fine Editorial Arc on left + "2026 ▾  75%" + pace on right
         val hasBooksGoal = plan.booksGoalType != BooksGoalType.NONE
         val hasPagesGoal = plan.pagesGoalType != PagesGoalType.NONE
 
@@ -892,31 +882,46 @@ class AnnualPlanPanel(
             val rightCol = ui.column()
             heroRow.addView(rightCol, LinearLayout.LayoutParams(0, -2, 1f))
 
-            if (hasBooksGoal) {
-                val r1 = ui.row().apply { gravity = Gravity.BOTTOM }
-                rightCol.addView(r1, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(3) })
-                val goalDesc = if (plan.booksGoalType == BooksGoalType.PER_MONTH) {
-                    "Meta anual · ${plan.booksGoalValue}/mês"
-                } else {
-                    "Meta anual de livros"
-                }
-                r1.addView(gText(goalDesc, 12f, ui.text, medium = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(6) })
-                r1.addView(gText("$bookPct%", 12f, arcColor, medium = true).apply { fontFeatureSettings = "tnum" }, LinearLayout.LayoutParams(-2, -2))
-                rightCol.addView(
-                    gText("${numbers.format(summary.totalPagesReadInYear)} págs lidas em ${plan.year}", 11f, ui.muted).apply {
-                        maxLines = 1; ellipsize = TextUtils.TruncateAt.END
-                    },
-                    LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(if (hasPagesGoal) 12 else 0) },
-                )
+            // Line 1: 2026 ▾  ...  75%
+            val r1 = ui.row().apply { gravity = Gravity.BOTTOM }
+            rightCol.addView(r1, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(4) })
+            val yearSpan = android.text.SpannableStringBuilder("$selectedYear ▾").apply {
+                setSpan(android.text.style.ForegroundColorSpan(ui.text), 0, 4, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(android.text.style.ForegroundColorSpan(ui.accent), 4, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(android.text.style.RelativeSizeSpan(0.65f), 4, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
+            r1.addView(
+                gText(yearSpan, 21f, ui.text, serif = true).apply {
+                    tag = "plan-year-picker"; isFocusable = true
+                    setPadding(0, 0, ui.dp(8), 0)
+                    setOnClickListener { pickYear() }
+                },
+                LinearLayout.LayoutParams(0, -2, 1f),
+            )
+            r1.addView(
+                gText("${if (hasBooksGoal) bookPct else monthPct}%", 12f, arcColor, medium = true).apply { fontFeatureSettings = "tnum" },
+                LinearLayout.LayoutParams(-2, -2),
+            )
 
+            // Line 2: concise goal subtitle
+            val subLine = when {
+                hasBooksGoal && plan.booksGoalType == BooksGoalType.PER_MONTH -> "Meta anual · ${plan.booksGoalValue} livros/mês"
+                hasBooksGoal -> "Meta anual · ${numbers.format(summary.totalPagesReadInYear)} págs"
+                else -> "Meta de páginas · ${AnnualPlanCalculator.fullName(selectedMonth)}"
+            }
+            rightCol.addView(
+                gText(subLine, 11.5f, ui.muted).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
+                LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(if (hasPagesGoal) 10 else 0) },
+            )
+
+            // Line 3 + 4: pages pace + razor progress bar
             if (hasPagesGoal) {
                 val pagesCol = ui.column().apply {
                     tag = "plan-kpi-pages"; isFocusable = true
                     setOnClickListener { openGoalConfigDialog(plan, purchaseGoalEntry) }
                 }
                 rightCol.addView(pagesCol, LinearLayout.LayoutParams(-1, -2))
-                val minHint = summary.estimatedMinutesPerDay?.let { "~${it}m/d" } ?: "$monthPct%"
+                val minHint = summary.estimatedMinutesPerDay?.let { "~${it}m" } ?: "$monthPct%"
                 val pRow = ui.row().apply { gravity = Gravity.BOTTOM }
                 pagesCol.addView(pRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(5) })
                 val pLead: String
@@ -954,17 +959,24 @@ class AnnualPlanPanel(
         } else {
             val noGoalRow = ui.row().apply {
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, ui.dp(4), 0, ui.dp(18))
-                isFocusable = true
-                setOnClickListener { openYearBooksDialog(plan, summary, purchaseGoalEntry) }
+                setPadding(0, ui.dp(2), 0, ui.dp(18))
             }
             wrap.addView(noGoalRow, LinearLayout.LayoutParams(-1, -2))
-            val doneStr = if (summary.completedCount == 1) "1 concluído" else "${summary.completedCount} concluídos"
             noGoalRow.addView(
-                gText("$doneStr · ${numbers.format(summary.totalPagesReadInYear)} págs em ${plan.year}", 13f, ui.text).apply {
-                    maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                gText("$selectedYear ▾", 20f, ui.text, serif = true).apply {
+                    tag = "plan-year-picker"; isFocusable = true
+                    setPadding(0, 0, ui.dp(10), 0)
+                    setOnClickListener { pickYear() }
                 },
-                LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(10) },
+                LinearLayout.LayoutParams(-2, -2),
+            )
+            val doneStr = if (summary.completedCount == 1) "1 livro" else "${summary.completedCount} livros"
+            noGoalRow.addView(
+                gText("$doneStr · ${numbers.format(summary.totalPagesReadInYear)} págs", 12f, ui.muted).apply {
+                    maxLines = 1; ellipsize = TextUtils.TruncateAt.END; isFocusable = true
+                    setOnClickListener { openYearBooksDialog(plan, summary, purchaseGoalEntry) }
+                },
+                LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) },
             )
             noGoalRow.addView(
                 gText("Definir meta →", 12f, ui.accent, medium = true).apply {
@@ -975,28 +987,23 @@ class AnnualPlanPanel(
             )
         }
 
-        // 3) Full 12-Month Pulse Timeline (J F M A M J J A S O N D — all 12 visible at once!)
-        val barAreaH = ui.dp(44)
-        val timelineWrap = ui.column()
-        wrap.addView(timelineWrap, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(20) })
-
-        val barsRow = ui.row().apply { gravity = Gravity.BOTTOM }
-        timelineWrap.addView(barsRow, LinearLayout.LayoutParams(-1, barAreaH))
-        timelineWrap.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
-        val labelsRow = ui.row().apply { gravity = Gravity.CENTER_HORIZONTAL }
-        timelineWrap.addView(labelsRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(6) })
+        // 2) Full 12-Month Pulse Timeline (J F M A M J J A S O N D — unified full-height touch columns)
+        val barAreaH = ui.dp(46)
+        val timelineRow = ui.row().apply { gravity = Gravity.BOTTOM }
+        wrap.addView(timelineRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(20) })
 
         summary.months.forEach { ms ->
             val sel = ms.month == selectedMonth
             val frac = ms.barProgress.coerceIn(0.0, 1.0).toFloat()
-            val barH = if (frac > 0.01f) (barAreaH * (0.18f + frac * 0.78f)).toInt().coerceAtLeast(ui.dp(7)) else ui.dp(4)
+            val barH = if (frac > 0.01f) (barAreaH * (0.20f + frac * 0.76f)).toInt().coerceAtLeast(ui.dp(8)) else ui.dp(4)
             val barColor = when {
                 sel -> ui.accent
                 frac <= 0.01f -> ui.galleryHairline(85)
                 else -> ui.tint(healthColor(ms.health), 195)
             }
-            val barSlot = FrameLayout(activity).apply {
+            val col = ui.column().apply {
                 tag = "plan-month:${ms.month}"
+                gravity = Gravity.CENTER_HORIZONTAL
                 isFocusable = true
                 contentDescription = AnnualPlanCalculator.fullName(ms.month)
                 setOnClickListener {
@@ -1006,6 +1013,9 @@ class AnnualPlanPanel(
                     }
                 }
             }
+            timelineRow.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
+
+            val barSlot = FrameLayout(activity)
             val pillBar = View(activity).apply {
                 background = GradientDrawable().apply {
                     setColor(barColor)
@@ -1014,31 +1024,21 @@ class AnnualPlanPanel(
                 }
             }
             barSlot.addView(pillBar, FrameLayout.LayoutParams(ui.dp(7), barH, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
-            barsRow.addView(barSlot, LinearLayout.LayoutParams(0, -1, 1f))
+            col.addView(barSlot, LinearLayout.LayoutParams(-1, barAreaH))
+            col.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1).apply { bottomMargin = ui.dp(6) })
 
-            val lblCol = ui.column().apply {
-                gravity = Gravity.CENTER_HORIZONTAL
-                isFocusable = true
-                setOnClickListener {
-                    if (selectedMonth != ms.month) {
-                        selectedMonth = ms.month
-                        changed()
-                    }
-                }
-            }
             val initial = AnnualPlanCalculator.shortName(ms.month).take(1)
-            lblCol.addView(
+            col.addView(
                 gText(initial, 10.5f, if (sel) ui.accent else ui.muted, medium = sel).apply { gravity = Gravity.CENTER },
                 LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = ui.dp(3) },
             )
-            lblCol.addView(
+            col.addView(
                 View(activity).apply { background = dotDrawable(if (sel) ui.accent else Color.TRANSPARENT) },
                 LinearLayout.LayoutParams(ui.dp(3).coerceAtLeast(3), ui.dp(3).coerceAtLeast(3)),
             )
-            labelsRow.addView(lblCol, LinearLayout.LayoutParams(0, -2, 1f))
         }
 
-        // 4) Bookshop Stamp Strip (Purchase 3:1, optional — clean hairlines top & bottom)
+        // 3) Bookshop Stamp Strip (Purchase 3:1, optional — clean hairlines top & bottom)
         if (purchaseGoalEntry?.goal != null) {
             val pGoal = purchaseGoalEntry.goal
             val pProg = ReadingGoals.progress(pGoal, books, sessions, now)
@@ -1115,7 +1115,7 @@ class AnnualPlanPanel(
             wrap.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1).apply { bottomMargin = ui.dp(18) })
         }
 
-        // 5) Rollover banner if previous past month has manually planned pending books
+        // 4) Rollover banner if previous past month has manually planned pending books
         if (selectedMonth > 1) {
             val prevMs = summary.months[selectedMonth - 2]
             if (prevMs.isPast && prevMs.hasManualPending) {
@@ -1142,7 +1142,7 @@ class AnnualPlanPanel(
             }
         }
 
-        // 6) Selected Month Header + Accent "+ Livro" Pill
+        // 5) Selected Month Header + Accent "+ Livro" Pill
         val mHead = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
         wrap.addView(mHead, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
         val mLeft = ui.column()
@@ -1168,7 +1168,7 @@ class AnnualPlanPanel(
             MonthHealth.MISSED -> "abaixo da meta"
             MonthHealth.EMPTY -> ""
         }
-        val subBase = if (subParts.isEmpty()) "Sem leituras neste mês" else subParts.joinToString(" · ")
+        val subBase = if (subParts.isEmpty()) "Sem leituras" else subParts.joinToString(" · ")
         val subSpan = android.text.SpannableStringBuilder(subBase).apply {
             setSpan(android.text.style.ForegroundColorSpan(ui.muted), 0, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             if (healthWord.isNotBlank()) {
@@ -1190,11 +1190,11 @@ class AnnualPlanPanel(
             LinearLayout.LayoutParams(-2, -2),
         )
 
-        // 7) Borderless Month Books Shelf (44x66 real covers, ZERO boxes, ZERO stripeBg!)
+        // 6) Borderless Month Books Shelf (44x66 real covers, ZERO boxes, ZERO stripeBg!)
         if (currentMs.items.isEmpty()) {
             wrap.addView(
-                gText("Nenhum livro planejado ou lido em ${AnnualPlanCalculator.fullName(selectedMonth)}.", 12f, ui.muted).apply {
-                    setPadding(0, ui.dp(10), 0, ui.dp(12))
+                gText("Sem livros em ${AnnualPlanCalculator.fullName(selectedMonth)}", 12f, ui.muted).apply {
+                    setPadding(0, ui.dp(8), 0, ui.dp(10))
                 },
                 LinearLayout.LayoutParams(-1, -2),
             )
@@ -1241,13 +1241,13 @@ class AnnualPlanPanel(
                 val identity = item.saga.ifBlank { item.author }
                 if (identity.isNotBlank()) detailParts.add(identity)
                 when (item.status) {
-                    PlanItemStatus.COMPLETED -> if (item.pagesReadInMonth > 0) detailParts.add("${numbers.format(item.pagesReadInMonth)} págs no mês")
+                    PlanItemStatus.COMPLETED -> if (item.pagesReadInMonth > 0) detailParts.add("${numbers.format(item.pagesReadInMonth)} págs")
                     PlanItemStatus.READING -> {
-                        if (item.pagesReadInMonth > 0) detailParts.add("${numbers.format(item.pagesReadInMonth)} págs no mês")
+                        if (item.pagesReadInMonth > 0) detailParts.add("${numbers.format(item.pagesReadInMonth)} págs")
                         if (item.remainingPages > 0) detailParts.add("restam ${numbers.format(item.remainingPages)}")
                     }
-                    PlanItemStatus.READ_IN_MONTH -> detailParts.add(if (item.pagesReadInMonth > 0) "${numbers.format(item.pagesReadInMonth)} págs lidas" else "Leitura registrada")
-                    PlanItemStatus.PLANNED -> if (item.remainingPages > 0) detailParts.add("${numbers.format(item.remainingPages)} págs restantes")
+                    PlanItemStatus.READ_IN_MONTH -> if (item.pagesReadInMonth > 0) detailParts.add("${numbers.format(item.pagesReadInMonth)} págs")
+                    PlanItemStatus.PLANNED -> if (item.remainingPages > 0) detailParts.add("${numbers.format(item.remainingPages)} págs")
                 }
                 if (detailParts.isNotEmpty()) {
                     info.addView(
@@ -1279,7 +1279,7 @@ class AnnualPlanPanel(
             }
         }
 
-        // 8) Collapsible Sagas Summary
+        // 7) Collapsible Sagas Summary
         if (summary.sagas.isNotEmpty()) {
             wrap.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1).apply { topMargin = ui.dp(14); bottomMargin = ui.dp(10) })
             val sagaToggle = ui.row().apply {

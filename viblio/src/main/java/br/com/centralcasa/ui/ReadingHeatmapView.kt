@@ -69,7 +69,7 @@ class ReadingHeatmapView(
         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     }
     private val dayNumPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = ui.dp(11).toFloat()
+        textSize = (if (bulletJournal) 11.5f else 11f) * context.resources.displayMetrics.scaledDensity
         textAlign = Paint.Align.CENTER
         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     }
@@ -78,7 +78,7 @@ class ReadingHeatmapView(
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val availW = MeasureSpec.getSize(widthMeasureSpec).coerceAtLeast(ui.dp(220))
         val usableW = (availW - padX * 2f - gapPx * 6f).coerceAtLeast(ui.dp(140).toFloat())
-        cellSize = (usableW / 7f).coerceIn(ui.dp(24).toFloat(), ui.dp(44).toFloat())
+        cellSize = (usableW / 7f).coerceIn(ui.dp(24).toFloat(), ui.dp(if (bulletJournal) 38 else 44).toFloat())
         val rowsCount = grid.rows.size.coerceAtLeast(4)
         val totalH = (headerH + rowsCount * cellSize + (rowsCount - 1) * gapPx + padBottom).toInt()
         setMeasuredDimension(availW, totalH)
@@ -117,7 +117,7 @@ class ReadingHeatmapView(
                 val dayNumber = day.substring(8, 10).toIntOrNull()?.toString() ?: ""
 
                 if (bulletJournal) {
-                    val radius = cellSize * 0.41f
+                    val radius = cellSize * 0.39f
                     if (lvl > 0) {
                         cellPaint.color = levelColors[lvl]
                         canvas.drawCircle(cx, cy, radius, cellPaint)
@@ -130,8 +130,7 @@ class ReadingHeatmapView(
                     }
                     dayNumPaint.typeface = Typeface.create(if (lvl > 0 || day == todayDay) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
                     dayNumPaint.color = when {
-                        lvl >= 2 -> if (isLightColor(accentColor)) darkInk else lightInk
-                        lvl == 1 -> lightInk
+                        lvl > 0 -> if (isLightBlended(levelColors[lvl], ui.background)) darkInk else lightInk
                         day == todayDay -> accentColor
                         else -> mutedInk
                     }
@@ -143,14 +142,13 @@ class ReadingHeatmapView(
                         canvas.drawRect(left + 0.5f, top + 0.5f, right - 0.5f, bottom - 0.5f, borderPaint)
                     }
                     dayNumPaint.color = when {
-                        lvl >= 2 -> if (isLightColor(accentColor)) darkInk else lightInk
-                        lvl == 1 -> lightInk
+                        lvl > 0 -> if (isLightBlended(levelColors[lvl], ui.surface)) darkInk else lightInk
                         else -> mutedInk
                     }
                     canvas.drawText(dayNumber, cx, cy + textCenterOffset, dayNumPaint)
 
                     if (day == todayDay) {
-                        dotPaint.color = if (lvl >= 2 && isLightColor(accentColor)) darkInk else accentColor
+                        dotPaint.color = if (lvl > 0 && isLightBlended(levelColors[lvl], ui.surface)) darkInk else accentColor
                         canvas.drawCircle(cx, bottom - ui.dp(4).toFloat(), ui.dp(2).coerceAtLeast(2).toFloat(), dotPaint)
                     }
                     if (day == selectedDay) {
@@ -162,9 +160,13 @@ class ReadingHeatmapView(
         }
     }
 
-    private fun isLightColor(c: Int): Boolean {
-        val lum = 0.299 * Color.red(c) + 0.587 * Color.green(c) + 0.114 * Color.blue(c)
-        return lum >= 145.0
+    private fun isLightBlended(fg: Int, bg: Int): Boolean {
+        val a = (fg ushr 24) / 255.0
+        val r = Color.red(fg) * a + Color.red(bg) * (1.0 - a)
+        val g = Color.green(fg) * a + Color.green(bg) * (1.0 - a)
+        val b = Color.blue(fg) * a + Color.blue(bg) * (1.0 - a)
+        val lum = 0.299 * r + 0.587 * g + 0.114 * b
+        return lum >= 140.0
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
