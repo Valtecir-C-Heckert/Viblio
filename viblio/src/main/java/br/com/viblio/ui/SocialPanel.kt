@@ -63,7 +63,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     private fun wantClubBackdrop()=active && !closed && !people && tab=="clubs" && club!=null && (stage!=null || isGalleryMode())
     fun screenBackground():Drawable? {
         if(!wantClubBackdrop())return null
-        if(themeCover.isNotBlank() && backdropPath==themeCover){
+        if(stage!=null && themeCover.isNotBlank() && backdropPath==themeCover){
             val bitmap=backdropBitmap?.takeIf {!it.isRecycled}
             if(bitmap!=null)return ClubCoverBackdrop(bitmap,ui.background)
         }
@@ -154,7 +154,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         backdropBitmap=null
     }
     private fun ensureBackdrop(){
-        if(!wantClubBackdrop() || themeCover.isBlank())return
+        if(!hideNavigation || themeCover.isBlank())return
         val path=themeCover
         if((backdropPath==path && backdropBitmap?.isRecycled==false) || backdropRequest==path)return
         backdropRequest=path
@@ -202,7 +202,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 }
             }
         }
-        if(wantClubBackdrop() && themeCover.isNotBlank())ensureBackdrop()
+        if(hideNavigation && themeCover.isNotBlank())ensureBackdrop()
     }
     private fun date(ms:Long,pattern:String="dd/MM 'às' HH'h'mm")=SimpleDateFormat(pattern,Locale("pt","BR")).format(Date(ms))
     private fun shortDate(ms:Long)=SimpleDateFormat("dd MMM",Locale("pt","BR")).format(Date(ms)).replace(".","")
@@ -1942,9 +1942,10 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             parent.addView(composerCard,LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(10);bottomMargin=ui.dp(8)})
         }
 
-        liveStatus=text(composerCard,error,11,ui.muted).apply {
-            layoutParams=LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=if(error.isNotBlank()) ui.dp(4) else 0}
-            visibility=if(error.isNotBlank()) View.VISIBLE else View.GONE
+        val err=error
+        liveStatus=text(composerCard,err,11,ui.muted).apply {
+            layoutParams=LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=if(err.isNotBlank()) ui.dp(4) else 0}
+            visibility=if(err.isNotBlank()) View.VISIBLE else View.GONE
         }
 
         val banner=ui.row().apply {
@@ -2239,16 +2240,16 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     }
 }
 
-/** Enlarged CoverBlur backdrop centered across width with a tinted readability scrim. */
+/** Enlarged CoverBlur backdrop centered with CENTER_CROP and a tinted readability scrim. */
 private class ClubCoverBackdrop(private val bitmap:Bitmap,private val baseColor:Int):Drawable(){
     private val paint=Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val scrimPaint=Paint()
     override fun draw(canvas:Canvas){
         if(bounds.isEmpty || bounds.width()<=0 || bounds.height()<=0 || bitmap.isRecycled || bitmap.width<=0 || bitmap.height<=0)return
-        val scale=bounds.width().toFloat()/bitmap.width.coerceAtLeast(1)
+        val scale=maxOf(bounds.width().toFloat()/bitmap.width.coerceAtLeast(1),bounds.height().toFloat()/bitmap.height.coerceAtLeast(1))
         val halfW=bitmap.width*scale/2f
-        val targetH=bitmap.height*scale
-        val target=RectF(bounds.exactCenterX()-halfW,bounds.top.toFloat(),bounds.exactCenterX()+halfW,bounds.top+targetH)
+        val halfH=bitmap.height*scale/2f
+        val target=RectF(bounds.exactCenterX()-halfW,bounds.exactCenterY()-halfH,bounds.exactCenterX()+halfW,bounds.exactCenterY()+halfH)
         val save=canvas.save();canvas.clipRect(bounds)
         canvas.drawColor(baseColor)
         canvas.drawBitmap(bitmap,null,target,paint)
