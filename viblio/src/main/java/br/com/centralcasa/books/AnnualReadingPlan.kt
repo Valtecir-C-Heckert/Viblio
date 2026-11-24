@@ -129,6 +129,7 @@ data class ResolvedPlanItem(
     val linkedBook: LibraryBook?,
     val isAutoActivity: Boolean = false,
     val isReread: Boolean = false,
+    val advancedFromMonth: Int? = null,
 )
 
 data class YearBookCredit(
@@ -264,6 +265,7 @@ object AnnualPlanCalculator {
         pagesReadInMonth: Int = 0,
         completedInMonth: Boolean = false,
         readInMonth: Boolean = false,
+        advancedFromMonth: Int? = null,
     ): ResolvedPlanItem {
         val book = entry.bookId.takeIf { it.isNotBlank() }?.let { booksById[it] }
         if (book != null) {
@@ -306,6 +308,7 @@ object AnnualPlanCalculator {
                 linkedBook = book,
                 isAutoActivity = false,
                 isReread = entry.reread,
+                advancedFromMonth = advancedFromMonth,
             )
         }
         val status = if (entry.completed) PlanItemStatus.COMPLETED else PlanItemStatus.PLANNED
@@ -325,6 +328,7 @@ object AnnualPlanCalculator {
             linkedBook = null,
             isAutoActivity = false,
             isReread = entry.reread,
+            advancedFromMonth = advancedFromMonth,
         )
     }
 
@@ -395,6 +399,70 @@ object AnnualPlanCalculator {
 
         val currentBook = currentBookId?.let { booksById[it] }?.takeUnless { it.complete }
 
+        // Pre-pass: gather raw monthly activity so early reading of a book planned for a later month
+        // in the same year credits both completion and pages to that planned month without double-counting.
+        val rawPeriods = (1..12).associateWith { m ->
+            PeriodReading.from(activeBooks, sessions, dates, monthRange(plan.year, m))
+        }
+        val rawCompletedByMonth = (1..12).associateWith { m ->
+            PeriodCompletions.completedBookIds(activeBooks, sessions, dates, monthRange(plan.year, m))
+        }
+        val rawSessionPagesByMonth = (1..12).associateWith { m ->
+            rawPeriods.getValue(m).sessions
+                .groupBy { it.bookId }
+                .mapValues { (bookId, list) ->
+                    val b = booksById[bookId]
+                    if (b != null && b.pagesKnown) list.sumOf { it.pages.coerceAtLeast(0) } else 0
+                }
+        }
+        val manualEntriesByBook = plan.entries
+            .filter { it.kind == PlanEntryKind.SHELF_BOOK && it.bookId.isNotBlank() }
+            .groupBy { it.bookId }
+            .mapValues { (_, list) -> list.sortedBy { it.month } }
+
+        fun futurePlannedMonthFor(bookId: String, month: Int): Int? {
+            if (bookId.isBlank() || bookId in plan.excludedYearBooks) return null
+            val planned = manualEntriesByBook[bookId] ?: return null
+            if (planned.any { it.month == month }) return null
+            // If already planned in an earlier month (non-reread), this is carryover, not an advance.
+            if (planned.any { it.month < month && !it.reread }) return null
+            return planned.firstOrNull { it.month > month }?.month
+        }
+
+        val redirectedOutOfMonth = (1..12).associateWith { HashSet<String>() }
+        val advancedPagesByTarget = (1..12).associateWith { HashMap<String, Int>() }
+        val advancedCompletedByTarget = (1..12).associateWith { HashSet<String>() }
+        val advancedReadByTarget = (1..12).associateWith { HashSet<String>() }
+        val advancedFromMonthByTarget = (1..12).associateWith { HashMap<String, Int>() }
+
+        for (m in 1..12) {
+            val isCurrentM = plan.year == todayYear && m == todayMonth
+            val periodM = rawPeriods.getValue(m)
+            val completedM = rawCompletedByMonth.getValue(m)
+            val pagesM = rawSessionPagesByMonth.getValue(m)
+            val activeIds = LinkedHashSet<String>()
+            activeIds.addAll(completedM)
+            activeIds.addAll(periodM.bookIds)
+            if (isCurrentM && currentBook != null) activeIds.add(currentBook.id)
+            for (bookId in activeIds) {
+                if (AnnualReadingPlan.monthExclusionKey(m, bookId) in plan.excludedMonthBooks) continue
+                val target = futurePlannedMonthFor(bookId, m) ?: continue
+                redirectedOutOfMonth.getValue(m).add(bookId)
+                val p = pagesM[bookId] ?: 0
+                if (p > 0) {
+                    val map = advancedPagesByTarget.getValue(target)
+                    map[bookId] = (map[bookId] ?: 0) + p
+                }
+                if (bookId in completedM) {
+                    advancedCompletedByTarget.getValue(target).add(bookId)
+                }
+                if (bookId in periodM.bookIds || bookId in completedM || (isCurrentM && currentBook?.id == bookId)) {
+                    advancedReadByTarget.getValue(target).add(bookId)
+                    advancedFromMonthByTarget.getValue(target)[bookId] = m
+                }
+            }
+        }
+
         val monthSummaries = (1..12).map { m ->
             val days = daysInMonth(plan.year, m)
             val isPast = plan.year < todayYear || (plan.year == todayYear && m < todayMonth)
@@ -421,30 +489,28 @@ object AnnualPlanCalculator {
                         AnnualReadingPlan.monthExclusionKey(m, bookId) in plan.excludedMonthBooks
                     )
 
-            val range = monthRange(plan.year, m)
-            val period = PeriodReading.from(activeBooks, sessions, dates, range)
-            val completedAutoIds = PeriodCompletions.completedBookIds(activeBooks, sessions, dates, range)
-
-            val sessionPagesByBook = period.sessions
-                .groupBy { it.bookId }
-                .mapValues { (bookId, list) ->
-                    val b = booksById[bookId]
-                    if (b != null && b.pagesKnown) list.sumOf { it.pages.coerceAtLeast(0) } else 0
-                }
+            val period = rawPeriods.getValue(m)
+            val completedAutoIds = rawCompletedByMonth.getValue(m)
+            val sessionPagesByBook = rawSessionPagesByMonth.getValue(m)
+            val advPages = advancedPagesByTarget.getValue(m)
+            val advCompleted = advancedCompletedByTarget.getValue(m)
+            val advRead = advancedReadByTarget.getValue(m)
+            val advFrom = advancedFromMonthByTarget.getValue(m)
 
             val manualEntries = (shelfEntriesByMonth[m] ?: emptyList())
                 .sortedWith(compareBy<PlanEntry> { it.position }.thenBy { it.id })
             val manualResolved = manualEntries.map { entry ->
                 val bId = entry.bookId
-                val sPages = if (bId.isNotBlank()) sessionPagesByBook[bId] ?: 0 else 0
-                val compHere = bId.isNotBlank() && bId in completedAutoIds
-                val readHere = bId.isNotBlank() && bId in period.bookIds
+                val sPages = if (bId.isNotBlank()) (sessionPagesByBook[bId] ?: 0) + (advPages[bId] ?: 0) else 0
+                val compHere = bId.isNotBlank() && (bId in completedAutoIds || bId in advCompleted)
+                val readHere = bId.isNotBlank() && (bId in period.bookIds || bId in advRead)
                 resolveItem(
                     entry = entry,
                     booksById = booksById,
                     pagesReadInMonth = sPages,
                     completedInMonth = compHere,
                     readInMonth = readHere,
+                    advancedFromMonth = if (bId.isNotBlank()) advFrom[bId] else null,
                 )
             }
             val manualBookIds = manualResolved.mapNotNull { it.bookId.takeIf(String::isNotBlank) }.toSet()
@@ -457,6 +523,7 @@ object AnnualPlanCalculator {
                 autoBookIds.add(currentBook.id)
             }
             autoBookIds.removeAll(manualBookIds)
+            autoBookIds.removeAll(redirectedOutOfMonth.getValue(m))
             autoBookIds.removeAll { isExcluded(it) }
 
             val autoResolved = autoBookIds.mapNotNull { id ->

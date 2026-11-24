@@ -227,4 +227,67 @@ class AnnualPlanCalculatorTest {
         assertFalse(junItem.isAutoActivity)
         assertNotNull(junItem.entry)
     }
+
+    @Test
+    fun creditsAdvancedFuturePlannedBookToPlannedMonthWithoutDoubleCounting() {
+        val novBook = book("nov", "Livro de Novembro", 200, currentPage = 200)
+        val decBook = book("dec", "Livro de Dezembro", 300, currentPage = 300)
+        val decPartial = book("dec_part", "Parcial de Dezembro", 400, currentPage = 150)
+
+        val sessions = listOf(
+            ReadingSession("s1", "nov", 1000L, 2000L, 3_600_000L, 0, 200, "2026-11-05"),
+            ReadingSession("s2", "dec", 3000L, 4000L, 5_400_000L, 0, 300, "2026-11-20"),
+            ReadingSession("s3", "dec_part", 5000L, 6000L, 2_700_000L, 0, 150, "2026-11-24"),
+        )
+        val plan = AnnualReadingPlan(
+            year = 2026,
+            booksGoalType = BooksGoalType.PER_MONTH,
+            booksGoalValue = 1,
+            pagesGoalType = PagesGoalType.PER_MONTH,
+            pagesGoalValue = 300,
+            goalConfigured = true,
+            entries = listOf(
+                PlanEntry(month = 12, position = 0, kind = PlanEntryKind.SHELF_BOOK, bookId = "dec"),
+                PlanEntry(month = 12, position = 1, kind = PlanEntryKind.SHELF_BOOK, bookId = "dec_part"),
+            ),
+        ).validated()
+
+        val summary = AnnualPlanCalculator.summarizeAt(
+            plan = plan,
+            books = listOf(novBook, decBook, decPartial),
+            sessions = sessions,
+            currentBookId = "dec_part",
+            todayYear = 2026,
+            todayMonth = 11,
+            todayDay = 24,
+        )
+
+        val nov = summary.months[10]
+        val dec = summary.months[11]
+
+        // November keeps only its own book and pages; future-planned books do not duplicate here.
+        assertEquals(listOf("nov"), nov.items.map { it.bookId })
+        assertEquals(200, nov.actualPagesRead)
+        assertEquals(1, nov.completedBookCount)
+
+        // December receives both the completion and the advanced pages from November.
+        val decDone = dec.items.first { it.bookId == "dec" }
+        val decReading = dec.items.first { it.bookId == "dec_part" }
+        assertEquals(PlanItemStatus.COMPLETED, decDone.status)
+        assertEquals(300, decDone.pagesReadInMonth)
+        assertEquals(0, decDone.remainingPages)
+        assertEquals(11, decDone.advancedFromMonth)
+
+        assertEquals(PlanItemStatus.READING, decReading.status)
+        assertEquals(150, decReading.pagesReadInMonth)
+        assertEquals(250, decReading.remainingPages)
+        assertEquals(11, decReading.advancedFromMonth)
+
+        assertEquals(450, dec.actualPagesRead)
+        assertEquals(1, dec.completedBookCount)
+
+        // Year totals remain exact with zero double counting!
+        assertEquals(2, summary.completedCount)
+        assertEquals(650, summary.totalPagesReadInYear)
+    }
 }

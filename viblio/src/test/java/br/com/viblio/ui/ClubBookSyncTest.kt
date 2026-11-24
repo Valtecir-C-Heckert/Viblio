@@ -62,4 +62,17 @@ class ClubBookSyncTest {
         val club = ClubBookDescriptor(title = "Duna", author = "Frank Herbert", pages = 320)
         assertFalse(ClubBookSync.matchesClubBook(current, club))
     }
+
+    @Test
+    fun findsNonCurrentShelfBookAndPrioritizesCurrentBook() {
+        val current = book(id = "cur", title = "O Hobbit", author = "J.R.R. Tolkien", totalPages = 320)
+        val clubBookOnShelf = book(id = "shelf-duna", title = "Duna", author = "Frank Herbert", totalPages = 680)
+        val club = ClubBookDescriptor(title = "Duna", author = "Frank Herbert", pages = 680)
+        val found = ClubBookSync.findMatchingBook(listOf(current, clubBookOnShelf), "cur", club)
+        assertTrue(found?.id == "shelf-duna")
+
+        val dupCurrent = book(id = "cur-duna", title = "Duna", author = "Frank Herbert", totalPages = 680)
+        val prioritized = ClubBookSync.findMatchingBook(listOf(clubBookOnShelf, dupCurrent), "cur-duna", club)
+        assertTrue(prioritized?.id == "cur-duna")
+    }
 }

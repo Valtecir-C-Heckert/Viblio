@@ -11,6 +11,15 @@ data class ClubBookDescriptor(
     val ownBookId: String = "",
 )
 
+data class ClubCurrentBookState(
+    val bookId: String,
+    val currentPage: Int,
+    val startPage: Int,
+    val hasDraft: Boolean,
+    val draftRunning: Boolean,
+    val draftElapsedMs: Long,
+)
+
 /** Matches a club's active book against the user's current book without touching unrelated books. */
 object ClubBookSync {
     private val multiSpace = Regex("\\s+")
@@ -31,5 +40,18 @@ object ClubBookSync {
         val clubAuthorKey = norm(clubBook.author)
         if (clubAuthorKey.isBlank()) return true
         return norm(current.author) == clubAuthorKey
+    }
+
+    /** Finds the matching shelf book for a club book, prioritizing the user's current book if it matches. */
+    fun findMatchingBook(
+        books: List<LibraryBook>,
+        currentBookId: String?,
+        clubBook: ClubBookDescriptor,
+    ): LibraryBook? {
+        if (!currentBookId.isNullOrBlank()) {
+            val current = books.firstOrNull { it.id == currentBookId }
+            if (matchesClubBook(current, clubBook)) return current
+        }
+        return books.firstOrNull { matchesClubBook(it, clubBook) }
     }
 }

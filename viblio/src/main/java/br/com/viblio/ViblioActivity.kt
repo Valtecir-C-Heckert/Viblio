@@ -50,23 +50,29 @@ class ViblioActivity : Activity() {
     private var needsRender=false
     private var started=false
     private var themeBookKey:String?=null
+    private var observedShelfPages=mutableMapOf<String,Int>()
     private var observedCurrentBookId:String?=null
-    private var observedCurrentPage:Int=-1
-    private fun snapshotCurrentBook() {
-        val cur = library.repository.current()
-        observedCurrentBookId = cur?.id
-        observedCurrentPage = cur?.currentPage ?: -1
+    private fun snapshotShelfPages() {
+        observedShelfPages.clear()
+        library.repository.books().forEach { if (!it.archived && it.pagesKnown) observedShelfPages[it.id] = it.currentPage }
+        observedCurrentBookId = library.repository.currentId()
     }
-    private fun syncCurrentBookToClubsIfChanged() {
-        val cur = library.repository.current()
-        if (cur == null) {
-            observedCurrentBookId = null; observedCurrentPage = -1; return
+    private fun syncShelfProgressToClubsIfChanged() {
+        val books = library.repository.books().filter { !it.archived && it.pagesKnown }
+        val curId = library.repository.currentId()
+        val changedBooks = books.filter { b ->
+            val prev = observedShelfPages[b.id]
+            prev != null && prev != b.currentPage
         }
-        val changed = cur.id != observedCurrentBookId || cur.currentPage != observedCurrentPage
-        observedCurrentBookId = cur.id; observedCurrentPage = cur.currentPage
+        val currentSwitched = curId != null && curId != observedCurrentBookId
+        observedShelfPages.clear()
+        books.forEach { observedShelfPages[it.id] = it.currentPage }
+        observedCurrentBookId = curId
         if (!accounts.signedIn || !::friends.isInitialized) return
-        if (changed) friends.syncCurrentBookProgress(cur)
-        else friends.retryPendingClubProgressSync(cur)
+        val target = changedBooks.firstOrNull()
+            ?: if (currentSwitched) books.firstOrNull { it.id == curId } else null
+        if (target != null) friends.syncCurrentBookProgress(target)
+        else friends.retryPendingClubProgressSync(books)
     }
     private fun cachedIntroCoverColor():Int {
         if(needsLogin())return ui.accent
@@ -247,14 +253,14 @@ class ViblioActivity : Activity() {
         window.statusBarColor = Color.TRANSPARENT
         window.navigationBarColor = Color.TRANSPARENT
         setContentView(root)
-        accounts=br.com.viblio.account.AccountManager(this,changed={if(!accounts.signedIn)offline=false;if(accounts.signedIn && ::friends.isInitialized && ::library.isInitialized && !accounts.syncStatus().isPending && !accounts.syncStatus().isError)friends.retryPendingClubProgressSync(library.repository.current());if(needsLogin() || navigation.visibility==android.view.View.GONE || tab=="account")render()},reloaded=::reloadProfile,canReplace={::library.isInitialized && library.canReplaceLibrary && (statistics?.canReplaceLibrary ?: true) && (!::friends.isInitialized || friends.canReplaceLibrary)})
+        accounts=br.com.viblio.account.AccountManager(this,changed={if(!accounts.signedIn)offline=false;if(accounts.signedIn && ::friends.isInitialized && ::library.isInitialized && !accounts.syncStatus().isPending && !accounts.syncStatus().isError)friends.retryPendingClubProgressSync(library.repository.books());if(needsLogin() || navigation.visibility==android.view.View.GONE || tab=="account")render()},reloaded=::reloadProfile,canReplace={::library.isInitialized && library.canReplaceLibrary && (statistics?.canReplaceLibrary ?: true) && (!::friends.isInitialized || friends.canReplaceLibrary)})
         homeAssistant=br.com.viblio.homeassistant.HomeAssistantBridge(this)
         library=makeLibrary()
         catalog=br.com.viblio.catalog.ViblioCatalog(this,changed={force->accounts.localChanged();if(force || tab=="shelf" && !library.isEditor)render()},personalToken=accounts::catalogToken,personalMode=accounts::personalMode,scanner={launchIsbnScanner("editor")})
         library.catalog=catalog
         search=makeSearch()
         friends=makeFriends()
-        snapshotCurrentBook()
+        snapshotShelfPages()
         account=AccountPanel(this,ui,accounts,changed={accounts.localChanged();render()},shelf={switchTab("shelf")},backup={library.backupSettings()})
         offline=state?.getBoolean("viblio.offline",false) ?: false
         scanTarget=state?.getString("scan.target");scanProfile=state?.getString("scan.profile");scanEditor=state?.getString("scan.editor")
@@ -302,20 +308,47 @@ class ViblioActivity : Activity() {
                 true
             } else false
         }
-        onClubProgressSaved={ clubBook, newPage ->
-            val current=library.repository.current()
-            if(current!=null && br.com.viblio.ui.ClubBookSync.matchesClubBook(current,clubBook) && current.currentPage!=newPage && newPage in 0..current.totalPages){
+        clubCurrentBookInfo={ clubBook ->
+            val matched=br.com.viblio.ui.ClubBookSync.findMatchingBook(library.repository.books(),library.repository.currentId(),clubBook)
+            if(matched!=null){
+                val draft=library.repository.draft()?.takeIf {it.bookId==matched.id}
+                br.com.viblio.ui.ClubCurrentBookState(
+                    bookId=matched.id,
+                    currentPage=matched.currentPage,
+                    startPage=draft?.startPage ?: matched.currentPage,
+                    hasDraft=draft!=null,
+                    draftRunning=draft?.runningSince!=null,
+                    draftElapsedMs=draft?.let {library.repository.elapsed(it)} ?: 0L,
+                )
+            } else null
+        }
+        onClubProgressPauseDraft={ bookId ->
+            if(library.repository.draft()?.let {it.bookId==bookId && it.runningSince!=null}==true){
+                runCatching {library.repository.pause()}
+            }
+        }
+        onClubProgressResumeDraft={ bookId ->
+            if(library.repository.draft()?.let {it.bookId==bookId && it.runningSince==null}==true){
+                runCatching {library.repository.start(bookId)}
+            }
+        }
+        onClubProgressSaved={ clubBook, newPage, durationMs ->
+            val matched=br.com.viblio.ui.ClubBookSync.findMatchingBook(library.repository.books(),library.repository.currentId(),clubBook)
+            if(matched!=null && newPage in 0..matched.totalPages){
                 runCatching {
-                    library.repository.updateProgress(current.id,newPage)
+                    if(durationMs!=null && durationMs>0L){
+                        library.repository.recordReading(matched.id,matched.currentPage,newPage,durationMs)
+                    } else if(matched.currentPage!=newPage){
+                        library.repository.updateProgress(matched.id,newPage)
+                    }
                 }.onSuccess {
-                    observedCurrentBookId=current.id
-                    observedCurrentPage=newPage
-                    markClubProgressSynced(current.id,newPage)
+                    observedShelfPages[matched.id]=newPage
+                    markClubProgressSynced(matched.id,newPage)
                     homeAssistant.changed()
                     accounts.localChanged()
                     refreshWidgetsAsync()
                 }.onFailure { e ->
-                    android.widget.Toast.makeText(this@ViblioActivity,e.message ?: "Não foi possível atualizar o livro atual.",android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast.makeText(this@ViblioActivity,e.message ?: "Não foi possível atualizar o livro na estante.",android.widget.Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -340,7 +373,7 @@ class ViblioActivity : Activity() {
             }
         }
     }
-    private fun makeLibrary()=BooksPanel(this,ui,{homeAssistant.changed();accounts.localChanged();syncCurrentBookToClubsIfChanged();refreshWidgetsAsync();if(tab=="shelf")render()}).apply {
+    private fun makeLibrary()=BooksPanel(this,ui,{homeAssistant.changed();accounts.localChanged();syncShelfProgressToClubsIfChanged();refreshWidgetsAsync();if(tab=="shelf")render()}).apply {
         onAccount={switchTab("account")}
         onDetailBack={
             val origin=returnFromDetailTab
@@ -372,7 +405,7 @@ class ViblioActivity : Activity() {
         catalog=br.com.viblio.catalog.ViblioCatalog(this,changed={force->accounts.localChanged();refreshWidgetsAsync();if(force || tab=="shelf" && !library.isEditor)render()},personalToken=accounts::catalogToken,personalMode=accounts::personalMode,scanner={launchIsbnScanner("editor")})
         search=makeSearch();homeAssistant.close();homeAssistant=br.com.viblio.homeassistant.HomeAssistantBridge(this)
         library=makeLibrary().apply {catalog=this@ViblioActivity.catalog}
-        snapshotCurrentBook()
+        snapshotShelfPages()
         refreshWidgetsAsync()
         if(started){homeAssistant.start();if(tab=="shelf" && !needsLogin())library.onStart()};render()
     }
@@ -581,7 +614,7 @@ class ViblioActivity : Activity() {
     }
     override fun onStart() { super.onStart();suppressIconSwitch=false;stopped=false;accounts.start();homeAssistant.start();started=true;if(tab=="shelf" && !needsLogin()) library.onStart();catalog.retry();if(br.com.viblio.reminder.ReadingReminder.isEnabled(this)) br.com.viblio.reminder.ReadingReminder.scheduleNext(this);if(needsRender)render() }
     override fun onStop() { stopped=true;accounts.stop();homeAssistant.stop();started=false;library.onStop();if(tab=="search") search.hide();if(tab=="friends")friends.hide();refreshWidgetsAsync(captureLastBook=true);super.onStop() }
-    override fun onResume() { super.onResume();if(accounts.signedIn)friends.retryPendingClubProgressSync(library.repository.current());if(tab=="search" || tab=="friends") render() }
+    override fun onResume() { super.onResume();if(accounts.signedIn)friends.retryPendingClubProgressSync(library.repository.books());if(tab=="search" || tab=="friends") render() }
     override fun onDestroy() { root.removeCallbacks(pullTimeout);introView?.cancel();introView=null;navigationCovers.shutdownNow();accounts.close();homeAssistant.close();search.close();catalog.close();friends.close();statistics?.onDestroy();library.onDestroy();super.onDestroy() }
     override fun onSaveInstanceState(outState:Bundle) {
         outState.putString("scan.target",scanTarget);outState.putString("scan.profile",scanProfile);outState.putString("scan.editor",scanEditor)

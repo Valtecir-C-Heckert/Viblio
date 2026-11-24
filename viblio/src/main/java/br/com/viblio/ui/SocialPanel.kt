@@ -20,7 +20,10 @@ import java.util.concurrent.Executors
 class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,private val accounts:AccountManager,private val changed:()->Unit){
     var onBackdrop:()->Unit={}
     var onOpenOwnBook:((String)->Boolean)?=null
-    var onClubProgressSaved:((ClubBookDescriptor,Int)->Unit)?=null
+    var clubCurrentBookInfo:((ClubBookDescriptor)->ClubCurrentBookState?)?=null
+    var onClubProgressPauseDraft:((String)->Unit)?=null
+    var onClubProgressResumeDraft:((String)->Unit)?=null
+    var onClubProgressSaved:((ClubBookDescriptor,Int,Long?)->Unit)?=null
     var composerDock:FrameLayout?=null
     private val ui=DisplayUi(activity)
     private val feedColors=linkedMapOf<String,Int?>()
@@ -220,10 +223,11 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     fun hide(resetSelection:Boolean=false){active=false;stopLive();clearBackdrop();generation++;clubFeedEpoch++;requestConnection?.cancel();requestConnection=null;clubFeedConnection?.cancel();clubFeedConnection=null;clubFeedBusy=false;busy=false;loaded=false;scheduled=false;coverRedrawScheduled=false;handler.removeCallbacksAndMessages(null);api?.cancel();images?.detach();dialogs.toList().forEach {it.dismiss()};dialogs.clear();rows=emptyList();data=JsonObject();friends.hide(resetSelection);if(resetSelection){club=null;stage=null;round=null;clubPage="home";people=false;inviteClub=null;draft="";replyToId=null;replyToUser="";invited.clear()}}
     fun close(){hide();closed=true;clubSyncEpoch++;clubSyncConnection?.cancel();clubSyncConnection=null;pendingClubSyncBook=null;clubSyncApi?.close();clubSyncApi=null;clubSyncApiIdentity="";images?.close();images=null;feedColors.clear();identity="";api?.close();api=null;apiIdentity="";friends.close();worker.shutdownNow();liveWorker.shutdownNow();messagesWorker.shutdownNow();backdropWorker.shutdownNow();clubFeedWorker.shutdownNow();clubSyncWorker.shutdownNow()}
     fun markClubProgressSynced(bookId:String,page:Int){suppressClubSyncBookId=bookId;suppressClubSyncPage=page}
-    fun retryPendingClubProgressSync(current:LibraryBook?){
+    fun retryPendingClubProgressSync(books:List<LibraryBook>){
         val pending=pendingClubSyncBook ?: return
-        if(current==null || current.id!=pending.id){pendingClubSyncBook=null;return}
-        syncCurrentBookProgress(current)
+        val latest=books.firstOrNull {it.id==pending.id && !it.archived && it.pagesKnown}
+        if(latest==null){pendingClubSyncBook=null;return}
+        syncCurrentBookProgress(latest)
     }
     fun syncCurrentBookProgress(book:LibraryBook){
         if(closed || !accounts.signedIn || book.archived || !book.pagesKnown || book.totalPages<=0)return
@@ -1879,28 +1883,107 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         val danger=card(root);title(danger,"Clube",21);action(danger,"Excluir clube"){confirm("Excluir o clube e suas discussões?"){mutate("/v1/clubs/$club","DELETE"){club=null;round=null;clubPage="home"}}}
     }
     private fun editProgress(selected:JsonObject,myPage:Long,pages:Long){
-        val body=ui.column().apply {setPadding(ui.dp(20),ui.dp(8),ui.dp(20),0)}
-        val page=input(body,"Página atual (0 a $pages)",myPage.toString(),numeric=true,limit=6)
+        val maxPages=pages.toInt().coerceAtLeast(1)
         val descriptor=ClubBookDescriptor(
             title=selected.s("title"),
             author=selected.s("author"),
-            pages=pages.toInt(),
+            pages=maxPages,
             catalogId=selected.s("catalog_id"),
             ownBookId=selected.s("own_book_id"),
         )
-        val dialog=AlertDialog.Builder(activity).setTitle("Meu progresso · $pages páginas").setView(body).setPositiveButton("Salvar",null).setNegativeButton("Cancelar",null).create()
+        val local=clubCurrentBookInfo?.invoke(descriptor)
+        val basePage=local?.currentPage ?: myPage.toInt().coerceIn(0,maxPages)
+        val startPage=local?.startPage ?: basePage
+        val pausedBookId=local?.takeIf {it.draftRunning}?.bookId
+        if(pausedBookId!=null)onClubProgressPauseDraft?.invoke(pausedBookId)
+
+        val body=ui.column().apply {setPadding(ui.dp(20),ui.dp(8),ui.dp(20),0)}
+        text(body,"Página atual",12,ui.muted)
+        val destination=EditText(activity).apply {
+            tag="reading-page";inputType=InputType.TYPE_CLASS_NUMBER;isSingleLine=true
+            filters=arrayOf(InputFilter.LengthFilter(6));setText(basePage.toString());setSelectAllOnFocus(true)
+            setTextColor(ui.text);setHintTextColor(ui.muted)
+        }
+        body.addView(destination,LinearLayout.LayoutParams(-1,ui.dp(52)))
+        val interval=text(body,"$startPage → $basePage páginas",16,ui.text)
+        destination.addTextChangedListener(object:TextWatcher {
+            override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
+            override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){
+                interval.text="$startPage → ${s?.toString().orEmpty()} páginas"
+                destination.error=null
+            }
+            override fun afterTextChanged(s:Editable?){}
+        })
+        val time=ui.row();body.addView(time)
+        fun timeInput(hint:String,max:Int)=EditText(activity).apply {
+            this.hint=hint;inputType=InputType.TYPE_CLASS_NUMBER;filters=arrayOf(InputFilter.LengthFilter(max))
+            setTextColor(ui.text);setHintTextColor(ui.muted)
+            time.addView(this,LinearLayout.LayoutParams(0,ui.dp(52),1f))
+        }
+        val hours=timeInput("Horas",3).apply {tag="reading-hours"}
+        val minutes=timeInput("Minutos",2).apply {tag="reading-minutes"}
+        if(local?.hasDraft==true){
+            val total=(local.draftElapsedMs+59999)/60000
+            hours.setText((total/60).toString());minutes.setText((total%60).toString())
+        }
+
+        fun chosenPage():Int? {
+            val value=destination.text.toString().toIntOrNull()
+            if(value==null || value !in 0..maxPages){
+                destination.error="Use uma página entre 0 e $maxPages"
+                return null
+            }
+            destination.error=null;return value
+        }
+        fun restoreDraft(){if(pausedBookId!=null)onClubProgressResumeDraft?.invoke(pausedBookId)}
+        fun commitClub(target:Int,durationMs:Long?){
+            mutate("/v1/clubs/$club/progress","PATCH",JsonObject().apply {addProperty("page",target)}){
+                onClubProgressSaved?.invoke(descriptor,target,durationMs)
+                if(durationMs==null)restoreDraft()
+            }
+        }
+
+        val dialog=AlertDialog.Builder(activity)
+            .setTitle("Registrar leitura")
+            .setView(body)
+            .setPositiveButton("Registrar leitura",null)
+            .setNeutralButton("Só corrigir página",null)
+            .setNegativeButton("Cancelar"){_,_->restoreDraft()}
+            .create()
+        dialog.setOnCancelListener {restoreDraft()}
         dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
-                val target=page.text.toString().toIntOrNull()
-                if(target==null || target<0 || target>pages){
-                    page.error="Informe uma página entre 0 e $pages."
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
+                val target=chosenPage() ?: return@setOnClickListener
+                if(target<basePage){
+                    dialog.dismiss()
+                    val confirmDialog=AlertDialog.Builder(activity)
+                        .setTitle("Corrigir página")
+                        .setMessage("Voltar para a página $target de $maxPages?")
+                        .setPositiveButton("Só corrigir página"){_,_->commitClub(target,null)}
+                        .setNegativeButton("Cancelar"){_,_->restoreDraft()}
+                        .create()
+                    confirmDialog.setOnCancelListener {restoreDraft()}
+                    tracked(confirmDialog)
                     return@setOnClickListener
                 }
-                page.error=null
                 dialog.dismiss()
-                mutate("/v1/clubs/$club/progress","PATCH",JsonObject().apply {addProperty("page",target)}){
-                    onClubProgressSaved?.invoke(descriptor,target)
+                commitClub(target,null)
+            }
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+                val target=chosenPage() ?: return@setOnClickListener
+                if(target<=startPage){
+                    destination.error="Para voltar a página, use Só corrigir página"
+                    return@setOnClickListener
                 }
+                val h=hours.text.toString().toIntOrNull() ?: 0
+                val m=minutes.text.toString().toIntOrNull() ?: 0
+                if(m !in 0..59 || h*60+m<=0){
+                    minutes.error="Informe o tempo de leitura"
+                    return@setOnClickListener
+                }
+                minutes.error=null
+                dialog.dismiss()
+                commitClub(target,(h*60L+m)*60000L)
             }
         }
         tracked(dialog)

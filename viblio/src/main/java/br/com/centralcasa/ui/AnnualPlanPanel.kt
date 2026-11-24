@@ -1239,6 +1239,7 @@ class AnnualPlanPanel(
                 )
 
                 val detailParts = mutableListOf<String>()
+                item.advancedFromMonth?.let { detailParts.add("Adiantado (${AnnualPlanCalculator.shortName(it)})") }
                 if (item.isReread) detailParts.add("Releitura")
                 else if (!item.entry?.tag.isNullOrBlank()) detailParts.add(item.entry!!.tag)
                 val identity = item.saga.ifBlank { item.author }
@@ -1363,6 +1364,7 @@ class AnnualPlanPanel(
         }
 
         val detailParts = mutableListOf<String>()
+        item.advancedFromMonth?.let { detailParts.add("Adiantado (${AnnualPlanCalculator.shortName(it)})") }
         if (item.isReread) detailParts.add("Releitura")
         else if (!item.entry?.tag.isNullOrBlank()) detailParts.add(item.entry!!.tag)
         val identity = item.saga.ifBlank { item.author }
