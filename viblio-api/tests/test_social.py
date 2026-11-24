@@ -215,9 +215,16 @@ def test_edit_and_delete_earlier_session_recalculates_finished_time(api):
 
 
 def test_feed_includes_own_activity_cover_and_respects_friend_sharing(api):
-    import psycopg
+    import uuid, psycopg
+    from app.accounts import digest
     from test_api import DSN
-    a,b,outsider=setup(api);accept(api,a,b)
+    def direct_user():
+        identifier=uuid.uuid4();token=uuid.uuid4().hex+uuid.uuid4().hex;name='reader_'+identifier.hex[:12]
+        with psycopg.connect(DSN) as db:
+            db.execute("INSERT INTO public.viblio_users(id,email,password_hash,is_admin,username) VALUES (%s,%s,'unused-test-hash',false,%s)",(identifier,str(identifier)+'@example.test',name))
+            db.execute('INSERT INTO public.viblio_sessions(token_hash,user_id) VALUES (%s,%s)',(digest(token),identifier))
+        return {'token':token,'user':{'id':str(identifier),'username':name}}
+    a,b,outsider=direct_user(),direct_user(),direct_user();accept(api,a,b)
     sa=data();sb=data()
     result(sync(api,a,sa));result(sync(api,b,sb))
     enabled(api,a);enabled(api,b)
