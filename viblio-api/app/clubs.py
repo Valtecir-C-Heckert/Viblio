@@ -136,7 +136,7 @@ def mount_clubs(app,connect,storage,current):
                 AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(s.snapshot->'library'->'collections') parent WHERE parent->>'id'=e->>'collectionId' AND coalesce(parent->>'archived','false')='true') LIMIT 1) book
                 FROM public.viblio_library_bases s WHERE s.user_id=m.user_id AND p.book_id IS NOT NULL AND %s='reading' ORDER BY revision DESC LIMIT 1) live ON true
             WHERE m.club_id=%s ORDER BY (m.role='admin') DESC,u.username LIMIT 100""",(round['id'],round['selected_id'],round['state'],c)).fetchall()
-        proposals=db.execute("""SELECT b.id,b.title,b.author,b.pages,b.cover IS NOT NULL has_cover,pu.username proposed_by,count(v.user_id) FILTER(WHERE m.status='active') votes,coalesce(bool_or(v.user_id=%s),false) mine
+        proposals=db.execute("""SELECT b.id,b.title,b.author,b.pages,b.catalog_id,b.book_id,coalesce(b.source_user_id,b.proposed_by) owner_id,b.cover IS NOT NULL has_cover,pu.username proposed_by,count(v.user_id) FILTER(WHERE m.status='active') votes,coalesce(bool_or(v.user_id=%s),false) mine
             FROM public.viblio_club_proposals b LEFT JOIN public.viblio_users pu ON pu.id=b.proposed_by
             LEFT JOIN public.viblio_club_votes v ON v.proposal_id=b.id LEFT JOIN public.viblio_club_members m ON m.user_id=v.user_id AND m.club_id=%s
             WHERE b.round_id=%s GROUP BY b.id,pu.username ORDER BY votes DESC,b.title LIMIT 30""",(u,c,round['id'])).fetchall()
@@ -149,11 +149,12 @@ def mount_clubs(app,connect,storage,current):
             LEFT JOIN public.viblio_club_stage_reads sr ON sr.stage_id=s.id AND sr.user_id=%s
             WHERE s.round_id=%s ORDER BY s.page_limit LIMIT 20""",(u,u,round['id'])).fetchall()
         history=db.execute('SELECT r.id,r.state,r.due_at,r.completed_at,b.title,b.author,b.cover IS NOT NULL has_cover,b.id proposal_id FROM public.viblio_club_rounds r LEFT JOIN public.viblio_club_proposals b ON b.id=r.selected_id WHERE r.club_id=%s ORDER BY r.created_at DESC LIMIT 100',(c,)).fetchall()
-        return dict(id=str(c),name=role['club_name'],role=role['role'],round=dict(id=str(round['id']),state=round['state'],selected_id=str(round['selected_id']) if round['selected_id'] else None,due_at=round['due_at'],started_at=round['started_at'],completed_at=round['completed_at']),members=[dict(id=str(m['id']),username=m['username'],role=m['role'],status=m['status'],page=m['page']) for m in members],proposals=[dict(id=str(p['id']),title=p['title'],author=p['author'],pages=p['pages'],proposed_by=p['proposed_by'] or '',votes=p['votes'],mine=p['mine'],cover=f"/v1/clubs/{c}/proposals/{p['id']}/cover" if p['has_cover'] else '') for p in proposals],stages=[dict(id=str(s['id']),page_limit=s['page_limit'],discuss_at=s['discuss_at'],is_open=s['is_open'],comments=s['comments'],unread=s['unread']) for s in stages],history=[dict(id=str(h['id']),state=h['state'],title=h['title'],author=h['author'],due_at=h['due_at'],completed_at=h['completed_at'],cover=f"/v1/clubs/{c}/proposals/{h['proposal_id']}/cover" if h['has_cover'] else '') for h in history])
+        return dict(id=str(c),name=role['club_name'],role=role['role'],round=dict(id=str(round['id']),state=round['state'],selected_id=str(round['selected_id']) if round['selected_id'] else None,due_at=round['due_at'],started_at=round['started_at'],completed_at=round['completed_at']),members=[dict(id=str(m['id']),username=m['username'],role=m['role'],status=m['status'],page=m['page']) for m in members],proposals=[dict(id=str(p['id']),title=p['title'],author=p['author'],pages=p['pages'],proposed_by=p['proposed_by'] or '',votes=p['votes'],mine=p['mine'],cover=f"/v1/clubs/{c}/proposals/{p['id']}/cover" if p['has_cover'] else '',catalog_id=p['catalog_id'] or '',own_book_id=p['book_id'] if p['owner_id']==u else '') for p in proposals],stages=[dict(id=str(s['id']),page_limit=s['page_limit'],discuss_at=s['discuss_at'],is_open=s['is_open'],comments=s['comments'],unread=s['unread']) for s in stages],history=[dict(id=str(h['id']),state=h['state'],title=h['title'],author=h['author'],due_at=h['due_at'],completed_at=h['completed_at'],cover=f"/v1/clubs/{c}/proposals/{h['proposal_id']}/cover" if h['has_cover'] else '') for h in history])
     @app.get('/v1/clubs')
     def clubs(user=Depends(current)):
         with connect() as db:rows=db.execute("""SELECT c.id,c.name,m.role,m.status,r.state,r.due_at,
-            b.id proposal_id,b.title,b.author,b.pages,b.cover IS NOT NULL has_cover,
+            b.id proposal_id,b.title,b.author,b.pages,b.catalog_id,b.book_id proposal_book_id,coalesce(b.source_user_id,b.proposed_by) proposal_owner_id,b.cover IS NOT NULL has_cover,
+            coalesce((my_live.book->>'currentPage')::int,my_p.page,0) my_page,
             inv.username invited_by,
             (SELECT count(*) FROM public.viblio_club_members am WHERE am.club_id=c.id AND am.status='active') member_count,
             (SELECT count(*) FROM public.viblio_club_stages s
@@ -168,6 +169,13 @@ def mount_clubs(app,connect,storage,current):
             LEFT JOIN public.viblio_users inv ON inv.id=m.invited_by
             LEFT JOIN LATERAL (SELECT * FROM public.viblio_club_rounds WHERE club_id=c.id ORDER BY created_at DESC LIMIT 1) r ON true
             LEFT JOIN public.viblio_club_proposals b ON b.id=r.selected_id
+            LEFT JOIN public.viblio_club_progress my_p ON my_p.round_id=r.id AND my_p.user_id=m.user_id
+            LEFT JOIN LATERAL (SELECT (SELECT e FROM jsonb_array_elements(s.snapshot->'library'->'books') e
+                WHERE e->>'id'=my_p.book_id AND coalesce(e->>'archived','false')='false'
+                AND (e->>'totalPages')::int=b.pages
+                AND (b.catalog_id IS NULL OR concat(e->>'catalogSource',':',e->>'catalogId')=b.catalog_id)
+                AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(s.snapshot->'library'->'collections') parent WHERE parent->>'id'=e->>'collectionId' AND coalesce(parent->>'archived','false')='true') LIMIT 1) book
+                FROM public.viblio_library_bases s WHERE s.user_id=m.user_id AND my_p.book_id IS NOT NULL AND r.state='reading' ORDER BY revision DESC LIMIT 1) my_live ON true
             LEFT JOIN LATERAL (
                 SELECT s.id,s.page_limit,s.discuss_at,(s.is_open OR s.discuss_at<=now()) is_open,s.stage_index
                 FROM (SELECT id,page_limit,discuss_at,is_open,row_number() OVER (ORDER BY page_limit) stage_index FROM public.viblio_club_stages WHERE round_id=r.id) s
@@ -180,12 +188,13 @@ def mount_clubs(app,connect,storage,current):
             return dict(
                 id=str(r['id']),name=r['name'],role=r['role'],status=r['status'],
                 state=r['state'] if active else None,due_at=r['due_at'] if active else None,
+                my_page=r['my_page'] if active and r['state']=='reading' else None,
                 invited_by=r['invited_by'] if not active and r['invited_by'] else None,
                 member_count=r['member_count'] if active else None,
                 unread_count=r['unread_count'] if active else 0,
                 stage=dict(id=str(r['stage_id']),index=r['stage_index'],page_limit=r['stage_page_limit'],is_open=r['stage_is_open'],discuss_at=r['stage_discuss_at']) if active and r['stage_id'] else None,
                 voting=dict(proposals=r['proposal_count'],votes=r['vote_count']) if active and r['state']=='voting' else None,
-                book=dict(title=r['title'],author=r['author'],pages=r['pages'],cover=f"/v1/clubs/{r['id']}/proposals/{r['proposal_id']}/cover" if r['has_cover'] else '') if active and r['title'] else None,
+                book=dict(title=r['title'],author=r['author'],pages=r['pages'],cover=f"/v1/clubs/{r['id']}/proposals/{r['proposal_id']}/cover" if r['has_cover'] else '',catalog_id=r['catalog_id'] or '',own_book_id=r['proposal_book_id'] if r['proposal_owner_id']==user['id'] else '') if active and r['title'] else None,
             )
         return dict(items=[project(r) for r in rows])
     @app.post('/v1/clubs')
@@ -363,11 +372,22 @@ def mount_clubs(app,connect,storage,current):
     def edit_stage(c:uuid.UUID,identifier:uuid.UUID,body:Stage,user=Depends(current)):
         with connect() as db:
             access(db,c,user['id'],True)
-            r=db.execute('SELECT s.*,r.due_at,r.state FROM public.viblio_club_stages s JOIN public.viblio_club_rounds r ON r.id=s.round_id WHERE s.id=%s AND r.club_id=%s',(identifier,c)).fetchone()
+            r=db.execute('SELECT s.*,r.due_at,r.state,p.pages FROM public.viblio_club_stages s JOIN public.viblio_club_rounds r ON r.id=s.round_id JOIN public.viblio_club_proposals p ON p.id=r.selected_id WHERE s.id=%s AND r.club_id=%s',(identifier,c)).fetchone()
             if not r:raise HTTPException(404,'Etapa não encontrada.')
             if r['state']!='reading':raise HTTPException(409,'Não é possível editar etapas de uma leitura encerrada.')
-            if body.page_limit!=r['page_limit'] or body.discuss_at>r['due_at']:raise HTTPException(422,'Mantenha a página da etapa e uma data dentro do prazo do livro.')
-            db.execute('UPDATE public.viblio_club_stages SET discuss_at=%s,is_open=%s WHERE id=%s',(body.discuss_at,body.is_open,identifier))
+            if body.page_limit>r['pages'] or body.discuss_at>r['due_at']:raise HTTPException(422,'Confira o limite de páginas e a data dentro do prazo do livro.')
+            if body.page_limit!=r['page_limit'] and db.execute('SELECT id FROM public.viblio_club_stages WHERE round_id=%s AND page_limit=%s AND id<>%s',(r['round_id'],body.page_limit,identifier)).fetchone():raise HTTPException(409,'Essa página já tem uma etapa.')
+            db.execute('UPDATE public.viblio_club_stages SET page_limit=%s,discuss_at=%s,is_open=%s WHERE id=%s',(body.page_limit,body.discuss_at,body.is_open,identifier))
+        events.publish(c,identifier)
+        return dict(ok=True)
+    @app.delete('/v1/clubs/{c}/stages/{identifier}')
+    def delete_stage(c:uuid.UUID,identifier:uuid.UUID,user=Depends(current)):
+        with connect() as db:
+            access(db,c,user['id'],True)
+            r=db.execute('SELECT s.id,s.round_id,r.state FROM public.viblio_club_stages s JOIN public.viblio_club_rounds r ON r.id=s.round_id WHERE s.id=%s AND r.club_id=%s',(identifier,c)).fetchone()
+            if not r:raise HTTPException(404,'Etapa não encontrada.')
+            if r['state']!='reading':raise HTTPException(409,'Não é possível excluir etapas de uma leitura encerrada.')
+            db.execute('DELETE FROM public.viblio_club_stages WHERE id=%s',(identifier,))
         events.publish(c,identifier)
         return dict(ok=True)
     def discussion(db,c,s,u,lock=True):

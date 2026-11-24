@@ -123,3 +123,14 @@ def test_idle_stream_rechecks_expired_or_logged_out_sessions(api,monkeypatch):
             lines=response.iter_lines();assert event(lines)=='ready'
             call(api,b,'/v1/auth/logout')
             assert event(lines)=='revoked'
+
+
+def test_stream_closes_when_stage_is_deleted(api):
+    a,b,c,group,stage=reading(api);base=f'/v1/clubs/{group}/stages/{stage}'
+    with live_server(api.app) as client:
+        with client.stream('GET',base+'/events',headers=headers(b)) as response:
+            lines=response.iter_lines();assert event(lines)=='ready'
+            call(api,a,base,method='DELETE')
+            assert event(lines)=='revoked'
+            assert client.get(base+'/messages',headers=headers(b)).status_code==404
+

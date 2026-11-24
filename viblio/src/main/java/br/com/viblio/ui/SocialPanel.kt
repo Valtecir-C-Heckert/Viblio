@@ -20,6 +20,7 @@ import java.util.concurrent.Executors
 class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,private val accounts:AccountManager,private val changed:()->Unit){
     var onBackdrop:()->Unit={}
     var onOpenOwnBook:((String)->Boolean)?=null
+    var onClubProgressSaved:((ClubBookDescriptor,Int)->Unit)?=null
     var composerDock:FrameLayout?=null
     private val ui=DisplayUi(activity)
     private val feedColors=linkedMapOf<String,Int?>()
@@ -29,8 +30,11 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     private val handler=Handler(Looper.getMainLooper());private val worker=Executors.newSingleThreadExecutor()
     private val backdropWorker=Executors.newSingleThreadExecutor()
     private val clubFeedWorker=Executors.newSingleThreadExecutor()
-    private var requestConnection:AccountConnection?=null;private var clubFeedConnection:AccountConnection?=null
+    private val clubSyncWorker=Executors.newSingleThreadExecutor()
+    private var requestConnection:AccountConnection?=null;private var clubFeedConnection:AccountConnection?=null;private var clubSyncConnection:AccountConnection?=null
     private var api:AccountApi?=null;private var apiIdentity="";private var images:FriendCoverLoader?=null
+    private var clubSyncApi:AccountApi?=null;private var clubSyncApiIdentity="";private var clubSyncEpoch=0
+    private var pendingClubSyncBook:LibraryBook?=null;private var suppressClubSyncBookId:String?=null;private var suppressClubSyncPage:Int=-1
     private var identity="";private var active=false;private var closed=false;private var generation=0;private var busy=false;private var loaded=false;private var error=""
     private var clubFeedEpoch=0;private var clubFeedBusy=false;private var coverRedrawScheduled=false
     private var tab="feed";private var feedFilter="all";private var people=false;private var inviteClub:String?=null;private var club:String?=null;private var round:String?=null;private var stage:String?=null
@@ -214,7 +218,71 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     private fun arm(){if(active && !closed && !scheduled){scheduled=true;handler.postDelayed(tick,delay)}}
     private fun reset(preserveClub:Boolean=false){stopLive();generation++;clubFeedEpoch++;requestConnection?.cancel();requestConnection=null;clubFeedConnection?.cancel();clubFeedConnection=null;clubFeedBusy=false;busy=false;loaded=false;error="";rows=emptyList();cursor=null;messageBefore=null;if(!preserveClub){data=JsonObject();clubFeed=emptyList();clubFeedCursor=null};if(images==null)images=api?.let {FriendCoverLoader(it::thumbnail)}}
     fun hide(resetSelection:Boolean=false){active=false;stopLive();clearBackdrop();generation++;clubFeedEpoch++;requestConnection?.cancel();requestConnection=null;clubFeedConnection?.cancel();clubFeedConnection=null;clubFeedBusy=false;busy=false;loaded=false;scheduled=false;coverRedrawScheduled=false;handler.removeCallbacksAndMessages(null);api?.cancel();images?.detach();dialogs.toList().forEach {it.dismiss()};dialogs.clear();rows=emptyList();data=JsonObject();friends.hide(resetSelection);if(resetSelection){club=null;stage=null;round=null;clubPage="home";people=false;inviteClub=null;draft="";replyToId=null;replyToUser="";invited.clear()}}
-    fun close(){hide();closed=true;images?.close();images=null;feedColors.clear();identity="";api?.close();api=null;apiIdentity="";friends.close();worker.shutdownNow();liveWorker.shutdownNow();messagesWorker.shutdownNow();backdropWorker.shutdownNow();clubFeedWorker.shutdownNow()}
+    fun close(){hide();closed=true;clubSyncEpoch++;clubSyncConnection?.cancel();clubSyncConnection=null;pendingClubSyncBook=null;clubSyncApi?.close();clubSyncApi=null;clubSyncApiIdentity="";images?.close();images=null;feedColors.clear();identity="";api?.close();api=null;apiIdentity="";friends.close();worker.shutdownNow();liveWorker.shutdownNow();messagesWorker.shutdownNow();backdropWorker.shutdownNow();clubFeedWorker.shutdownNow();clubSyncWorker.shutdownNow()}
+    fun markClubProgressSynced(bookId:String,page:Int){suppressClubSyncBookId=bookId;suppressClubSyncPage=page}
+    fun retryPendingClubProgressSync(current:LibraryBook?){
+        val pending=pendingClubSyncBook ?: return
+        if(current==null || current.id!=pending.id){pendingClubSyncBook=null;return}
+        syncCurrentBookProgress(current)
+    }
+    fun syncCurrentBookProgress(book:LibraryBook){
+        if(closed || !accounts.signedIn || book.archived || !book.pagesKnown || book.totalPages<=0)return
+        if(suppressClubSyncBookId==book.id && suppressClubSyncPage==book.currentPage){
+            suppressClubSyncBookId=null;suppressClubSyncPage=-1;return
+        }
+        suppressClubSyncBookId=null;suppressClubSyncPage=-1
+        val profile=who();val address=accounts.address;val token=accounts.catalogToken().orEmpty()
+        if(address.isBlank() || token.isBlank())return
+        clubSyncConnection?.cancel()
+        val epoch=++clubSyncEpoch;val connection=AccountConnection();clubSyncConnection=connection
+        pendingClubSyncBook=book
+        clubSyncWorker.execute {
+            val result=runCatching {
+                val client=if(clubSyncApi!=null && clubSyncApiIdentity==profile)clubSyncApi!! else {
+                    clubSyncApi?.close()
+                    AccountApi(address,token).also {clubSyncApi=it;clubSyncApiIdentity=profile}
+                }
+                val list=SocialRequests.call(client,"/v1/clubs","GET",null,connection)
+                val updated=mutableSetOf<String>()
+                list.list("items",50).forEach {item->
+                    if(item.s("status")!="active" || item.s("state")!="reading")return@forEach
+                    val clubId=id(item.s("id")) ?: return@forEach
+                    val clubBook=item.o("book")
+                    val descriptor=ClubBookDescriptor(
+                        title=clubBook.s("title"),
+                        author=clubBook.s("author"),
+                        pages=clubBook.n("pages").toInt(),
+                        catalogId=clubBook.s("catalog_id"),
+                        ownBookId=clubBook.s("own_book_id"),
+                    )
+                    if(!ClubBookSync.matchesClubBook(book,descriptor))return@forEach
+                    val hasMyPage=item.has("my_page") && !item.get("my_page").isJsonNull
+                    if(hasMyPage && item.n("my_page").toInt()==book.currentPage)return@forEach
+                    SocialRequests.call(
+                        client,
+                        "/v1/clubs/$clubId/progress",
+                        "PATCH",
+                        JsonObject().apply {addProperty("page",book.currentPage)},
+                        connection,
+                    )
+                    updated.add(clubId)
+                }
+                updated
+            }
+            handler.post {
+                if(closed || clubSyncEpoch!=epoch || who()!=profile)return@post
+                clubSyncConnection=null
+                result.onSuccess {updated->
+                    if(pendingClubSyncBook?.id==book.id && pendingClubSyncBook?.currentPage==book.currentPage)pendingClubSyncBook=null
+                    val openClub=club
+                    if(openClub!=null && openClub in updated){
+                        loaded=false
+                        if(active && !busy && stage==null)load()
+                    }
+                }
+            }
+        }
+    }
     private fun draftOwner()=java.security.MessageDigest.getInstance("SHA-256").digest(who().toByteArray()).joinToString(""){"%02x".format(it.toInt() and 255)}
     fun save(out:Bundle){friends.save(out);out.putString("social.tab",tab);out.putString("social.club",club);out.putString("social.round",round);out.putString("social.stage",stage);out.putString("social.clubPage",clubPage);out.putString("social.draft",draft.take(2000));out.putString("social.draftOwner",draftOwner())}
     fun restore(state:Bundle?){friends.restore(state);tab=state?.getString("social.tab").takeIf {it in listOf("feed","friends","clubs")} ?: "feed";club=state?.getString("social.club")?.let(::id);round=state?.getString("social.round")?.let(::id);stage=state?.getString("social.stage")?.let(::id);clubPage=state?.getString("social.clubPage").takeIf {it in listOf("home","history","settings","members")} ?: "home";draft=if(state?.getString("social.draftOwner")==draftOwner())state.getString("social.draft").orEmpty().take(2000) else "";replyToId=null;replyToUser=""}
@@ -1147,11 +1215,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             val mineInfo=ui.column();mine.addView(mineInfo,LinearLayout.LayoutParams(0,-2,1f))
             text(mineInfo,"SUA LEITURA",9,ui.muted).apply {letterSpacing=0.08f}
             text(mineInfo,"Pág. $myPage / $pages ($myPct%)",13,ui.text,bold=true)
-            action(mine,"Atualizar"){
-                val body=ui.column().apply {setPadding(ui.dp(20),0,ui.dp(20),0)}
-                val page=input(body,"Página atual",myPage.toString(),numeric=true,limit=6)
-                tracked(AlertDialog.Builder(activity).setTitle("Meu progresso · $pages páginas").setView(body).setPositiveButton("Salvar"){_,_->mutate("/v1/clubs/$club/progress","PATCH",JsonObject().apply {addProperty("page",page.text.toString().toIntOrNull() ?: -1)})}.setNegativeButton("Cancelar",null).create())
-            }
+            action(mine,"Atualizar"){editProgress(selected,myPage,pages)}
         }
 
         line(parent)
@@ -1381,11 +1445,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 gText("Atualizar",12f,ui.background,medium=true).apply {
                     gravity=Gravity.CENTER;setPadding(ui.dp(16),ui.dp(8),ui.dp(16),ui.dp(8))
                     background=ui.pillRipple(ui.accent,20,darkRipple=true);isFocusable=true
-                    setOnClickListener {
-                        val body=ui.column().apply {setPadding(ui.dp(20),ui.dp(8),ui.dp(20),0)}
-                        val page=input(body,"Página atual",myPage.toString(),numeric=true,limit=6)
-                        tracked(AlertDialog.Builder(activity).setTitle("Meu progresso · $pages páginas").setView(body).setPositiveButton("Salvar"){_,_->mutate("/v1/clubs/$club/progress","PATCH",JsonObject().apply {addProperty("page",page.text.toString().toIntOrNull() ?: -1)})}.setNegativeButton("Cancelar",null).create())
-                    }
+                    setOnClickListener {editProgress(selected,myPage,pages)}
                 },
                 LinearLayout.LayoutParams(-2,-2),
             )
@@ -1814,9 +1874,36 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             action(reading,"Alterar prazo final"){adjustDeadline(r)}
             action(reading,"Encerrar leitura e guardar no histórico"){confirm("Concluir esta leitura do clube?"){mutate("/v1/clubs/$club/complete"){clubPage="history";round=null}}}
             val steps=card(root);title(steps,"Etapas e discussões",21);action(steps,"Criar etapa"){stageEditor(null)}
-            data.list("stages",20).forEach {s->line(steps);text(steps,"Até página ${s.n("page_limit")} · ${date(instant(s.s("discuss_at")))}",12);action(steps,"Editar etapa / liberar comentários"){stageEditor(s)}}
+            data.list("stages",20).forEach {s->line(steps);text(steps,"Até página ${s.n("page_limit")} · ${date(instant(s.s("discuss_at")))}",12);action(steps,"Editar etapa"){stageEditor(s)}}
         }else action(reading,"Abrir nova votação",primary=true){mutate("/v1/clubs/$club/rounds"){round=null;clubPage="home"}}
         val danger=card(root);title(danger,"Clube",21);action(danger,"Excluir clube"){confirm("Excluir o clube e suas discussões?"){mutate("/v1/clubs/$club","DELETE"){club=null;round=null;clubPage="home"}}}
+    }
+    private fun editProgress(selected:JsonObject,myPage:Long,pages:Long){
+        val body=ui.column().apply {setPadding(ui.dp(20),ui.dp(8),ui.dp(20),0)}
+        val page=input(body,"Página atual (0 a $pages)",myPage.toString(),numeric=true,limit=6)
+        val descriptor=ClubBookDescriptor(
+            title=selected.s("title"),
+            author=selected.s("author"),
+            pages=pages.toInt(),
+            catalogId=selected.s("catalog_id"),
+            ownBookId=selected.s("own_book_id"),
+        )
+        val dialog=AlertDialog.Builder(activity).setTitle("Meu progresso · $pages páginas").setView(body).setPositiveButton("Salvar",null).setNegativeButton("Cancelar",null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+                val target=page.text.toString().toIntOrNull()
+                if(target==null || target<0 || target>pages){
+                    page.error="Informe uma página entre 0 e $pages."
+                    return@setOnClickListener
+                }
+                page.error=null
+                dialog.dismiss()
+                mutate("/v1/clubs/$club/progress","PATCH",JsonObject().apply {addProperty("page",target)}){
+                    onClubProgressSaved?.invoke(descriptor,target)
+                }
+            }
+        }
+        tracked(dialog)
     }
     private fun memberMenu(person:JsonObject){
         val identifier=id(person.s("id")) ?: return
@@ -1824,12 +1911,37 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         tracked(AlertDialog.Builder(activity).setTitle("@${person.s("username")}").setItems(labels){_,i->when(i){0->mutate("/v1/clubs/$club/members/$identifier","PATCH",JsonObject().apply {addProperty("role",if(person.s("role")=="admin")"member" else "admin")});1->confirm("Transferir sua administração para @${person.s("username") }?"){mutate("/v1/clubs/$club/transfer",body=JsonObject().apply {addProperty("user_id",identifier)})};else->confirm("Remover @${person.s("username") } do clube?"){mutate("/v1/clubs/$club/members/$identifier","DELETE")}}}.setNegativeButton("Cancelar",null).create())
     }
     private fun stageEditor(old:JsonObject?){
-        val body=ui.column().apply {setPadding(ui.dp(20),0,ui.dp(20),0)};val page=input(body,"Parar na página",old?.n("page_limit")?.toString().orEmpty(),true,6).apply {isEnabled=old==null}
+        val selected=data.list("proposals",30).firstOrNull {it.s("id")==data.o("round").s("selected_id")}
+        val maxPages=selected?.n("pages")?.toInt()?.takeIf {it>0} ?: 100000
+        val body=ui.column().apply {setPadding(ui.dp(20),0,ui.dp(20),0)}
+        val page=input(body,"Parar na página (1 a $maxPages)",old?.n("page_limit")?.toString().orEmpty(),true,6)
         var at=old?.s("discuss_at")?.let(::instant) ?: System.currentTimeMillis()+86400000
         val button=Button(activity).apply {text=date(at);setOnClickListener {pickDate(at){at=it;text=date(at)}}};body.addView(button)
         val open=CheckBox(activity).apply {text="Liberar comentários agora";isChecked=old?.y("is_open")==true;setTextColor(ui.text)};body.addView(open)
         val oldId=old?.let { id(it.s("id")) ?: return }
-        tracked(AlertDialog.Builder(activity).setTitle(if(old==null)"Nova etapa" else "Ajustar etapa").setView(body).setPositiveButton("Salvar"){_,_->mutate("/v1/clubs/$club/stages"+(oldId?.let {"/$it"} ?: ""),if(old==null)"POST" else "PATCH",JsonObject().apply {addProperty("page_limit",page.text.toString().toIntOrNull() ?: 0);addProperty("discuss_at",iso(at));addProperty("is_open",open.isChecked)})}.setNegativeButton("Cancelar",null).create())
+        val builder=AlertDialog.Builder(activity).setTitle(if(old==null)"Nova etapa" else "Ajustar etapa").setView(body).setPositiveButton("Salvar",null).setNegativeButton("Cancelar",null)
+        if(old!=null && oldId!=null){
+            val prompt=if(old.n("comments")>0)"Excluir esta etapa e seus comentários?" else "Excluir esta etapa?"
+            builder.setNeutralButton("Excluir"){_,_->confirm(prompt){mutate("/v1/clubs/$club/stages/$oldId","DELETE")}}
+        }
+        val dialog=builder.create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+                val target=page.text.toString().toIntOrNull()
+                if(target==null || target !in 1..maxPages){
+                    page.error="Informe uma página entre 1 e $maxPages."
+                    return@setOnClickListener
+                }
+                page.error=null
+                dialog.dismiss()
+                mutate("/v1/clubs/$club/stages"+(oldId?.let {"/$it"} ?: ""),if(old==null)"POST" else "PATCH",JsonObject().apply {
+                    addProperty("page_limit",target)
+                    addProperty("discuss_at",iso(at))
+                    addProperty("is_open",open.isChecked)
+                })
+            }
+        }
+        tracked(dialog)
     }
     private var composer:EditText?=null
     private var sendComment:TextView?=null

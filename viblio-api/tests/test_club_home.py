@@ -166,7 +166,58 @@ def test_club_cards_unread_counts_inviter_isolation_and_scoped_replies(api):
     items_after=get(api,a,f'/v1/clubs/{group}/stages/{s1}/messages')['items']
     assert len(items_after)==1 and items_after[0]['id']==reply and items_after[0]['reply_to'] is None
     assert [s['unread'] for s in get(api,a,f'/v1/clubs/{group}')['stages']]==[0,0]
-    # Health and auth/info advertise clubs_api 3 / api_version 12.
-    assert api.get('/v1/auth/info').json()['clubs_api']==3
+    # Health and auth/info advertise clubs_api 4 / api_version 12.
+    assert api.get('/v1/auth/info').json()['clubs_api']==4
     assert get(api,a,'/v1/health')['api_version']==12
+
+
+def test_stage_edit_page_limit_delete_and_metadata_privacy(api):
+    a,b,outsider=setup(api);group=club(api,a,'Clube Metas');other=club(api,outsider,'Outro')
+    invite(api,a,b,group)
+    s=snapshot();s['library']['books'][0].update(catalogId='cat-42',catalogSource='src-1',currentPage=12)
+    result(sync(api,a,s));result(sync(api,outsider,snapshot()))
+    proposal=call(api,a,f'/v1/clubs/{group}/proposals',{'book_id':'book'})['id']
+    call(api,a,f'/v1/clubs/{group}/vote',{'proposal_id':proposal})
+    call(api,a,f'/v1/clubs/{group}/start',{'proposal_id':proposal,'due_at':future(30)})
+    other_p=call(api,outsider,f'/v1/clubs/{other}/proposals',{'book_id':'book'})['id']
+    call(api,outsider,f'/v1/clubs/{other}/vote',{'proposal_id':other_p})
+    call(api,outsider,f'/v1/clubs/{other}/start',{'proposal_id':other_p,'due_at':future(30)})
+    other_stage=call(api,outsider,f'/v1/clubs/{other}/stages',{'page_limit':50,'discuss_at':future(5),'is_open':True})['id']
+
+    # Owner gets own_book_id + catalog_id + my_page; another member gets catalog_id + own my_page, never owner's book_id.
+    card_a=next(e for e in get(api,a,'/v1/clubs')['items'] if e['id']==group)
+    card_b=next(e for e in get(api,b,'/v1/clubs')['items'] if e['id']==group)
+    assert card_a['my_page']==12 and card_a['book']['catalog_id']=='src-1:cat-42' and card_a['book']['own_book_id']=='book'
+    assert card_b['my_page']==0 and card_b['book']['catalog_id']=='src-1:cat-42' and card_b['book']['own_book_id']==''
+    detail_b=get(api,b,f'/v1/clubs/{group}')
+    assert detail_b['proposals'][0]['catalog_id']=='src-1:cat-42' and detail_b['proposals'][0]['own_book_id']==''
+
+    s1=call(api,a,f'/v1/clubs/{group}/stages',{'page_limit':40,'discuss_at':future(5),'is_open':True})['id']
+    s2=call(api,a,f'/v1/clubs/{group}/stages',{'page_limit':80,'discuss_at':future(10),'is_open':True})['id']
+    call(api,b,f'/v1/clubs/{group}/stages/{s1}/messages',{'body':'Comentário preservado'})
+
+    # Admin can update page_limit (e.g. 40 -> 47) preserving messages.
+    call(api,a,f'/v1/clubs/{group}/stages/{s1}',{'page_limit':47,'discuss_at':future(6),'is_open':True},'PATCH')
+    stages=get(api,a,f'/v1/clubs/{group}')['stages']
+    assert [st['page_limit'] for st in stages]==[47,80]
+    msgs=get(api,a,f'/v1/clubs/{group}/stages/{s1}/messages')
+    assert msgs['stage']['page_limit']==47 and len(msgs['items'])==1
+
+    # Duplicate page_limit -> 409; exceeding book pages -> 422; non-admin -> 403; cross-club -> 404.
+    call(api,a,f'/v1/clubs/{group}/stages/{s1}',{'page_limit':80,'discuss_at':future(6),'is_open':True},'PATCH',409)
+    call(api,a,f'/v1/clubs/{group}/stages/{s1}',{'page_limit':101,'discuss_at':future(6),'is_open':True},'PATCH',422)
+    call(api,b,f'/v1/clubs/{group}/stages/{s1}',{'page_limit':48,'discuss_at':future(6),'is_open':True},'PATCH',403)
+    call(api,b,f'/v1/clubs/{group}/stages/{s1}',method='DELETE',code=403)
+    call(api,a,f'/v1/clubs/{group}/stages/{other_stage}',method='DELETE',code=404)
+
+    # Admin can delete a stage in an active reading round; messages & reads cascade cleanly.
+    call(api,a,f'/v1/clubs/{group}/stages/{s1}',method='DELETE')
+    assert [st['id'] for st in get(api,a,f'/v1/clubs/{group}')['stages']]==[s2]
+    get(api,a,f'/v1/clubs/{group}/stages/{s1}/messages',404)
+
+    # Completed reading rounds remain immutable (cannot edit or delete stages).
+    call(api,a,f'/v1/clubs/{group}/complete')
+    call(api,a,f'/v1/clubs/{group}/stages/{s2}',{'page_limit':85,'discuss_at':future(10),'is_open':True},'PATCH',409)
+    call(api,a,f'/v1/clubs/{group}/stages/{s2}',method='DELETE',code=409)
+
 
