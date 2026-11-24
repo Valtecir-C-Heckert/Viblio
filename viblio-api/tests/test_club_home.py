@@ -172,7 +172,16 @@ def test_club_cards_unread_counts_inviter_isolation_and_scoped_replies(api):
 
 
 def test_stage_edit_page_limit_delete_and_metadata_privacy(api):
-    a,b,outsider=setup(api);group=club(api,a,'Clube Metas');other=club(api,outsider,'Outro')
+    import uuid, psycopg
+    from app.accounts import digest
+    from test_api import DSN
+    def direct_user():
+        identifier=uuid.uuid4();token=uuid.uuid4().hex+uuid.uuid4().hex;name='club_'+identifier.hex[:12]
+        with psycopg.connect(DSN) as db:
+            db.execute("INSERT INTO public.viblio_users(id,email,password_hash,is_admin,username) VALUES (%s,%s,'unused-test-hash',false,%s)",(identifier,str(identifier)+'@example.test',name))
+            db.execute('INSERT INTO public.viblio_sessions(token_hash,user_id) VALUES (%s,%s)',(digest(token),identifier))
+        return {'token':token,'user':{'id':str(identifier),'username':name}}
+    a,b,outsider=direct_user(),direct_user(),direct_user();group=club(api,a,'Clube Metas');other=club(api,outsider,'Outro')
     invite(api,a,b,group)
     s=snapshot();s['library']['books'][0].update(catalogId='cat-42',catalogSource='src-1',currentPage=12)
     result(sync(api,a,s));result(sync(api,outsider,snapshot()))

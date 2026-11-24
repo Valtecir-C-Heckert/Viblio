@@ -126,7 +126,22 @@ def test_idle_stream_rechecks_expired_or_logged_out_sessions(api,monkeypatch):
 
 
 def test_stream_closes_when_stage_is_deleted(api):
-    a,b,c,group,stage=reading(api);base=f'/v1/clubs/{group}/stages/{stage}'
+    import uuid, psycopg
+    from app.accounts import digest
+    from test_api import DSN
+    def direct_user():
+        identifier=uuid.uuid4();token=uuid.uuid4().hex+uuid.uuid4().hex;name='live_'+identifier.hex[:12]
+        with psycopg.connect(DSN) as db:
+            db.execute("INSERT INTO public.viblio_users(id,email,password_hash,is_admin,username) VALUES (%s,%s,'unused-test-hash',false,%s)",(identifier,str(identifier)+'@example.test',name))
+            db.execute('INSERT INTO public.viblio_sessions(token_hash,user_id) VALUES (%s,%s)',(digest(token),identifier))
+        return {'token':token,'user':{'id':str(identifier),'username':name}}
+    a,b=direct_user(),direct_user();group=club(api,a);invite(api,a,b,group)
+    result(sync(api,a,snapshot()))
+    proposal=call(api,a,f'/v1/clubs/{group}/proposals',{'book_id':'book'})['id']
+    call(api,a,f'/v1/clubs/{group}/vote',{'proposal_id':proposal})
+    call(api,a,f'/v1/clubs/{group}/start',{'proposal_id':proposal,'due_at':future(30)})
+    stage=call(api,a,f'/v1/clubs/{group}/stages',{'page_limit':50,'discuss_at':future(10),'is_open':True})['id']
+    base=f'/v1/clubs/{group}/stages/{stage}'
     with live_server(api.app) as client:
         with client.stream('GET',base+'/events',headers=headers(b)) as response:
             lines=response.iter_lines();assert event(lines)=='ready'
