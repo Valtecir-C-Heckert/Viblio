@@ -56,7 +56,8 @@ class ReadingDatesEditor(private val activity: Activity, private val ui: Display
             })
         }
         render(); track(dialog)
-        dialog.window?.apply { setGravity(Gravity.BOTTOM); setLayout(-1, -2) }
+        val gallery = ui.rectilinear && br.com.centralcasa.data.LocalSettings(activity).galleryUiStyle()
+        dialog.window?.apply { setGravity(if (gallery) Gravity.CENTER else Gravity.BOTTOM); setLayout(-1, -2) }
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             try {
                 val selected = if (mode == 2) ReadingDays.range(first, last) else days.toList()

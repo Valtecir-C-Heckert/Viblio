@@ -28,4 +28,21 @@ class ReadingGoalsTest {
     @Test fun pagesPreserveTraceToBookAndSession(){val p=ReadingGoals.progress(goal(GoalMetric.PAGES,100),listOf(book()),listOf(session(end=25)),now);assertEquals("one",p.credits.single().bookId);assertEquals(listOf("s"),p.credits.single().sessionIds)}
     @Test fun malformedLimitsRejected(){assertTrue(runCatching {goal(target=0).validated()}.isFailure);assertTrue(runCatching {goal(GoalMetric.PURCHASE,101).validated()}.isFailure)}
     @Test fun purchaseRejectsForgedCounter(){assertTrue(runCatching {ReadingGoals.purchase(goal(GoalMetric.PURCHASE),GoalProgress(emptyList(),3,""),now)}.isFailure)}
+    @Test fun purchaseStacksMultipleUnlockedCyclesAndTracksPurchasedBook(){
+        val books=(1..7).map {book(it.toString())}
+        val sessions=books.map {session(id=it.id,book=it.id)}
+        val g=goal(GoalMetric.PURCHASE,3).copy(reward=2)
+        val p1=ReadingGoals.progress(g,books,sessions,now)
+        assertEquals(2,ReadingGoals.unlockedCycles(g,p1))
+        assertEquals(4,ReadingGoals.stackedRewards(g,p1))
+        assertEquals(1,ReadingGoals.currentCycleProgress(g,p1))
+        val afterFirst=ReadingGoals.purchase(g,p1,now,listOf("  Duna  "))
+        assertEquals(listOf("Duna"),afterFirst.cycles.single().purchased)
+        val p2=ReadingGoals.progress(afterFirst,books,sessions,now)
+        assertEquals(1,ReadingGoals.unlockedCycles(afterFirst,p2))
+        assertEquals(2,ReadingGoals.stackedRewards(afterFirst,p2))
+        assertEquals(1,ReadingGoals.currentCycleProgress(afterFirst,p2))
+        val updated=ReadingGoals.updateCyclePurchased(afterFirst,afterFirst.cycles.single().id,listOf("Duna","Messias de Duna"))
+        assertEquals(listOf("Duna","Messias de Duna"),updated.cycles.single().purchased)
+    }
 }

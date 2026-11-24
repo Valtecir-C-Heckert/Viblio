@@ -5,7 +5,7 @@ import java.util.UUID
 enum class GoalMetric(val label:String){BOOKS("Livros"),PAGES("Páginas"),PURCHASE("Próxima compra")}
 enum class GoalPeriod(val label:String){DAY("Dia"),WEEK("Semana"),MONTH("Mês"),YEAR("Ano"),CONTINUOUS("Ciclo contínuo")}
 data class GoalCredit(val bookId:String,val title:String,val author:String,val cover:String,val at:Long,val pages:Long=0,val sessionIds:List<String> = emptyList())
-data class GoalCycle(val id:String=UUID.randomUUID().toString(),val at:Long,val reward:Int,val books:List<GoalCredit>)
+data class GoalCycle(val id:String=UUID.randomUUID().toString(),val at:Long,val reward:Int,val books:List<GoalCredit>,val purchased:List<String> = emptyList())
 data class ReadingGoal(val id:String=UUID.randomUUID().toString(),val name:String,val metric:GoalMetric,val target:Int,val reward:Int=1,val period:GoalPeriod=GoalPeriod.YEAR,val kind:String="book",val createdAt:Long,val fromAt:Long=createdAt,val baseline:Map<String,Int>,val excluded:Set<String>,val cycles:List<GoalCycle> = emptyList()) {
     fun validated():ReadingGoal {
         require(UUID.fromString(id).toString()==id && name.isNotBlank() && name.length<=80)
@@ -16,6 +16,7 @@ data class ReadingGoal(val id:String=UUID.randomUUID().toString(),val name:Strin
         val used=mutableSetOf<String>()
         cycles.forEach {cycle->
             require(cycle.at>=createdAt && cycle.reward in 1..100 && cycle.books.size in 1..100)
+            require(cycle.purchased.size<=100 && cycle.purchased.all {it.isNotBlank() && it.length<=200})
             require(UUID.fromString(cycle.id).toString()==cycle.id)
             cycle.books.forEach {require(it.bookId.length in 1..200 && it.title.length<=500 && it.author.length<=200 && it.cover.length<=200 && it.at>=createdAt && used.add(it.bookId))}
         }
@@ -49,9 +50,26 @@ object ReadingGoals {
         }.sortedWith(compareBy<GoalCredit> {it.at}.thenBy {it.bookId})
         return GoalProgress(credits,credits.size.toLong(),label)
     }
-    fun purchase(goal:ReadingGoal,progress:GoalProgress,now:Long):ReadingGoal {
+    /** Number of full purchase cycles currently unlocked and stacked (waiting to be redeemed). */
+    fun unlockedCycles(goal:ReadingGoal,progress:GoalProgress):Int =
+        if(goal.metric!=GoalMetric.PURCHASE || goal.target<=0) 0 else (progress.value/goal.target).toInt().coerceAtLeast(0)
+    /** Total reward books stacked across all unlocked purchase cycles. */
+    fun stackedRewards(goal:ReadingGoal,progress:GoalProgress):Int = unlockedCycles(goal,progress)*goal.reward
+    /** Books read toward the next (not-yet-unlocked) cycle beyond any stacked cycles. */
+    fun currentCycleProgress(goal:ReadingGoal,progress:GoalProgress):Int =
+        if(goal.metric!=GoalMetric.PURCHASE || goal.target<=0) 0 else (progress.value%goal.target).toInt().coerceAtLeast(0)
+    fun purchase(goal:ReadingGoal,progress:GoalProgress,now:Long,purchased:List<String> = emptyList()):ReadingGoal {
         require(goal.metric==GoalMetric.PURCHASE && progress.value>=goal.target && progress.credits.size>=goal.target && progress.value==progress.credits.size.toLong()){"A compra ainda não foi liberada."}
         require(goal.cycles.size<256){"Histórico cheio. Crie uma nova meta para continuar."}
-        return goal.copy(cycles=goal.cycles+GoalCycle(at=now,reward=goal.reward,books=progress.credits.take(goal.target))).validated()
+        val clean=purchased.map {it.trim().take(200)}.filter {it.isNotEmpty()}.take(100)
+        return goal.copy(cycles=goal.cycles+GoalCycle(at=now,reward=goal.reward,books=progress.credits.take(goal.target),purchased=clean)).validated()
+    }
+    fun updateCyclePurchased(goal:ReadingGoal,cycleId:String,purchased:List<String>):ReadingGoal {
+        val clean=purchased.map {it.trim().take(200)}.filter {it.isNotEmpty()}.take(100)
+        val idx=goal.cycles.indexOfFirst {it.id==cycleId}
+        require(idx>=0){"Ciclo não encontrado."}
+        val next=goal.cycles.toMutableList()
+        next[idx]=next[idx].copy(purchased=clean)
+        return goal.copy(cycles=next).validated()
     }
 }

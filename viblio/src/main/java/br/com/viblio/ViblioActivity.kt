@@ -34,6 +34,7 @@ class ViblioActivity : Activity() {
     private lateinit var account:AccountPanel
     private lateinit var friends:br.com.viblio.ui.SocialPanel
     private var tab="shelf"
+    private var returnFromDetailTab:String?=null
     private var offline=false
     private var scanTarget:String?=null
     private var scanProfile:String?=null
@@ -241,6 +242,7 @@ class ViblioActivity : Activity() {
         library.restoreState(state)
         search.restore(state);friends.restore(state)
         tab=state?.getString("viblio.tab").takeIf { it in listOf("shelf","search","stats","account","friends") } ?: "shelf"
+        returnFromDetailTab=state?.getString("viblio.returnFromDetailTab").takeIf { it in listOf("search","stats","account","friends") }
         listOf("shelf","search","stats","account","friends").forEach { positions[it]=state?.getInt("viblio.position.$it",0) ?: 0 }
         render()
         val isDeepLink=intent?.action==Intent.ACTION_VIEW && intent.data?.scheme=="viblio"
@@ -295,6 +297,14 @@ class ViblioActivity : Activity() {
     }
     private fun makeLibrary()=BooksPanel(this,ui,{homeAssistant.changed();accounts.localChanged();refreshWidgetsAsync();if(tab=="shelf")render()}).apply {
         onAccount={switchTab("account")}
+        onDetailBack={
+            val origin=returnFromDetailTab
+            if(origin!=null){
+                returnFromDetailTab=null
+                switchTab(origin)
+                true
+            } else false
+        }
         accountMenuBadge={
             val s=accounts.syncStatus()
             val initial=accounts.username.ifBlank {accounts.email}.firstOrNull()?.uppercaseChar()?.toString() ?: "V"
@@ -334,7 +344,8 @@ class ViblioActivity : Activity() {
             .setPositiveButton("Abrir leitura") { _,_->open() }.setNegativeButton("Continuar editando",null).show()
         else if(library.canReplaceLibrary) open()
     }
-    private fun switchTab(destination:String) {
+    private fun switchTab(destination:String, keepReturn:Boolean=false) {
+        if(!keepReturn) returnFromDetailTab=null
         if(tab==destination) return
         positions[tab]=scroll.scrollY
         if(tab=="shelf") { library.clearPlanSelection(); library.onStop() }
@@ -369,7 +380,13 @@ class ViblioActivity : Activity() {
                     useRedesignedStatistics=true
                     separateShelfStatistics=true
                     planCatalogProvider={ catalog }
-                    onOpenPlannedBook={ id -> switchTab("shelf");library.openBook(id) }
+                    onOpenPlannedBook={ id ->
+                        val origin=tab
+                        returnFromDetailTab=origin
+                        switchTab("shelf", keepReturn=true)
+                        library.openBook(id)
+                        scroll.post { scroll.scrollTo(0,0) }
+                    }
                     onAddCatalogToShelf={ rec -> switchTab("shelf");library.addFromCatalog(rec) }
                     onRequestShelfBookForPlan={ year, month ->
                         val label="${br.com.centralcasa.books.AnnualPlanCalculator.fullName(month)} $year"
@@ -490,6 +507,7 @@ class ViblioActivity : Activity() {
         window.navigationBarColor=Color.TRANSPARENT
     }
     private fun openShelfTab(){
+        returnFromDetailTab=null
         if(library.isShelf){switchTab("shelf");return}
         val open={switchTab("shelf");library.openShelf()}
         if(library.isEditor)AlertDialog.Builder(this).setTitle("Voltar à Estante?")
@@ -499,6 +517,7 @@ class ViblioActivity : Activity() {
         else android.widget.Toast.makeText(this,"Aguarde a operação atual.",android.widget.Toast.LENGTH_LONG).show()
     }
     private fun openCurrentReading(){
+        returnFromDetailTab=null
         if(library.repository.current()==null){android.widget.Toast.makeText(this,"Nenhum livro atual. Escolha um livro na Estante.",android.widget.Toast.LENGTH_LONG).show();return}
         val open={switchTab("shelf");library.openCurrent();scroll.post {scroll.scrollTo(0,0)}}
         if(library.isEditor)AlertDialog.Builder(this).setTitle("Abrir livro atual?")
@@ -522,6 +541,7 @@ class ViblioActivity : Activity() {
         outState.putString("scan.target",scanTarget);outState.putString("scan.profile",scanProfile);outState.putString("scan.editor",scanEditor)
         outState.putBoolean("viblio.offline",offline)
         positions[tab]=scroll.scrollY;outState.putString("viblio.tab",tab)
+        outState.putString("viblio.returnFromDetailTab",returnFromDetailTab)
         positions.forEach { (key,value)->outState.putInt("viblio.position.$key",value) }
         search.save(outState);friends.save(outState);library.saveState(outState);super.onSaveInstanceState(outState)
     }

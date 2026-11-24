@@ -2,13 +2,19 @@ package br.com.centralcasa.ui
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Typeface
+import android.app.Dialog
+import android.graphics.*
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
+import android.text.InputFilter
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.*
 import br.com.centralcasa.books.*
+import br.com.centralcasa.data.LocalSettings
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -18,25 +24,122 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
     private val profile=LibraryProfiles.settings(activity)
     private val store=ReadingGoalStore(activity)
     private val images=BookImages(activity)
-    private val dialogs=mutableSetOf<AlertDialog>()
+    private val dialogs=mutableSetOf<Dialog>()
     private val openGoals=mutableSetOf<String>()
     private val shownCredits=mutableMapOf<String,Int>()
     private var closed=false
     val isEditing get()=dialogs.any {it.isShowing}
     private val numbers=NumberFormat.getIntegerInstance(Locale("pt","BR"))
     var onRedeemPurchaseWithWishlist:((ReadingGoalStore.Entry,ReadingGoal,GoalProgress)->Unit)?=null
+    private fun isGalleryMode()=ui.rectilinear && LocalSettings(activity).galleryUiStyle()
     private fun valid()=!closed && LibraryProfiles.settings(activity)==profile
     private fun tracked(dialog:AlertDialog):AlertDialog {dialogs.add(dialog);dialog.setOnDismissListener {dialogs.remove(dialog)};dialog.show();dialog.window?.setBackgroundDrawable(ui.shape(ui.surface,0));return dialog}
     fun close(){closed=true;dialogs.toList().forEach {it.dismiss()};dialogs.clear()}
     private fun mutate(action:()->Unit){if(!valid())return;try {action();changed()}catch(e:Exception){Toast.makeText(activity,e.message ?: "Não foi possível salvar a meta.",Toast.LENGTH_LONG).show()}}
     private fun line(parent:LinearLayout){parent.addView(View(activity).apply {setBackgroundColor(ui.lineColor)},LinearLayout.LayoutParams(-1,ui.dp(1)).apply {topMargin=ui.dp(10);bottomMargin=ui.dp(10)})}
     private fun title(parent:LinearLayout,value:String,size:Int=21,color:Int=ui.text)=ui.label(parent,value,size,color).apply {typeface=Typeface.create("serif",Typeface.NORMAL);includeFontPadding=true}
+    private fun gText(value:CharSequence,sp:Float,color:Int,serif:Boolean=false,medium:Boolean=false)=TextView(activity).apply {
+        text=value;textSize=sp;setTextColor(color);includeFontPadding=false
+        typeface=when {
+            serif -> Typeface.create("serif",Typeface.NORMAL)
+            medium -> Typeface.create("sans-serif-medium",Typeface.NORMAL)
+            else -> Typeface.create("sans-serif",Typeface.NORMAL)
+        }
+    }
     private fun defaultName(metric:GoalMetric)=when(metric){GoalMetric.PAGES->"Páginas lidas";GoalMetric.BOOKS->"Livros concluídos";GoalMetric.PURCHASE->"Próxima compra"}
     private fun kindName(kind:String)=mapOf("book" to "Livros","manga" to "Mangás","comic" to "Quadrinhos","all" to "Todos").getValue(kind)
     fun openCreateDialog(defaultMetric:GoalMetric?=null){edit(null,defaultMetric)}
+
+    /** Centered editorial Galeria modal matching BookInfoDialog and Goal Config. */
+    private fun showGalleryModal(
+        heading:String,
+        trailingLabel:String?=null,
+        onTrailing:((Dialog)->Unit)?=null,
+        build:(LinearLayout,Dialog)->Unit,
+    ):Dialog {
+        val dialog=Dialog(activity)
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+        val radiusPx=ui.dp(24).toFloat()
+        val strokePx=ui.dp(1).coerceAtLeast(1).toFloat()
+        val cardBg=object:Drawable() {
+            private val fillPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {color=ui.surface}
+            private val glowPaint=Paint(Paint.ANTI_ALIAS_FLAG)
+            private val borderPaint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style=Paint.Style.STROKE;strokeWidth=strokePx;color=ui.galleryHairline(145)
+            }
+            private val clipPath=Path();private val rect=RectF();private var lastW=0;private var lastH=0
+            override fun draw(canvas:Canvas){
+                val b=bounds;val w=b.width();val h=b.height()
+                if(w<=0 || h<=0)return
+                rect.set(b.left.toFloat(),b.top.toFloat(),b.right.toFloat(),b.bottom.toFloat())
+                if(w!=lastW || h!=lastH){
+                    lastW=w;lastH=h;clipPath.reset();clipPath.addRoundRect(rect,radiusPx,radiusPx,Path.Direction.CW)
+                    val cx=b.left+w*0.5f;val top=b.top.toFloat();val r=(w*0.72f).coerceAtLeast(ui.dp(180).toFloat())
+                    glowPaint.shader=RadialGradient(cx,top,r,intArrayOf(ui.tint(ui.accent,46),ui.tint(ui.accent,16),Color.TRANSPARENT),floatArrayOf(0f,0.52f,1f),Shader.TileMode.CLAMP)
+                }
+                canvas.save();canvas.clipPath(clipPath)
+                canvas.drawRect(rect,fillPaint)
+                canvas.drawRect(rect.left,rect.top,rect.right,(rect.top+ui.dp(200)).coerceAtMost(rect.bottom),glowPaint)
+                canvas.restore()
+                val half=strokePx*0.5f;rect.inset(half,half)
+                canvas.drawRoundRect(rect,radiusPx,radiusPx,borderPaint)
+            }
+            override fun setAlpha(alpha:Int){}
+            override fun setColorFilter(colorFilter:ColorFilter?){}
+            @Deprecated("Deprecated in Java")
+            override fun getOpacity()=PixelFormat.TRANSLUCENT
+        }
+        val outer=FrameLayout(activity).apply {setPadding(ui.dp(14),ui.dp(20),ui.dp(14),ui.dp(20))}
+        val card=ui.column().apply {background=cardBg;setPadding(ui.dp(20),ui.dp(14),ui.dp(20),ui.dp(20))}
+        val topBar=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+        card.addView(topBar,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
+        topBar.addView(
+            gText(heading,20f,ui.text,serif=true).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},
+            LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)},
+        )
+        if(!trailingLabel.isNullOrBlank() && onTrailing!=null){
+            topBar.addView(
+                gText(trailingLabel,11.5f,ui.accent,medium=true).apply {
+                    gravity=Gravity.CENTER;setPadding(ui.dp(11),ui.dp(6),ui.dp(11),ui.dp(6))
+                    background=ui.pillRipple(ui.activeSurface,16,ui.galleryHairline(140));isFocusable=true
+                    setOnClickListener {onTrailing(dialog)}
+                },
+                LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(6)},
+            )
+        }
+        topBar.addView(
+            gText("×",22f,ui.muted).apply {
+                gravity=Gravity.CENTER;contentDescription="Fechar";isFocusable=true
+                background=ui.pillRipple(Color.TRANSPARENT,18)
+                setOnClickListener {dialog.dismiss()}
+            },
+            LinearLayout.LayoutParams(ui.dp(34),ui.dp(34)),
+        )
+        val content=ui.column()
+        val scroll=ScrollView(activity).apply {isVerticalScrollBarEnabled=false;addView(content,FrameLayout.LayoutParams(-1,-2))}
+        card.addView(scroll,LinearLayout.LayoutParams(-1,-2))
+        outer.addView(card,FrameLayout.LayoutParams(-1,-2))
+        build(content,dialog)
+        dialog.setContentView(outer)
+        dialog.window?.apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setLayout(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.CENTER)
+            setDimAmount(0.64f)
+        }
+        dialogs.add(dialog)
+        dialog.setOnDismissListener {dialogs.remove(dialog)}
+        dialog.show()
+        return dialog
+    }
+
     fun openGoalDetailDialog(entry:ReadingGoalStore.Entry){
         if(!valid())return
         val goal=entry.goal ?: return
+        if(isGalleryMode() && goal.metric==GoalMetric.PURCHASE){
+            openPurchaseGalleryModal(entry.id)
+            return
+        }
         openGoals.add(goal.id)
         val body=ui.column().apply {setPadding(ui.dp(16),ui.dp(12),ui.dp(16),ui.dp(12))}
         renderEntries(body,listOf(entry))
@@ -161,10 +264,16 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
                     title(card,"Histórico de ciclos",17)
                     if(goal.cycles.isEmpty())ui.label(card,"Nenhuma compra registrada",11,ui.muted)
                     goal.cycles.asReversed().forEachIndexed {index,cycle->
-                        ui.action(card,"Ciclo ${goal.cycles.size-index} · ${if(cycle.reward==1)"1 livro comprado" else "${cycle.reward} livros comprados"} · ${ReadingDays.label(ReadingDays.at(cycle.at))}"){
+                        val bought=if(cycle.purchased.isNotEmpty()) cycle.purchased.joinToString(", ") else if(cycle.reward==1)"1 livro comprado" else "${cycle.reward} livros comprados"
+                        ui.action(card,"Ciclo ${goal.cycles.size-index} · $bought · ${ReadingDays.label(ReadingDays.at(cycle.at))}"){
                             val body=ui.column().apply {setPadding(ui.dp(20),ui.dp(10),ui.dp(20),ui.dp(10))}
+                            if(cycle.purchased.isNotEmpty()){
+                                ui.label(body,"Comprado: ${cycle.purchased.joinToString(", ")}",13,ui.accent,bold=true)
+                            }
                             cycle.books.forEach {creditRow(body,it,false,emptyList())}
-                            tracked(AlertDialog.Builder(activity).setTitle("Livros deste ciclo").setView(ScrollView(activity).apply {addView(body)}).setNegativeButton("Fechar",null).create())
+                            tracked(AlertDialog.Builder(activity).setTitle("Livros deste ciclo").setView(ScrollView(activity).apply {addView(body)})
+                                .setNeutralButton(if(cycle.purchased.isEmpty())"Informar comprado" else "Editar comprado"){_,_->openEditCyclePurchasedDialog(entry,goal,cycle)}
+                                .setNegativeButton("Fechar",null).create())
                         }.apply {background=null;setTextColor(ui.muted);gravity=Gravity.START;textSize=11f}
                     }
                 }
@@ -180,10 +289,424 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
             dialogs.clear()
         }
     }
+
+    /** Galeria centered editorial Purchase Cycle modal: cover-tinted top glow, stacked rewards, purchased book tracking, and cycle history. */
+    private fun openPurchaseGalleryModal(goalId:String){
+        if(!valid())return
+        val entry=store.entries().firstOrNull {it.id==goalId} ?: return
+        val goal=entry.goal ?: return
+        val books=repo.books(true)
+        val sessions=repo.sessions()
+        val now=System.currentTimeMillis()
+        val progress=ReadingGoals.progress(goal,books,sessions,now)
+        val unlockedCycles=ReadingGoals.unlockedCycles(goal,progress)
+        val stackedRewards=ReadingGoals.stackedRewards(goal,progress)
+        val currentSurplus=ReadingGoals.currentCycleProgress(goal,progress)
+        val unlocked=unlockedCycles>0
+        val hairline=ui.galleryHairline(105)
+        val mintGreen=Color.rgb(126,224,164)
+
+        showGalleryModal(
+            heading=goal.name,
+            trailingLabel="Editar",
+            onTrailing={dlg->dlg.dismiss();edit(entry)},
+        ){ body, dialog ->
+            // 1) Cycle ribbon + stack badge
+            val ribbon=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+            body.addView(ribbon,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+            ribbon.addView(
+                gText("CICLO ${goal.cycles.size+1} · ${goal.target}:${goal.reward}",10f,ui.muted,medium=true).apply {letterSpacing=0.10f},
+                LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)},
+            )
+            if(unlockedCycles>1){
+                ribbon.addView(
+                    gText("×$unlockedCycles acumulados",10.5f,mintGreen,medium=true).apply {
+                        setPadding(ui.dp(9),ui.dp(4),ui.dp(9),ui.dp(4))
+                        background=ui.pillShape(Color.argb(36,79,166,116),12,Color.argb(120,126,224,164))
+                    },
+                    LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(8)},
+                )
+            }
+            ribbon.addView(
+                gText("${minOf(progress.value,goal.target.toLong())}/${goal.target} lidos",11.5f,ui.accent,medium=true).apply {fontFeatureSettings="tnum"},
+                LinearLayout.LayoutParams(-2,-2),
+            )
+
+            // 2) Mini-cover slots (left) + Editorial Reward Ticket (right)
+            val heroRow=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+            body.addView(heroRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+
+            val slotsCol=ui.column()
+            heroRow.addView(slotsCol,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(12)})
+            val coversRow=ui.row().apply {gravity=Gravity.TOP}
+            slotsCol.addView(coversRow,LinearLayout.LayoutParams(-1,-2))
+            val slots=minOf(goal.target,3)
+            repeat(slots){ index ->
+                val credit=progress.credits.getOrNull(index)
+                val item=ui.column()
+                coversRow.addView(item,LinearLayout.LayoutParams(0,-2,1f).apply {if(index<slots-1) marginEnd=ui.dp(7)})
+                val frame=FrameLayout(activity).apply {
+                    tag="goal-purchase-book:${goal.id}:$index"
+                    contentDescription=credit?.let {"${it.title} · concluído"} ?: "Livro ${index+1} · a ler"
+                    background=if(credit!=null) ui.pillShape(ui.activeSurface,6,ui.tint(ui.accent,165)) else GradientDrawable().apply {
+                        setColor(Color.TRANSPARENT);cornerRadius=ui.dp(6).toFloat()
+                        setStroke(ui.dp(1).coerceAtLeast(1),ui.galleryHairline(160),ui.dp(3).toFloat(),ui.dp(3).toFloat())
+                    }
+                    clipToOutline=true
+                }
+                item.addView(frame,LinearLayout.LayoutParams(-1,ui.dp(78)))
+                val bmp=credit?.let {images.thumbnail(it.cover)}
+                if(bmp!=null){
+                    frame.addView(ImageView(activity).apply {scaleType=ImageView.ScaleType.CENTER_CROP;setImageBitmap(bmp)},FrameLayout.LayoutParams(-1,-1))
+                }else {
+                    frame.addView(
+                        gText(credit?.title?.take(1)?.uppercase() ?: "${index+1}",20f,if(credit!=null)ui.accent else ui.muted,serif=true).apply {gravity=Gravity.CENTER},
+                        FrameLayout.LayoutParams(-1,-1),
+                    )
+                }
+                if(credit!=null){
+                    val checkBadge=ImageView(activity).apply {
+                        background=GradientDrawable().apply {shape=GradientDrawable.OVAL;setColor(ui.accent)}
+                        setImageDrawable(ui.symbol("check",ui.background,10))
+                        setPadding(ui.dp(3),ui.dp(3),ui.dp(3),ui.dp(3))
+                    }
+                    frame.addView(checkBadge,FrameLayout.LayoutParams(ui.dp(16),ui.dp(16),Gravity.BOTTOM or Gravity.END).apply {setMargins(0,0,ui.dp(4),ui.dp(4))})
+                    frame.isFocusable=true
+                    frame.setOnClickListener {
+                        tracked(AlertDialog.Builder(activity)
+                            .setTitle(credit.title)
+                            .setMessage(listOf(credit.author,"Concluído · ${ReadingDays.label(ReadingDays.at(credit.at))}").filter {it.isNotBlank()}.joinToString("\n"))
+                            .setNeutralButton("Retirar desta meta"){_,_->excludeFromPurchaseGoal(entry,goal,credit.bookId)}
+                            .setNegativeButton("Fechar",null).create())
+                    }
+                }
+                item.addView(
+                    gText(credit?.title ?: "A ler",9.5f,if(credit!=null)ui.text else ui.muted).apply {
+                        maxLines=2;ellipsize=TextUtils.TruncateAt.END;gravity=Gravity.CENTER_HORIZONTAL
+                    },
+                    LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(5)},
+                )
+            }
+            if(goal.target>slots){
+                slotsCol.addView(
+                    gText("+ ${goal.target-slots} no ciclo",10f,ui.muted),
+                    LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(4)},
+                )
+            }
+
+            // Editorial Reward Ticket (supports stacked rewards!)
+            val displayCount=if(unlocked) stackedRewards else goal.reward
+            val ticketBg=if(unlocked) ui.pillShape(ui.activeSurface,16,ui.tint(ui.accent,180)) else ui.pillShape(ui.background,16,ui.galleryHairline(125))
+            val ticket=ui.column().apply {
+                tag="goal-purchase-reward:${goal.id}"
+                gravity=Gravity.CENTER
+                background=ticketBg
+                setPadding(ui.dp(8),ui.dp(10),ui.dp(8),ui.dp(10))
+                contentDescription="$displayCount ${if(displayCount==1)"livro" else "livros"} · ${if(unlocked)"compra liberada" else "compra bloqueada"}"
+            }
+            heroRow.addView(ticket,LinearLayout.LayoutParams(ui.dp(94),ui.dp(118)))
+            ticket.addView(
+                gText(if(unlockedCycles>1)"STACK" else "RECOMPENSA",8.5f,if(unlocked)ui.accent else ui.muted,medium=true).apply {
+                    letterSpacing=0.10f;gravity=Gravity.CENTER
+                },
+                LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)},
+            )
+            ticket.addView(
+                gText(displayCount.toString(),38f,if(unlocked)ui.accent else ui.muted,serif=true).apply {
+                    gravity=Gravity.CENTER;fontFeatureSettings="tnum"
+                },
+                LinearLayout.LayoutParams(-1,-2),
+            )
+            ticket.addView(
+                gText(if(displayCount==1)"livro" else "livros",10.5f,if(unlocked)ui.text else ui.muted).apply {gravity=Gravity.CENTER},
+                LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(6)},
+            )
+            val seal=ui.row().apply {gravity=Gravity.CENTER}
+            ticket.addView(seal,LinearLayout.LayoutParams(-2,-2))
+            seal.addView(ImageView(activity).apply {setImageDrawable(ui.symbol(if(unlocked)"check" else "lock",if(unlocked)mintGreen else ui.muted,11))},LinearLayout.LayoutParams(ui.dp(11),ui.dp(11)).apply {marginEnd=ui.dp(3)})
+            seal.addView(gText(if(unlocked && unlockedCycles>1)"×$unlockedCycles LIVRES" else if(unlocked)"LIBERADA" else "BLOQUEADA",8.5f,if(unlocked)mintGreen else ui.muted,medium=true),LinearLayout.LayoutParams(-2,-2))
+
+            // 3) Status + surplus progress toward next stack
+            val statusStr=when {
+                unlocked && unlockedCycles>1 -> "$unlockedCycles ciclos acumulados ($stackedRewards ${if(stackedRewards==1)"livro" else "livros"} para comprar)"
+                unlocked -> "Compra liberada para ${if(goal.reward==1)"1 livro" else "${goal.reward} livros"}"
+                progress.remaining(goal)==1L -> "Falta 1 leitura para liberar"
+                else -> "Faltam ${progress.remaining(goal)} leituras para liberar"
+            }
+            body.addView(
+                gText(statusStr,12f,if(unlocked)mintGreen else ui.accent,medium=true).apply {tag="goal-purchase-status:${goal.id}"},
+                LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(if(unlocked && currentSurplus>0) 3 else 12)},
+            )
+            if(unlocked && currentSurplus>0){
+                body.addView(
+                    gText("+$currentSurplus/${goal.target} lidos para o próximo stack",11f,ui.muted).apply {fontFeatureSettings="tnum"},
+                    LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)},
+                )
+            }
+
+            // 4) Primary action when unlocked
+            if(unlocked){
+                val btn=gText("Registrar compra",13f,ui.background,medium=true).apply {
+                    tag="goal-purchase:${goal.id}"
+                    gravity=Gravity.CENTER;minHeight=ui.dp(44);isFocusable=true
+                    setPadding(ui.dp(16),ui.dp(11),ui.dp(16),ui.dp(11))
+                    background=ui.pillRipple(ui.accent,22,darkRipple=true)
+                    setOnClickListener {
+                        dialog.dismiss()
+                        openRedeemPurchaseGalleryModal(entry,goal)
+                    }
+                }
+                body.addView(btn,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(16)})
+            }
+
+            // 5) Current cycle credits list
+            body.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {bottomMargin=ui.dp(12)})
+            val cycleBooks=progress.credits.take(goal.target)
+            body.addView(
+                gText("LEITURAS DO CICLO ATUAL",10f,ui.muted,medium=true).apply {letterSpacing=0.08f},
+                LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(8)},
+            )
+            if(cycleBooks.isEmpty()){
+                body.addView(gText("Nenhuma leitura contabilizada ainda",12f,ui.muted),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+            }else {
+                cycleBooks.forEach { credit ->
+                    val row=ui.row().apply {
+                        tag="goal-credit:${credit.bookId}";gravity=Gravity.CENTER_VERTICAL
+                        setPadding(0,ui.dp(6),0,ui.dp(6));isFocusable=true
+                        setOnClickListener {
+                            tracked(AlertDialog.Builder(activity)
+                                .setTitle(credit.title)
+                                .setMessage(listOf(credit.author,"Concluído · ${ReadingDays.label(ReadingDays.at(credit.at))}").filter {it.isNotBlank()}.joinToString("\n"))
+                                .setNeutralButton("Retirar desta meta"){_,_->excludeFromPurchaseGoal(entry,goal,credit.bookId)}
+                                .setNegativeButton("Fechar",null).create())
+                        }
+                    }
+                    body.addView(row,LinearLayout.LayoutParams(-1,-2))
+                    val img=ImageView(activity).apply {
+                        scaleType=ImageView.ScaleType.CENTER_CROP
+                        background=ui.pillShape(ui.activeSurface,4);clipToOutline=true
+                        setImageDrawable(br.com.viblio.ui.ViblioBookMarkDrawable(ui.accent,Color.WHITE,scale=0.52f,backgroundColor=ui.activeSurface))
+                        images.thumbnail(credit.cover)?.let(::setImageBitmap)
+                    }
+                    row.addView(img,LinearLayout.LayoutParams(ui.dp(30),ui.dp(44)).apply {marginEnd=ui.dp(10)})
+                    val col=ui.column();row.addView(col,LinearLayout.LayoutParams(0,-2,1f))
+                    col.addView(gText(credit.title,13f,ui.text,medium=true).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
+                    col.addView(gText("Concluído · ${ReadingDays.label(ReadingDays.at(credit.at))}",10.5f,ui.muted),LinearLayout.LayoutParams(-1,-2))
+                }
+                body.addView(View(activity),LinearLayout.LayoutParams(1,ui.dp(10)))
+            }
+
+            // 6) History of redeemed cycles (showing WHICH book was purchased!)
+            body.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {bottomMargin=ui.dp(12)})
+            body.addView(
+                gText("HISTÓRICO DE CICLOS",10f,ui.muted,medium=true).apply {letterSpacing=0.08f},
+                LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(8)},
+            )
+            if(goal.cycles.isEmpty()){
+                body.addView(gText("Nenhuma compra registrada ainda",12f,ui.muted),LinearLayout.LayoutParams(-1,-2))
+            }else {
+                goal.cycles.asReversed().forEachIndexed { idx, cycle ->
+                    val cycleNumber=goal.cycles.size-idx
+                    val boughtTitle=cycle.purchased.joinToString(", ")
+                    val row=ui.row().apply {
+                        gravity=Gravity.CENTER_VERTICAL
+                        setPadding(0,ui.dp(9),0,ui.dp(9));isFocusable=true
+                        setOnClickListener {
+                            dialog.dismiss()
+                            openCycleDetailGalleryModal(entry,goal,cycle,cycleNumber)
+                        }
+                    }
+                    body.addView(row,LinearLayout.LayoutParams(-1,-2))
+                    val col=ui.column();row.addView(col,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)})
+                    val primaryText=if(boughtTitle.isNotBlank()) boughtTitle else if(cycle.reward==1)"1 livro comprado" else "${cycle.reward} livros comprados"
+                    col.addView(
+                        gText(primaryText,13.5f,if(boughtTitle.isNotBlank()) ui.text else ui.muted,serif=boughtTitle.isNotBlank()).apply {
+                            maxLines=1;ellipsize=TextUtils.TruncateAt.END
+                        },
+                        LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)},
+                    )
+                    col.addView(
+                        gText("Ciclo $cycleNumber · ${ReadingDays.label(ReadingDays.at(cycle.at))}",10.5f,ui.muted),
+                        LinearLayout.LayoutParams(-1,-2),
+                    )
+                    row.addView(gText("›",17f,ui.accent),LinearLayout.LayoutParams(-2,-2))
+                    if(idx<goal.cycles.lastIndex){
+                        body.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1))
+                    }
+                }
+            }
+        }
+    }
+
+    /** Centered Galeria modal to record which book was bought with the unlocked purchase reward. */
+    private fun openRedeemPurchaseGalleryModal(entry:ReadingGoalStore.Entry,goal:ReadingGoal){
+        if(!valid())return
+        val hairline=ui.galleryHairline(110)
+        val wishlistHandler=onRedeemPurchaseWithWishlist
+        showGalleryModal(heading="Registrar compra"){ body, dialog ->
+            val countLabel=if(goal.reward==1)"1 livro liberado neste ciclo" else "${goal.reward} livros liberados neste ciclo"
+            body.addView(gText(countLabel,12f,ui.accent,medium=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+
+            body.addView(
+                gText("LIVRO COMPRADO",10f,ui.muted,medium=true).apply {letterSpacing=0.08f},
+                LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(6)},
+            )
+            val titleInput=EditText(activity).apply {
+                hint="Ex.: Duna"
+                setTextColor(ui.text);setHintTextColor(ui.tint(ui.muted,160))
+                textSize=15f;isSingleLine=true
+                filters=arrayOf(InputFilter.LengthFilter(200))
+                background=ui.pillShape(ui.background,14,ui.galleryHairline(135))
+                setPadding(ui.dp(14),ui.dp(11),ui.dp(14),ui.dp(11))
+            }
+            body.addView(titleInput,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
+
+            // Quick pickers: Estante & Wishlist
+            val pickRow=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+            body.addView(pickRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(16)})
+            val shelfBtn=gText("Escolher da Estante",11.5f,ui.text,medium=true).apply {
+                gravity=Gravity.CENTER;setPadding(ui.dp(12),ui.dp(9),ui.dp(12),ui.dp(9))
+                background=ui.pillRipple(ui.activeSurface,16,ui.galleryHairline(140));isFocusable=true
+                setOnClickListener {
+                    val shelfBooks=repo.books(false).sortedByDescending {it.updatedAt}
+                    if(shelfBooks.isEmpty()){
+                        Toast.makeText(activity,"Nenhum livro na Estante.",Toast.LENGTH_SHORT).show()
+                        return@setOnClickListener
+                    }
+                    val labels=shelfBooks.map {b->if(b.author.isNotBlank())"${b.title} · ${b.author}" else b.title}.toTypedArray()
+                    tracked(AlertDialog.Builder(activity).setTitle("Escolher da Estante").setItems(labels){_,idx->
+                        titleInput.setText(shelfBooks[idx].title)
+                        titleInput.setSelection(titleInput.text.length)
+                    }.setNegativeButton("Cancelar",null).create())
+                }
+            }
+            pickRow.addView(shelfBtn,LinearLayout.LayoutParams(0,-2,1f).apply {if(wishlistHandler!=null) marginEnd=ui.dp(8)})
+
+            if(wishlistHandler!=null){
+                val wishBtn=gText("Da Wishlist ›",11.5f,ui.accent,medium=true).apply {
+                    gravity=Gravity.CENTER;setPadding(ui.dp(12),ui.dp(9),ui.dp(12),ui.dp(9))
+                    background=ui.pillRipple(ui.activeSurface,16,ui.tint(ui.accent,140));isFocusable=true
+                    setOnClickListener {
+                        val fresh=ReadingGoals.progress(goal,repo.books(true),repo.sessions(),System.currentTimeMillis())
+                        if(fresh.value>=goal.target){
+                            dialog.dismiss()
+                            wishlistHandler(entry,goal,fresh)
+                        }else {
+                            Toast.makeText(activity,"A compra ainda não foi liberada.",Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+                pickRow.addView(wishBtn,LinearLayout.LayoutParams(0,-2,1f))
+            }
+
+            body.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {bottomMargin=ui.dp(14)})
+
+            val actions=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+            body.addView(actions,LinearLayout.LayoutParams(-1,-2))
+            actions.addView(
+                gText("Cancelar",12.5f,ui.muted,medium=true).apply {
+                    gravity=Gravity.CENTER;minHeight=ui.dp(42);isFocusable=true
+                    setPadding(ui.dp(14),ui.dp(10),ui.dp(14),ui.dp(10))
+                    background=ui.pillRipple(ui.activeSurface,20,ui.galleryHairline(130))
+                    setOnClickListener {dialog.dismiss();openPurchaseGalleryModal(entry.id)}
+                },
+                LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)},
+            )
+            actions.addView(
+                gText("Confirmar compra",12.5f,ui.background,medium=true).apply {
+                    gravity=Gravity.CENTER;minHeight=ui.dp(42);isFocusable=true
+                    setPadding(ui.dp(14),ui.dp(10),ui.dp(14),ui.dp(10))
+                    background=ui.pillRipple(ui.accent,20,darkRipple=true)
+                    setOnClickListener {
+                        val typed=titleInput.text.toString().trim()
+                        val bought=if(typed.isNotEmpty()) listOf(typed) else emptyList()
+                        mutate {
+                            val fresh=ReadingGoals.progress(goal,repo.books(true),repo.sessions(),System.currentTimeMillis())
+                            store.save(ReadingGoals.purchase(goal,fresh,System.currentTimeMillis(),bought),entry.raw)
+                        }
+                        dialog.dismiss()
+                        openPurchaseGalleryModal(entry.id)
+                    }
+                },
+                LinearLayout.LayoutParams(0,-2,1.4f),
+            )
+        }
+    }
+
+    /** Centered Galeria modal inspecting a completed cycle's read books + purchased book (editable). */
+    private fun openCycleDetailGalleryModal(entry:ReadingGoalStore.Entry,goal:ReadingGoal,cycle:GoalCycle,cycleNumber:Int){
+        if(!valid())return
+        val hairline=ui.galleryHairline(105)
+        showGalleryModal(
+            heading="Ciclo $cycleNumber",
+            trailingLabel=if(cycle.purchased.isEmpty())"Informar livro" else "Editar livro",
+            onTrailing={dlg->dlg.dismiss();openEditCyclePurchasedDialog(entry,goal,cycle,reopenGalleryCycle=cycleNumber)},
+        ){ body, _ ->
+            body.addView(gText(ReadingDays.label(ReadingDays.at(cycle.at)),11.5f,ui.muted),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
+
+            body.addView(gText("LIVRO COMPRADO",10f,ui.muted,medium=true).apply {letterSpacing=0.08f},LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
+            val bought=cycle.purchased.joinToString(", ")
+            body.addView(
+                gText(if(bought.isNotBlank()) bought else "Não informado",17f,if(bought.isNotBlank()) ui.accent else ui.muted,serif=bought.isNotBlank()),
+                LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)},
+            )
+
+            body.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {bottomMargin=ui.dp(12)})
+            body.addView(gText("LIDOS PARA LIBERAR",10f,ui.muted,medium=true).apply {letterSpacing=0.08f},LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(8)})
+            cycle.books.forEach { credit ->
+                val row=ui.row().apply {gravity=Gravity.CENTER_VERTICAL;setPadding(0,ui.dp(6),0,ui.dp(6))}
+                body.addView(row,LinearLayout.LayoutParams(-1,-2))
+                val img=ImageView(activity).apply {
+                    scaleType=ImageView.ScaleType.CENTER_CROP
+                    background=ui.pillShape(ui.activeSurface,4);clipToOutline=true
+                    setImageDrawable(br.com.viblio.ui.ViblioBookMarkDrawable(ui.accent,Color.WHITE,scale=0.52f,backgroundColor=ui.activeSurface))
+                    images.thumbnail(credit.cover)?.let(::setImageBitmap)
+                }
+                row.addView(img,LinearLayout.LayoutParams(ui.dp(30),ui.dp(44)).apply {marginEnd=ui.dp(10)})
+                val col=ui.column();row.addView(col,LinearLayout.LayoutParams(0,-2,1f))
+                col.addView(gText(credit.title,13f,ui.text,medium=true).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
+                col.addView(gText(ReadingDays.label(ReadingDays.at(credit.at)),10.5f,ui.muted),LinearLayout.LayoutParams(-1,-2))
+            }
+        }
+    }
+
+    private fun openEditCyclePurchasedDialog(entry:ReadingGoalStore.Entry,goal:ReadingGoal,cycle:GoalCycle,reopenGalleryCycle:Int?=null){
+        val body=ui.column().apply {setPadding(ui.dp(20),ui.dp(10),ui.dp(20),ui.dp(4))}
+        val input=EditText(activity).apply {
+            hint="Título do livro comprado"
+            setText(cycle.purchased.joinToString(", "))
+            setTextColor(ui.text);setHintTextColor(ui.muted)
+            isSingleLine=true;filters=arrayOf(InputFilter.LengthFilter(200))
+        }
+        body.addView(input,LinearLayout.LayoutParams(-1,-2))
+        tracked(AlertDialog.Builder(activity)
+            .setTitle("Livro comprado")
+            .setView(body)
+            .setNeutralButton("Escolher da Estante"){_,_->
+                val shelfBooks=repo.books(false).sortedByDescending {it.updatedAt}
+                if(shelfBooks.isEmpty()){Toast.makeText(activity,"Nenhum livro na Estante.",Toast.LENGTH_SHORT).show();return@setNeutralButton}
+                val labels=shelfBooks.map {b->if(b.author.isNotBlank())"${b.title} · ${b.author}" else b.title}.toTypedArray()
+                tracked(AlertDialog.Builder(activity).setTitle("Escolher da Estante").setItems(labels){_,idx->
+                    val chosenTitle=shelfBooks[idx].title
+                    mutate {store.save(ReadingGoals.updateCyclePurchased(goal,cycle.id,listOf(chosenTitle)),entry.raw)}
+                    if(reopenGalleryCycle!=null) openPurchaseGalleryModal(entry.id)
+                }.setNegativeButton("Cancelar",null).create())
+            }
+            .setPositiveButton("Salvar"){_,_->
+                val raw=input.text.toString().trim()
+                val list=if(raw.isEmpty()) emptyList() else listOf(raw)
+                mutate {store.save(ReadingGoals.updateCyclePurchased(goal,cycle.id,list),entry.raw)}
+                if(reopenGalleryCycle!=null) openPurchaseGalleryModal(entry.id)
+            }
+            .setNegativeButton("Cancelar",null).create())
+    }
+
     private fun purchase(parent:LinearLayout,entry:ReadingGoalStore.Entry,goal:ReadingGoal,progress:GoalProgress):LinearLayout {
-        val unlocked=progress.value>=goal.target
+        val unlockedCycles=ReadingGoals.unlockedCycles(goal,progress)
+        val stackedRewards=ReadingGoals.stackedRewards(goal,progress)
+        val unlocked=unlockedCycles>0
         val ribbon=ui.row();parent.addView(ribbon)
-        ui.label(ribbon,"CICLO ${goal.cycles.size+1}",9,ui.muted).apply {letterSpacing=.12f;layoutParams=LinearLayout.LayoutParams(0,-2,1f)}
+        ui.label(ribbon,if(unlockedCycles>1)"CICLO ${goal.cycles.size+1} · ×$unlockedCycles STACK" else "CICLO ${goal.cycles.size+1}",9,ui.muted).apply {letterSpacing=.12f;layoutParams=LinearLayout.LayoutParams(0,-2,1f)}
         ui.label(ribbon,"${minOf(progress.value,goal.target.toLong())} / ${goal.target} lidos",11,ui.accent).layoutParams=LinearLayout.LayoutParams(-2,-2)
         val body=ui.row();parent.addView(body,LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(8);bottomMargin=ui.dp(8)})
         val earned=ui.column();body.addView(earned,LinearLayout.LayoutParams(0,-2,1f))
@@ -210,15 +733,16 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
             ui.label(item,credit?.title ?: "A ler",9,if(credit!=null)ui.text else ui.muted).apply {maxLines=2;ellipsize=android.text.TextUtils.TruncateAt.END;(layoutParams as LinearLayout.LayoutParams).topMargin=ui.dp(4)}
         }
         if(goal.target>slots)ui.label(earned,"+ ${goal.target-slots} no ciclo",10,ui.muted)
-        val ticket=ui.column().apply {gravity=Gravity.CENTER;background=ui.outlined(if(unlocked)ui.activeSurface else ui.surface,if(unlocked)ui.accent else ui.lineColor,0);setPadding(ui.dp(5),ui.dp(6),ui.dp(5),ui.dp(6));tag="goal-purchase-reward:${goal.id}";contentDescription="${goal.reward} ${if(goal.reward==1)"livro" else "livros"} · ${if(unlocked)"compra liberada" else "compra bloqueada"}"}
+        val displayReward=if(unlocked) stackedRewards else goal.reward
+        val ticket=ui.column().apply {gravity=Gravity.CENTER;background=ui.outlined(if(unlocked)ui.activeSurface else ui.surface,if(unlocked)ui.accent else ui.lineColor,0);setPadding(ui.dp(5),ui.dp(6),ui.dp(5),ui.dp(6));tag="goal-purchase-reward:${goal.id}";contentDescription="$displayReward ${if(displayReward==1)"livro" else "livros"} · ${if(unlocked)"compra liberada" else "compra bloqueada"}"}
         body.addView(ticket,LinearLayout.LayoutParams(ui.dp(88),ui.dp(112)).apply {marginStart=ui.dp(12)})
-        ui.label(ticket,"RECOMPENSA",8,ui.muted).apply {gravity=Gravity.CENTER;letterSpacing=.08f}
-        title(ticket,goal.reward.toString(),42,ui.accent).apply {gravity=Gravity.CENTER;(layoutParams as LinearLayout.LayoutParams).bottomMargin=0}
-        ui.label(ticket,if(goal.reward==1)"livro" else "livros",10,ui.text).gravity=Gravity.CENTER
+        ui.label(ticket,if(unlockedCycles>1)"STACK" else "RECOMPENSA",8,ui.muted).apply {gravity=Gravity.CENTER;letterSpacing=.08f}
+        title(ticket,displayReward.toString(),42,ui.accent).apply {gravity=Gravity.CENTER;(layoutParams as LinearLayout.LayoutParams).bottomMargin=0}
+        ui.label(ticket,if(displayReward==1)"livro" else "livros",10,ui.text).gravity=Gravity.CENTER
         val seal=ui.row().apply {gravity=Gravity.CENTER};ticket.addView(seal)
         seal.addView(ImageView(activity).apply {setImageDrawable(ui.symbol(if(unlocked)"check" else "lock",if(unlocked)ui.accent else ui.muted,12))},LinearLayout.LayoutParams(ui.dp(12),ui.dp(12)).apply {marginEnd=ui.dp(3)})
         ui.label(seal,if(unlocked)"LIBERADA" else "BLOQUEADA",8,if(unlocked)ui.accent else ui.muted).layoutParams=LinearLayout.LayoutParams(-2,-2)
-        ui.label(parent,if(unlocked)"Compra liberada" else if(progress.remaining(goal)==1L)"Falta 1 leitura" else "Faltam ${progress.remaining(goal)} leituras",11,ui.accent).tag="goal-purchase-status:${goal.id}"
+        ui.label(parent,if(unlockedCycles>1)"$unlockedCycles compras acumuladas ($stackedRewards livros)" else if(unlocked)"Compra liberada" else if(progress.remaining(goal)==1L)"Falta 1 leitura" else "Faltam ${progress.remaining(goal)} leituras",11,ui.accent).tag="goal-purchase-status:${goal.id}"
         if(progress.value>goal.target)ui.label(parent,"+ ${numbers.format(progress.value-goal.target)} para o próximo ciclo",10,ui.muted)
         val actions=ui.row();parent.addView(actions)
         val details=ui.column();actions.addView(details,LinearLayout.LayoutParams(0,-2,1f))
@@ -245,9 +769,17 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
     private fun confirmPurchase(entry:ReadingGoalStore.Entry){
         val goal=requireNotNull(entry.goal)
         val wishlistHandler=onRedeemPurchaseWithWishlist
+        val inputWrap=ui.column().apply {setPadding(ui.dp(20),ui.dp(6),ui.dp(20),0)}
+        val bookInput=EditText(activity).apply {
+            hint="Livro comprado (opcional)"
+            setTextColor(ui.text);setHintTextColor(ui.muted)
+            isSingleLine=true;filters=arrayOf(InputFilter.LengthFilter(200))
+        }
+        inputWrap.addView(bookInput,LinearLayout.LayoutParams(-1,-2))
         val builder=AlertDialog.Builder(activity)
             .setTitle("Registrar compra?")
             .setMessage(if(goal.reward==1)"Compra liberada para 1 livro." else "Compra liberada para ${goal.reward} livros.")
+            .setView(inputWrap)
             .setNegativeButton("Cancelar",null)
         if(wishlistHandler!=null){
             builder.setPositiveButton("Escolher da Wishlist"){_,_->
@@ -257,12 +789,14 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
             }
             builder.setNeutralButton("Registrar manual"){_,_->mutate {
                 val progress=ReadingGoals.progress(goal,repo.books(true),repo.sessions(),System.currentTimeMillis())
-                store.save(ReadingGoals.purchase(goal,progress,System.currentTimeMillis()),entry.raw)
+                val typed=bookInput.text.toString().trim()
+                store.save(ReadingGoals.purchase(goal,progress,System.currentTimeMillis(),if(typed.isNotEmpty()) listOf(typed) else emptyList()),entry.raw)
             }}
         } else {
             builder.setPositiveButton("Registrar"){_,_->mutate {
                 val progress=ReadingGoals.progress(goal,repo.books(true),repo.sessions(),System.currentTimeMillis())
-                store.save(ReadingGoals.purchase(goal,progress,System.currentTimeMillis()),entry.raw)
+                val typed=bookInput.text.toString().trim()
+                store.save(ReadingGoals.purchase(goal,progress,System.currentTimeMillis(),if(typed.isNotEmpty()) listOf(typed) else emptyList()),entry.raw)
             }}
         }
         tracked(builder.create())

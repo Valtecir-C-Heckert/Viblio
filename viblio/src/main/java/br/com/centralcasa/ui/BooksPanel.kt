@@ -4,8 +4,15 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorFilter
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -56,6 +63,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     var pinchStep=1.2
     var separateShelfStatistics=false
     var onStatisticsBack:(()->Unit)?=null
+    var onDetailBack:(()->Boolean)?=null
     var planCatalogProvider:()->br.com.centralcasa.books.catalog.BookCatalog?={null}
     var onOpenPlannedBook:((String)->Unit)?=null
     var onAddCatalogToShelf:((br.com.centralcasa.books.catalog.CatalogBook)->Unit)?=null
@@ -260,6 +268,10 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             newBook = state.getBoolean("books.edit.new")
         }
     }
+    private fun backFromDetail() {
+        if (onDetailBack?.invoke() == true) return
+        show(if (selectedCollection != null) "collection" else "library")
+    }
     fun back(): Boolean {
         if(screen=="library" && manualDraft!=null) {
             AlertDialog.Builder(activity).setTitle("Cancelar organização?").setMessage("A ordem salva será mantida.")
@@ -279,7 +291,9 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         } else if (screen == "editor") {
             AlertDialog.Builder(activity).setTitle("Sair da edição?").setMessage("As alterações não salvas serão descartadas.")
                 .setPositiveButton("Descartar alterações") { _, _ -> fields.clear(); editor = null; show(if (selected == null) "library" else "detail") }.setNegativeButton("Continuar editando", null).show()
-        } else show(if (screen == "detail" && selectedCollection != null) "collection" else "library")
+        } else if (screen == "detail") {
+            backFromDetail()
+        } else show("library")
         return true
     }
     fun canPinchColumnsAt(x: Float, y: Float): Boolean {
@@ -1298,6 +1312,116 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         return dialog
     }
 
+    /** Galeria centered editorial modal: 24dp rounded surface, subtle radial accent top wash, 1dp hairline border, title + × dismiss. */
+    private fun showCenteredModal(
+        palette: DisplayUi,
+        title: String? = null,
+        build: (LinearLayout, android.app.Dialog) -> Unit,
+    ): android.app.Dialog {
+        val dialog = android.app.Dialog(activity)
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+        val radiusPx = palette.dp(24).toFloat()
+        val strokePx = palette.dp(1).coerceAtLeast(1).toFloat()
+        val cardBg = object : Drawable() {
+            private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = palette.surface }
+            private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+            private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = strokePx
+                color = palette.galleryHairline(145)
+            }
+            private val clipPath = Path()
+            private val rect = RectF()
+            private var lastW = 0; private var lastH = 0
+            override fun draw(canvas: Canvas) {
+                val b = bounds; val w = b.width(); val h = b.height()
+                if (w <= 0 || h <= 0) return
+                rect.set(b.left.toFloat(), b.top.toFloat(), b.right.toFloat(), b.bottom.toFloat())
+                if (w != lastW || h != lastH) {
+                    lastW = w; lastH = h
+                    clipPath.reset()
+                    clipPath.addRoundRect(rect, radiusPx, radiusPx, Path.Direction.CW)
+                    val cx = b.left + w * 0.5f; val top = b.top.toFloat()
+                    val r = (w * 0.72f).coerceAtLeast(palette.dp(180).toFloat())
+                    glowPaint.shader = android.graphics.RadialGradient(
+                        cx, top, r,
+                        intArrayOf(palette.tint(palette.accent, 46), palette.tint(palette.accent, 16), Color.TRANSPARENT),
+                        floatArrayOf(0f, 0.52f, 1f),
+                        android.graphics.Shader.TileMode.CLAMP,
+                    )
+                }
+                canvas.save()
+                canvas.clipPath(clipPath)
+                canvas.drawRect(rect, fillPaint)
+                canvas.drawRect(rect.left, rect.top, rect.right, (rect.top + palette.dp(200)).coerceAtMost(rect.bottom), glowPaint)
+                canvas.restore()
+                val half = strokePx * 0.5f
+                rect.inset(half, half)
+                canvas.drawRoundRect(rect, radiusPx, radiusPx, borderPaint)
+            }
+            override fun setAlpha(alpha: Int) {}
+            override fun setColorFilter(colorFilter: ColorFilter?) {}
+            @Deprecated("Deprecated in Java")
+            override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+        }
+
+        val outerWrap = FrameLayout(activity).apply {
+            setPadding(palette.dp(14), palette.dp(20), palette.dp(14), palette.dp(20))
+        }
+        val card = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            background = cardBg
+            setPadding(palette.dp(18), palette.dp(14), palette.dp(18), palette.dp(18))
+        }
+        val topBar = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        card.addView(topBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = palette.dp(10) })
+        if (!title.isNullOrBlank()) {
+            topBar.addView(
+                TextView(activity).apply {
+                    text = title; textSize = 19f; setTextColor(palette.text); includeFontPadding = false
+                    typeface = Typeface.create("serif", Typeface.NORMAL)
+                    maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                },
+                LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = palette.dp(8) },
+            )
+        } else {
+            topBar.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f))
+        }
+        topBar.addView(
+            TextView(activity).apply {
+                text = "×"; textSize = 22f; setTextColor(palette.muted); includeFontPadding = false
+                gravity = Gravity.CENTER; contentDescription = "Fechar"; isFocusable = true
+                background = palette.pillRipple(Color.TRANSPARENT, 18)
+                setOnClickListener { dialog.dismiss() }
+            },
+            LinearLayout.LayoutParams(palette.dp(34), palette.dp(34)),
+        )
+        val content = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        val scroll = ScrollView(activity).apply {
+            isVerticalScrollBarEnabled = false
+            addView(content, FrameLayout.LayoutParams(-1, -2))
+        }
+        card.addView(scroll, LinearLayout.LayoutParams(-1, -2))
+        outerWrap.addView(card, FrameLayout.LayoutParams(-1, -2))
+        build(content, dialog)
+        dialog.setContentView(outerWrap)
+        dialog.window?.apply {
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.CENTER)
+            setDimAmount(0.64f)
+        }
+        dialog.show()
+        return dialog
+    }
+
+    private fun showMenuModal(palette: DisplayUi, title: String, build: (LinearLayout, android.app.Dialog) -> Unit): android.app.Dialog =
+        if (baseUi.rectilinear && settings.galleryUiStyle()) showCenteredModal(palette, title, build)
+        else showBottomSheet(palette, build)
+
     private fun addAccountSheetCard(body: LinearLayout, palette: DisplayUi, dialog: android.app.Dialog) {
         val accountAction = onAccount ?: return
         val badge = accountMenuBadge?.invoke() ?: AccountMenuBadge()
@@ -1433,7 +1557,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
 
     private fun shelfMenuSheet(all: List<LibraryBook>, useManual: Boolean) {
         val palette = baseUi
-        showBottomSheet(palette) { body, dialog ->
+        showMenuModal(palette, "Estante") { body, dialog ->
             addAccountSheetCard(body, palette, dialog)
 
             sheetSectionHeader(body, palette, "Visual do app")
@@ -2121,9 +2245,9 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             return
         }
         val header = row(parent)
-        ui.action(header, "") { show(if (selectedCollection != null) "collection" else "library") }.apply {
+        ui.action(header, "") { backFromDetail() }.apply {
             setCompoundDrawables(ui.symbol("back"), null, null, null)
-            contentDescription = "Voltar à estante"
+            contentDescription = "Voltar"
             layoutParams = LinearLayout.LayoutParams(ui.dp(44), ui.dp(44))
             background = ui.ripple(Color.TRANSPARENT)
         }
@@ -2363,9 +2487,9 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         }
 
         val header = row(parent)
-        ui.action(header, "") { show(if (selectedCollection != null) "collection" else "library") }.apply {
+        ui.action(header, "") { backFromDetail() }.apply {
             setCompoundDrawables(palette.symbol("back", accent), null, null, null)
-            contentDescription = "Voltar à estante"
+            contentDescription = "Voltar"
             layoutParams = LinearLayout.LayoutParams(ui.dp(44), ui.dp(44))
             background = ui.ripple(Color.TRANSPARENT)
         }
@@ -2739,7 +2863,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         }
 
         val palette = bookPalette(b)
-        showBottomSheet(palette) { body, dialog ->
+        showMenuModal(palette, b.title) { body, dialog ->
             addAccountSheetCard(body, palette, dialog)
 
             sheetSectionHeader(body, palette, "Visual do app")
@@ -3261,8 +3385,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
 
         // Cover picker sheet (replaces 5 stacked buttons!)
         fun openCoverPicker() {
-            showBottomSheet(palette) { body, dialog ->
-                sheetSectionHeader(body, palette, "Capa")
+            showCenteredModal(palette, "Capa") { body, dialog ->
                 sheetRow(body, palette, "Tirar foto") {
                     dialog.dismiss(); catalogGeneration++; captureEditor()
                     launchPhoto(b, "cover", br.com.viblio.camera.BookPhotoCropActivity.SOURCE_CAMERA)
@@ -3528,8 +3651,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         )
 
         fun openCollectionCoverPicker() {
-            showBottomSheet(palette) { body, dialog ->
-                sheetSectionHeader(body, palette, "Capa da coleção")
+            showCenteredModal(palette, "Capa da coleção") { body, dialog ->
                 sheetRow(body, palette, if (c.cover.isBlank()) "Escolher imagem" else "Trocar imagem") {
                     dialog.dismiss(); captureCollectionEditor()
                     launchDocument(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "image/*" }, COLLECTION_COVER)

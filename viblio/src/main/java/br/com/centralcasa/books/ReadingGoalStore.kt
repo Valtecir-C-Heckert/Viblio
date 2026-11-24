@@ -24,7 +24,11 @@ class ReadingGoalStore(context:Context) {
     private fun credit(c:GoalCredit)=JSONObject().put("bookId",c.bookId).put("title",c.title).put("author",c.author).put("cover",c.cover).put("at",c.at)
     private fun encode(g:ReadingGoal)=JSONObject().put("v",1).put("id",g.id).put("name",g.name).put("metric",g.metric.name).put("target",g.target).put("reward",g.reward).put("period",g.period.name).put("kind",g.kind).put("createdAt",g.createdAt).put("fromAt",g.fromAt)
         .put("baseline",JSONObject().also {o->g.baseline.toSortedMap().forEach {(k,v)->o.put(k,v)}}).put("excluded",JSONArray(g.excluded.sorted()))
-        .put("cycles",JSONArray().also {a->g.cycles.forEach {c->a.put(JSONObject().put("id",c.id).put("at",c.at).put("reward",c.reward).put("books",JSONArray().also {b->c.books.forEach {b.put(credit(it))}}))}}).toString()
+        .put("cycles",JSONArray().also {a->g.cycles.forEach {c->
+            val obj=JSONObject().put("id",c.id).put("at",c.at).put("reward",c.reward).put("books",JSONArray().also {b->c.books.forEach {b.put(credit(it))}})
+            if(c.purchased.isNotEmpty()) obj.put("purchased",JSONArray(c.purchased))
+            a.put(obj)
+        }}).toString()
     private fun decode(raw:String):ReadingGoal {
         require(raw.length<=MAX_JSON && raw.toByteArray().size<=MAX_JSON)
         var depth=0;var quoted=false;var escape=false
@@ -34,6 +38,14 @@ class ReadingGoalStore(context:Context) {
         val excluded=o.getJSONArray("excluded");require(excluded.length()<=5000)
         val cycles=o.getJSONArray("cycles");require(cycles.length()<=256)
         return ReadingGoal(id=o.getString("id"),name=o.getString("name"),metric=GoalMetric.valueOf(o.getString("metric")),target=o.getInt("target"),reward=o.getInt("reward"),period=GoalPeriod.valueOf(o.getString("period")),kind=o.getString("kind"),createdAt=o.getLong("createdAt"),fromAt=o.optLong("fromAt",o.getLong("createdAt")),
-            baseline=base.keys().asSequence().associateWith {base.getInt(it)},excluded=(0 until excluded.length()).map {excluded.getString(it)}.toSet(),cycles=(0 until cycles.length()).map {i->val c=cycles.getJSONObject(i);val b=c.getJSONArray("books");require(b.length() in 1..100);GoalCycle(c.getString("id"),c.getLong("at"),c.getInt("reward"),(0 until b.length()).map {n->val v=b.getJSONObject(n);GoalCredit(v.getString("bookId"),v.getString("title"),v.getString("author"),v.getString("cover"),v.getLong("at"))})}).validated()
+            baseline=base.keys().asSequence().associateWith {base.getInt(it)},excluded=(0 until excluded.length()).map {excluded.getString(it)}.toSet(),cycles=(0 until cycles.length()).map {i->
+                val c=cycles.getJSONObject(i);val b=c.getJSONArray("books");require(b.length() in 1..100)
+                val pArr=c.optJSONArray("purchased")
+                val purchased=if(pArr==null) emptyList() else {
+                    require(pArr.length()<=100)
+                    (0 until pArr.length()).mapNotNull {idx->pArr.optString(idx,"").trim().take(200).ifEmpty {null}}
+                }
+                GoalCycle(c.getString("id"),c.getLong("at"),c.getInt("reward"),(0 until b.length()).map {n->val v=b.getJSONObject(n);GoalCredit(v.getString("bookId"),v.getString("title"),v.getString("author"),v.getString("cover"),v.getLong("at"))},purchased)
+            }).validated()
     }
 }

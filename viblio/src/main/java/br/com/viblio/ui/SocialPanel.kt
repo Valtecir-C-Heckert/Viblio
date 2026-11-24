@@ -424,11 +424,15 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         if(isGalleryMode()){
             val header=ui.row().apply {gravity=Gravity.CENTER_VERTICAL;setPadding(0,0,0,ui.dp(10))}
             parent.addView(header,LinearLayout.LayoutParams(-1,-2))
-            ui.icon(header,"back","Voltar",38){back()}.apply {layoutParams=LinearLayout.LayoutParams(ui.dp(38),ui.dp(38)).apply {marginEnd=ui.dp(6)}}
+            ui.icon(header,"back","Voltar",38){back()}.apply {
+                setPadding(ui.dp(8),ui.dp(8),ui.dp(8),ui.dp(8))
+                layoutParams=LinearLayout.LayoutParams(ui.dp(38),ui.dp(38)).apply {marginEnd=ui.dp(6)}
+            }
             if(cover.isNotBlank()){
                 val mini=ImageView(activity).apply {
                     scaleType=ImageView.ScaleType.CENTER_CROP
                     background=ui.pillShape(ui.activeSurface,4)
+                    setImageDrawable(ViblioBookMarkDrawable(ui.accent,Color.WHITE,scale=0.45f,backgroundColor=ui.activeSurface))
                     clipToOutline=true;elevation=ui.dp(4).toFloat()
                 }
                 header.addView(mini,LinearLayout.LayoutParams(ui.dp(26),ui.dp(39)).apply {marginEnd=ui.dp(10)})
@@ -1026,7 +1030,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll)?.post {if(active && identity==profile && who()==profile && context==Triple(club,clubPage,stage))activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll)?.scrollTo(0,0)}
     }
     private fun clubNavigate(page:String){clubPage=page;stage=null;draft="";replyToId=null;replyToUser="";reset(preserveClub=true);load();scrollTop()}
-    private fun openDiscussion(s:JsonObject){stage=id(s.s("id"));stageInfo=s;draft="";replyToId=null;replyToUser="";scrollToBottom=true;reset(preserveClub=true);load()}
+    private fun openDiscussion(s:JsonObject){val sid=id(s.s("id")) ?: return;stage=sid;stageInfo=s;draft="";replyToId=null;replyToUser="";scrollToBottom=true;reset(preserveClub=true);load()}
     private fun chooseBook(){booksQuery="";clubNavigate("books")}
     private fun clubBooks(parent:LinearLayout){
         title(parent,"Livros dos participantes",23)
@@ -1379,18 +1383,35 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 val comments=s.n("comments")
                 val unread=s.n("unread")
 
+                val spineColor=if(isPast)ui.tint(ui.accent,100) else hairline
+                val spineX=ui.dp(11).toFloat()
+                val spineTop=ui.dp(20).toFloat()
+                val spineW=ui.dp(2).coerceAtLeast(2).toFloat()
                 val tRow=ui.row().apply {
                     tag="club-stage:${s.s("id")}"
                     gravity=Gravity.TOP
+                    if(!isLast){
+                        background=object:Drawable() {
+                            private val p=Paint(Paint.ANTI_ALIAS_FLAG).apply {color=spineColor;strokeWidth=spineW;strokeCap=Paint.Cap.ROUND}
+                            override fun draw(canvas:Canvas){
+                                val bottom=bounds.bottom.toFloat()
+                                if(bottom>spineTop+2f) canvas.drawLine(spineX,spineTop,spineX,bottom,p)
+                            }
+                            override fun setAlpha(alpha:Int){}
+                            override fun setColorFilter(colorFilter:ColorFilter?){}
+                            @Deprecated("Deprecated in Java")
+                            override fun getOpacity()=PixelFormat.TRANSLUCENT
+                        }
+                    }
                     if(!isCurrent && isPast){
                         isFocusable=true;setOnClickListener {if(!busy)openDiscussion(s)}
                     }
                 }
                 root.addView(tRow,LinearLayout.LayoutParams(-1,-2))
 
-                // Left vertical timeline rail + node
+                // Left vertical timeline node (spine drawn on tRow without MATCH_PARENT inside WRAP_CONTENT)
                 val railCol=ui.column().apply {gravity=Gravity.CENTER_HORIZONTAL}
-                tRow.addView(railCol,LinearLayout.LayoutParams(ui.dp(22),-1).apply {marginEnd=ui.dp(12)})
+                tRow.addView(railCol,LinearLayout.LayoutParams(ui.dp(22),-2).apply {marginEnd=ui.dp(12)})
 
                 val node=TextView(activity).apply {
                     gravity=Gravity.CENTER;textSize=9f;includeFontPadding=false
@@ -1422,12 +1443,6 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                     }
                 }
                 railCol.addView(node,LinearLayout.LayoutParams(ui.dp(16),ui.dp(16)).apply {topMargin=ui.dp(2)})
-                if(!isLast){
-                    railCol.addView(
-                        View(activity).apply {setBackgroundColor(if(isPast)ui.tint(ui.accent,100) else hairline)},
-                        LinearLayout.LayoutParams(ui.dp(2).coerceAtLeast(2),0,1f).apply {topMargin=ui.dp(4)},
-                    )
-                }
 
                 // Right stage content
                 val contentCol=ui.column().apply {setPadding(0,0,0,ui.dp(if(isLast) 8 else 18))}
@@ -1493,69 +1508,6 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                     )
                 }
             }
-        }
-
-        // 4) Borderless Club Reading Feed
-        root.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {topMargin=ui.dp(12);bottomMargin=ui.dp(18)})
-        root.addView(gText("Nesta leitura",18.5f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
-        if(clubFeed.isNotEmpty()){
-            clubFeed.forEachIndexed {idx,event->
-                val panel=ui.row().apply {
-                    tag="club-feed:${event.s("id")}";gravity=Gravity.TOP
-                    setPadding(0,ui.dp(10),0,ui.dp(10))
-                }
-                root.addView(panel,LinearLayout.LayoutParams(-1,-2))
-                val actorName=event.o("actor").s("username")
-                monogramCircle(panel,ClubFormatting.monogram(actorName,1),26,ui,10.5f,10,highlight=actorName==accounts.username)
-                val bodyCol=ui.column();panel.addView(bodyCol,LinearLayout.LayoutParams(0,-2,1f))
-                val head=ui.row().apply {gravity=Gravity.CENTER_VERTICAL};bodyCol.addView(head,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)})
-                head.addView(gText("@$actorName",12f,if(actorName==accounts.username)ui.accent else ui.text,medium=true),LinearLayout.LayoutParams(0,-2,1f))
-                head.addView(gText(date(event.n("occurred_at"),"dd/MM HH'h'mm"),10f,ui.muted).apply {fontFeatureSettings="tnum"},LinearLayout.LayoutParams(-2,-2))
-                val body=event.o("data")
-                when(event.s("kind")){
-                    "progress"->{
-                        bodyCol.addView(gText("Página ${body.n("page")} de $pages",15.5f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
-                        bodyCol.addView(gText(if(body.n("page")>=body.n("previous_page"))"Atualizou a leitura" else "Corrigiu o progresso",11f,ui.muted),LinearLayout.LayoutParams(-1,-2))
-                    }
-                    "comment"->{
-                        bodyCol.addView(gText("Comentou · até pág. ${body.n("page_limit")}",10.5f,ui.accent),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
-                        bodyCol.addView(gText(body.s("body"),13f,ui.text).apply {maxLines=3;ellipsize=TextUtils.TruncateAt.END},LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
-                        bodyCol.addView(
-                            gText("Ver conversa →",11f,ui.accent,medium=true).apply {
-                                isFocusable=true;setOnClickListener {stages.firstOrNull {it.s("id")==event.s("stage_id")}?.let(::openDiscussion)}
-                            },
-                            LinearLayout.LayoutParams(-2,-2),
-                        )
-                    }
-                    "read"->{
-                        val durStr=if(body.n("duration_ms")>0)" · ${duration(body.n("duration_ms"))}" else ""
-                        bodyCol.addView(gText("${body.n("pages")} páginas$durStr",15.5f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)})
-                        bodyCol.addView(gText("pág. ${body.n("start_page")} → ${body.n("end_page")}",11f,ui.muted),LinearLayout.LayoutParams(-1,-2))
-                    }
-                    "finished"->{
-                        bodyCol.addView(gText("Terminou de ler",15.5f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2))
-                        if(body.n("total_duration_ms")>0)bodyCol.addView(gText(duration(body.n("total_duration_ms")),11f,ui.accent),LinearLayout.LayoutParams(-1,-2))
-                    }
-                    "rated"->bodyCol.addView(gText("Avaliou ★ ${body.s("rating")}",15f,ui.accent,serif=true),LinearLayout.LayoutParams(-1,-2))
-                    "started"->bodyCol.addView(gText("Começou a leitura",15f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2))
-                    "schedule"->bodyCol.addView(gText("Prazo atualizado · ${date(instant(body.s("due_at")),"dd/MM")}",14f,ui.accent,serif=true),LinearLayout.LayoutParams(-1,-2))
-                    "stage"->bodyCol.addView(gText("Nova etapa · pág. ${body.n("page_limit")}",14.5f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2))
-                    "completed"->bodyCol.addView(gText("Leitura concluída pelo clube",15f,ui.accent,serif=true),LinearLayout.LayoutParams(-1,-2))
-                }
-                if(idx<clubFeed.lastIndex){
-                    root.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1))
-                }
-            }
-        }
-        if(clubFeed.isEmpty() && !busy)root.addView(gText("Sem atividades ainda",12f,ui.muted),LinearLayout.LayoutParams(-1,-2))
-        if(clubFeedCursor!=null && clubFeed.size<200){
-            root.addView(
-                gText("Mais atividades",12f,ui.accent,medium=true).apply {
-                    gravity=Gravity.CENTER;setPadding(0,ui.dp(12),0,ui.dp(8));isFocusable=true
-                    setOnClickListener {loadClubFeed(more=true)}
-                },
-                LinearLayout.LayoutParams(-1,-2),
-            )
         }
     }
 
@@ -1862,8 +1814,11 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         replyBannerLabel?.text=if(id!=null)"Respondendo a @$replyToUser" else ""
     }
     private fun discussionControls(){
-        composer?.isEnabled=loaded && !busy && stageInfo.y("is_open")
-        sendComment?.isEnabled=loaded && !busy && draft.isNotBlank() && stageInfo.y("is_open")
+        val open=loaded && !busy && stageInfo.y("is_open")
+        composer?.isEnabled=open
+        val canSend=open && draft.isNotBlank()
+        sendComment?.isEnabled=canSend
+        sendComment?.alpha=if(canSend) 1f else 0.45f
         liveStatus?.text=error
         liveStatus?.visibility=if(error.isBlank())View.GONE else View.VISIBLE
         updateReplyBanner()
@@ -1909,7 +1864,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             if(!validDiscussion(epoch,profile,path))return@post
             messagesFetching=false
             result.fold({response->
-                rows=response.list("items",40);cursor=response.s("next_cursor").ifBlank {null};stageInfo=response.o("stage");eventsApplied=seen;error=""
+                rows=response.list("items",40);cursor=response.s("next_cursor").ifBlank {null};if(response.has("stage"))stageInfo=response.o("stage");eventsApplied=seen;error=""
                 messageList?.let(::renderMessages);discussionControls();startLive()
                 if(eventsSeen>eventsApplied){handler.removeCallbacks(liveRefresh);handler.postDelayed(liveRefresh,300)}
             },{failure->
@@ -2014,14 +1969,14 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         composer=field
 
         val send=if(gallery){
-            Button(activity).apply {
-                text="Enviar";isAllCaps=false;textSize=12.5f;gravity=Gravity.CENTER
-                setTextColor(ui.background)
-                typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+            gText("Enviar",12.5f,ui.background,medium=true).apply {
+                gravity=Gravity.CENTER
                 background=ui.pillRipple(ui.accent,20,darkRipple=true)
                 tag="club-send";minHeight=ui.dp(40);minimumHeight=ui.dp(40)
-                setPadding(ui.dp(16),ui.dp(8),ui.dp(16),ui.dp(8))
+                setPadding(ui.dp(16),ui.dp(10),ui.dp(16),ui.dp(10))
+                isFocusable=true
                 setOnClickListener {
+                    if(!isEnabled)return@setOnClickListener
                     val payload=JsonObject().apply {
                         addProperty("body",draft)
                         replyToId?.let {addProperty("reply_to_id",it)}
@@ -2094,17 +2049,29 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             val isMine=username==accounts.username
 
             if(gallery){
-                // Literary Margin Notes Stream (ZERO rectangular boxes! Hairline separated, 2dp accent left rule on replies)
-                val rowHost=ui.row().apply {tag="club-discussion-message:${m.n("id")}";gravity=Gravity.TOP}
-                parent.addView(rowHost,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(12)})
-                if(hasReply){
-                    rowHost.addView(
-                        View(activity).apply {setBackgroundColor(ui.accent)},
-                        LinearLayout.LayoutParams(ui.dp(2).coerceAtLeast(2),-1).apply {marginStart=ui.dp(8);marginEnd=ui.dp(12)},
-                    )
+                // Literary Margin Notes Stream (ZERO rectangular boxes! Hairline separated, 2dp accent left rule on replies via Drawable)
+                val barW=ui.dp(2).coerceAtLeast(2).toFloat()
+                val barColor=ui.accent
+                val msgCol=ui.column().apply {
+                    tag="club-discussion-message:${m.n("id")}"
+                    if(hasReply){
+                        setPadding(ui.dp(14),0,0,0)
+                        background=object:Drawable() {
+                            private val p=Paint(Paint.ANTI_ALIAS_FLAG).apply {color=barColor}
+                            override fun draw(canvas:Canvas){
+                                canvas.drawRect(bounds.left.toFloat(),bounds.top.toFloat(),bounds.left+barW,bounds.bottom.toFloat(),p)
+                            }
+                            override fun setAlpha(alpha:Int){}
+                            override fun setColorFilter(colorFilter:ColorFilter?){}
+                            @Deprecated("Deprecated in Java")
+                            override fun getOpacity()=PixelFormat.TRANSLUCENT
+                        }
+                    }
                 }
-                val msgCol=ui.column()
-                rowHost.addView(msgCol,LinearLayout.LayoutParams(0,-2,1f))
+                parent.addView(msgCol,LinearLayout.LayoutParams(-1,-2).apply {
+                    bottomMargin=ui.dp(12)
+                    if(hasReply) marginStart=ui.dp(8)
+                })
 
                 if(hasReply){
                     val snippet=replyTo.s("body").take(80)
@@ -2168,48 +2135,47 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 if(idx<ordered.lastIndex){
                     parent.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {bottomMargin=ui.dp(12)})
                 }
-                return@forEachIndexed
-            }
-
-            val message=ui.column().apply {
-                tag="club-discussion-message:${m.n("id")}"
-                setPadding(ui.dp(12),ui.dp(10),ui.dp(12),ui.dp(10))
-                background=ui.outlined(cardBg,borderColor,0)
-            }
-            parent.addView(message,LinearLayout.LayoutParams(-1,-2).apply {
-                bottomMargin=ui.dp(8)
-                if(hasReply)marginStart=ui.dp(14)
-            })
-            if(hasReply){
-                text(message,"↳ em resposta a @${replyTo.s("username")}",10,ui.accent).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END}
-                val snippet=replyTo.s("body")
-                if(snippet.isNotBlank())text(message,snippet,11,ui.muted).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END;layoutParams=LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(6)}}
-            }
-            val header=ui.row().apply {gravity=Gravity.CENTER_VERTICAL};message.addView(header,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
-            monogramBox(header,ClubFormatting.monogram(username,1),22,ui,10f,8)
-            text(header,"@$username",12,if(isMine)ui.accent else ui.text,bold=true).layoutParams=LinearLayout.LayoutParams(0,-2,1f)
-            text(header,if(sentMs>0)date(sentMs,"HH'h'mm") else "",10,ui.muted).apply {gravity=Gravity.END;layoutParams=LinearLayout.LayoutParams(-2,-2)}
-            text(message,m.s("body"),14,ui.text).apply {
-                tag="club-message:${m.n("id")}"
-                setLineSpacing(0f,1.18f)
-                if(m.y("can_delete"))setOnLongClickListener {confirm("Apagar esta mensagem?"){mutate("/v1/clubs/$club/stages/$stage/messages/${m.n("id")}","DELETE")};true}
-            }
-            if(stageInfo.y("is_open") || m.y("can_delete")){
-                val footer=ui.row().apply {gravity=Gravity.END};message.addView(footer,LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(4)})
-                if(stageInfo.y("is_open")){
-                    TextView(activity).apply {
-                        text="Responder";textSize=10f;setTextColor(ui.muted);typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
-                        setPadding(ui.dp(6),ui.dp(4),ui.dp(6),ui.dp(2));isFocusable=true
-                        setOnClickListener {replyToId=m.n("id");replyToUser=username;updateReplyBanner();composer?.requestFocus()}
-                        footer.addView(this,LinearLayout.LayoutParams(-2,-2))
-                    }
+            }else {
+                val message=ui.column().apply {
+                    tag="club-discussion-message:${m.n("id")}"
+                    setPadding(ui.dp(12),ui.dp(10),ui.dp(12),ui.dp(10))
+                    background=ui.outlined(cardBg,borderColor,0)
                 }
-                if(m.y("can_delete")){
-                    TextView(activity).apply {
-                        text="Apagar";textSize=10f;setTextColor(ui.muted);typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
-                        setPadding(ui.dp(10),ui.dp(4),ui.dp(2),ui.dp(2));isFocusable=true
-                        setOnClickListener {confirm("Apagar esta mensagem?"){mutate("/v1/clubs/$club/stages/$stage/messages/${m.n("id")}","DELETE")}}
-                        footer.addView(this,LinearLayout.LayoutParams(-2,-2))
+                parent.addView(message,LinearLayout.LayoutParams(-1,-2).apply {
+                    bottomMargin=ui.dp(8)
+                    if(hasReply)marginStart=ui.dp(14)
+                })
+                if(hasReply){
+                    text(message,"↳ em resposta a @${replyTo.s("username")}",10,ui.accent).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END}
+                    val snippet=replyTo.s("body")
+                    if(snippet.isNotBlank())text(message,snippet,11,ui.muted).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END;layoutParams=LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(6)}}
+                }
+                val header=ui.row().apply {gravity=Gravity.CENTER_VERTICAL};message.addView(header,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
+                monogramBox(header,ClubFormatting.monogram(username,1),22,ui,10f,8)
+                text(header,"@$username",12,if(isMine)ui.accent else ui.text,bold=true).layoutParams=LinearLayout.LayoutParams(0,-2,1f)
+                text(header,if(sentMs>0)date(sentMs,"HH'h'mm") else "",10,ui.muted).apply {gravity=Gravity.END;layoutParams=LinearLayout.LayoutParams(-2,-2)}
+                text(message,m.s("body"),14,ui.text).apply {
+                    tag="club-message:${m.n("id")}"
+                    setLineSpacing(0f,1.18f)
+                    if(m.y("can_delete"))setOnLongClickListener {confirm("Apagar esta mensagem?"){mutate("/v1/clubs/$club/stages/$stage/messages/${m.n("id")}","DELETE")};true}
+                }
+                if(stageInfo.y("is_open") || m.y("can_delete")){
+                    val footer=ui.row().apply {gravity=Gravity.END};message.addView(footer,LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(4)})
+                    if(stageInfo.y("is_open")){
+                        TextView(activity).apply {
+                            text="Responder";textSize=10f;setTextColor(ui.muted);typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                            setPadding(ui.dp(6),ui.dp(4),ui.dp(6),ui.dp(2));isFocusable=true
+                            setOnClickListener {replyToId=m.n("id");replyToUser=username;updateReplyBanner();composer?.requestFocus()}
+                            footer.addView(this,LinearLayout.LayoutParams(-2,-2))
+                        }
+                    }
+                    if(m.y("can_delete")){
+                        TextView(activity).apply {
+                            text="Apagar";textSize=10f;setTextColor(ui.muted);typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                            setPadding(ui.dp(10),ui.dp(4),ui.dp(2),ui.dp(2));isFocusable=true
+                            setOnClickListener {confirm("Apagar esta mensagem?"){mutate("/v1/clubs/$club/stages/$stage/messages/${m.n("id")}","DELETE")}}
+                            footer.addView(this,LinearLayout.LayoutParams(-2,-2))
+                        }
                     }
                 }
             }

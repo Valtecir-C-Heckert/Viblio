@@ -289,29 +289,42 @@ object BookInfoDialog {
         if (add != null) {
             val addBtn = Button(activity).apply {
                 text = "Adicionar à Estante"
-                isAllCaps = false; textSize = 13f; gravity = Gravity.CENTER
+                isAllCaps = false; textSize = 12.5f; gravity = Gravity.CENTER
+                maxLines = 1; ellipsize = TextUtils.TruncateAt.END
                 setTextColor(ui.background)
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 background = ui.pillRipple(ui.accent, 24, darkRipple = true)
                 minHeight = ui.dp(44); minimumHeight = ui.dp(44)
-                setPadding(ui.dp(16), ui.dp(10), ui.dp(16), ui.dp(10))
+                setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8))
                 setOnClickListener { dialogRef?.dismiss(); add() }
             }
-            actions.addView(addBtn, LinearLayout.LayoutParams(0, -2, 1f))
+            actions.addView(addBtn, LinearLayout.LayoutParams(0, ui.dp(44), 1f))
 
             if (onToggleWishlist != null) {
                 var saved = initialWishlisted
-                val wishBtn = TextView(activity).apply {
-                    gravity = Gravity.CENTER; textSize = 16f; isFocusable = true
-                    minWidth = ui.dp(44); minHeight = ui.dp(44)
+                val wishBtn = ImageView(activity).apply {
+                    scaleType = ImageView.ScaleType.CENTER_INSIDE
+                    isFocusable = true
+                    setPadding(ui.dp(11), ui.dp(11), ui.dp(11), ui.dp(11))
                     fun sync() {
-                        text = if (saved) "♥" else "♡"
+                        val iconColor = if (saved) Color.rgb(126, 224, 164) else ui.text
+                        setImageDrawable(HeartIconDrawable(filled = saved, color = iconColor))
                         contentDescription = if (saved) "Remover de Quero comprar" else "Salvar em Quero comprar"
-                        setTextColor(if (saved) Color.rgb(126, 224, 164) else ui.text)
-                        background = ui.pillRipple(
-                            if (saved) Color.argb(38, 79, 166, 116) else ui.activeSurface,
-                            22,
-                            if (saved) Color.argb(135, 126, 224, 164) else ui.galleryHairline(140),
+                        val fill = if (saved) Color.argb(38, 79, 166, 116) else ui.activeSurface
+                        val stroke = if (saved) Color.argb(135, 126, 224, 164) else ui.galleryHairline(140)
+                        val circle = android.graphics.drawable.GradientDrawable().apply {
+                            shape = android.graphics.drawable.GradientDrawable.OVAL
+                            setColor(fill)
+                            setStroke(ui.dp(1).coerceAtLeast(1), stroke)
+                        }
+                        val mask = android.graphics.drawable.GradientDrawable().apply {
+                            shape = android.graphics.drawable.GradientDrawable.OVAL
+                            setColor(Color.WHITE)
+                        }
+                        background = android.graphics.drawable.RippleDrawable(
+                            android.content.res.ColorStateList.valueOf(0x28FFFFFF),
+                            circle,
+                            mask,
                         )
                     }
                     sync()
@@ -326,11 +339,12 @@ object BookInfoDialog {
             if (onChooseCover != null) {
                 val coverBtn = TextView(activity).apply {
                     text = "Capas"; gravity = Gravity.CENTER; textSize = 12f; isFocusable = true
+                    maxLines = 1
                     typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                     setTextColor(ui.muted)
                     background = ui.pillRipple(ui.activeSurface, 22, ui.galleryHairline(140))
                     minHeight = ui.dp(44)
-                    setPadding(ui.dp(14), ui.dp(10), ui.dp(14), ui.dp(10))
+                    setPadding(ui.dp(13), ui.dp(10), ui.dp(13), ui.dp(10))
                     setOnClickListener {
                         onChooseCover.invoke { newUrl ->
                             rebindCover?.invoke(image, newUrl)
@@ -366,4 +380,45 @@ object BookInfoDialog {
         bind(image, body)
         return dialog
     }
+}
+
+/** Crisp symmetric vector heart (24x24 viewBox) so it never depends on font glyphs or stretches. */
+private class HeartIconDrawable(
+    private val filled: Boolean,
+    private val color: Int,
+) : Drawable() {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        this.color = this@HeartIconDrawable.color
+        style = if (filled) Paint.Style.FILL_AND_STROKE else Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    private val path = Path()
+
+    override fun draw(canvas: Canvas) {
+        val b = bounds
+        val w = b.width().toFloat()
+        val h = b.height().toFloat()
+        if (w <= 0f || h <= 0f) return
+        val size = minOf(w, h)
+        val ox = b.left + (w - size) * 0.5f
+        val oy = b.top + (h - size) * 0.5f
+        val s = size / 24f
+        paint.strokeWidth = (if (filled) 1.2f else 1.9f) * s
+        path.reset()
+        path.moveTo(ox + 12f * s, oy + 20.6f * s)
+        path.cubicTo(ox + 11.4f * s, oy + 20.1f * s, ox + 3.2f * s, oy + 14.5f * s, ox + 3.2f * s, oy + 8.8f * s)
+        path.cubicTo(ox + 3.2f * s, oy + 5.7f * s, ox + 5.6f * s, oy + 3.6f * s, ox + 8.3f * s, oy + 3.6f * s)
+        path.cubicTo(ox + 10.1f * s, oy + 3.6f * s, ox + 11.4f * s, oy + 4.6f * s, ox + 12f * s, oy + 5.9f * s)
+        path.cubicTo(ox + 12.6f * s, oy + 4.6f * s, ox + 13.9f * s, oy + 3.6f * s, ox + 15.7f * s, oy + 3.6f * s)
+        path.cubicTo(ox + 18.4f * s, oy + 3.6f * s, ox + 20.8f * s, oy + 5.7f * s, ox + 20.8f * s, oy + 8.8f * s)
+        path.cubicTo(ox + 20.8f * s, oy + 14.5f * s, ox + 12.6f * s, oy + 20.1f * s, ox + 12f * s, oy + 20.6f * s)
+        path.close()
+        canvas.drawPath(path, paint)
+    }
+
+    override fun setAlpha(alpha: Int) { paint.alpha = alpha; invalidateSelf() }
+    override fun setColorFilter(colorFilter: ColorFilter?) { paint.colorFilter = colorFilter; invalidateSelf() }
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
 }

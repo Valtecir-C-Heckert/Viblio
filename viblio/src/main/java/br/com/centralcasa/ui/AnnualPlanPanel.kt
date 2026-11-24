@@ -1086,9 +1086,12 @@ class AnnualPlanPanel(
                 }
             }
 
+            val unlockedCycles = ReadingGoals.unlockedCycles(pGoal, pProg)
+            val stackedRewards = ReadingGoals.stackedRewards(pGoal, pProg)
             val doneInCycle = minOf(pProg.value, pGoal.target.toLong())
             val statusStr = if (unlocked) {
-                "${pGoal.name} · Liberada!"
+                if (unlockedCycles > 1) "${pGoal.name} · ×$unlockedCycles ($stackedRewards liberados)"
+                else "${pGoal.name} · Liberada!"
             } else {
                 val rem = pProg.remaining(pGoal)
                 "${pGoal.name} $doneInCycle/${pGoal.target} · ${if (rem == 1L) "falta 1" else "faltam $rem"}"
@@ -2131,7 +2134,7 @@ class AnnualPlanPanel(
                                     .setPositiveButton("Resgatar e cadastrar") { _, _ ->
                                         runCatching {
                                             val fresh = ReadingGoals.progress(goal, repo.books(true), repo.sessions(), System.currentTimeMillis())
-                                            goalStore.save(ReadingGoals.purchase(goal, fresh, System.currentTimeMillis()), entry.raw)
+                                            goalStore.save(ReadingGoals.purchase(goal, fresh, System.currentTimeMillis(), listOf(chosen.title)), entry.raw)
                                         }.onFailure {
                                             Toast.makeText(activity, it.message ?: "Não foi possível registrar a compra.", Toast.LENGTH_LONG).show()
                                             return@setPositiveButton
