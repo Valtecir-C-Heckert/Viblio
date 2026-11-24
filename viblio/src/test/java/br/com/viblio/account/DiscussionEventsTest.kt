@@ -85,4 +85,24 @@ class DiscussionEventsTest {
             }finally {release.countDown();api.close();worker.join(2000);stream.join(2000)}
         }
     }
+    @Test fun connectionCancelRunsOffCallingThread(){
+        val caller=Thread.currentThread()
+        val cancelThread=java.util.concurrent.atomic.AtomicReference<Thread?>()
+        val done=CountDownLatch(1)
+        val fakeCall=object:okhttp3.Call {
+            override fun request()=okhttp3.Request.Builder().url("http://127.0.0.1:1/").build()
+            override fun execute()=throw UnsupportedOperationException()
+            override fun enqueue(responseCallback:okhttp3.Callback)=throw UnsupportedOperationException()
+            override fun cancel(){cancelThread.set(Thread.currentThread());done.countDown()}
+            override fun isExecuted()=false
+            override fun isCanceled()=done.count==0L
+            override fun timeout()=okio.Timeout.NONE
+            override fun clone()=this
+        }
+        val conn=AccountConnection()
+        assertTrue(conn.attach(fakeCall))
+        conn.cancel()
+        assertTrue(done.await(2,TimeUnit.SECONDS))
+        assertNotSame(caller,cancelThread.get())
+    }
 }

@@ -9,15 +9,17 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
+private val cancelExecutor=java.util.concurrent.Executors.newCachedThreadPool {r->Thread(r,"viblio-cancel").apply {isDaemon=true}}
+private fun cancelCallAsync(value:okhttp3.Call){cancelExecutor.execute {runCatching {value.cancel()}}}
 open class AccountConnection {
     private var cancelled=false
     private var call:okhttp3.Call?=null
     @Synchronized internal fun attach(value:okhttp3.Call):Boolean {
-        if(cancelled){value.cancel();return false}
+        if(cancelled){cancelCallAsync(value);return false}
         call=value;return true
     }
     @Synchronized internal fun detach(){call=null}
-    @Synchronized fun cancel(){cancelled=true;call?.cancel();call=null}
+    @Synchronized fun cancel(){cancelled=true;val pending=call;call=null;if(pending!=null)cancelCallAsync(pending)}
 }
 class DiscussionConnection:AccountConnection()
 class AccountFailure(val code:Int,val response:JsonObject,message:String):java.io.IOException(message)
@@ -180,22 +182,29 @@ class AccountApi internal constructor(private val address:String,private val tok
         try {check(!closed){"Conexão encerrada."};return call.execute().use(read)}
         finally {activeCalls.remove(call)}
     }
-    fun cancel(){activeCalls.toList().forEach {it.cancel()};if(ownsClient)client.dispatcher.cancelAll()}
+    fun cancel(){
+        val calls=activeCalls.toList()
+        if(calls.isNotEmpty() || ownsClient) cancelExecutor.execute {
+            calls.forEach {runCatching {it.cancel()}}
+            if(ownsClient) runCatching {client.dispatcher.cancelAll()}
+        }
+    }
     fun cancel(tag:Any){
         if(tag is AccountConnection)tag.cancel()
-        activeCalls.filter {it.request().tag()===tag}.forEach {it.cancel()}
+        val calls=activeCalls.filter {it.request().tag()===tag}
+        if(calls.isNotEmpty()) cancelExecutor.execute {calls.forEach {runCatching {it.cancel()}}}
     }
     @Synchronized fun close(){
         if(closed)return
         closed=true
         if(!ownsClient){
             val calls=activeCalls.toList()
-            if(calls.isNotEmpty()) client.dispatcher.executorService.execute { calls.forEach { it.cancel() } }
+            if(calls.isNotEmpty()) cancelExecutor.execute { calls.forEach { runCatching { it.cancel() } } }
             return
         }
         // Closing an idle TLS socket writes close_notify. It must never run on the UI thread.
         client.dispatcher.executorService.execute {
-            try {cancel();client.connectionPool.evictAll()}
+            try {activeCalls.toList().forEach {runCatching {it.cancel()}};client.dispatcher.cancelAll();client.connectionPool.evictAll()}
             finally {client.dispatcher.executorService.shutdown()}
         }
     }

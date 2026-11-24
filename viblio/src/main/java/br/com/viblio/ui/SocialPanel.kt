@@ -322,7 +322,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         if(tab=="friends" && !people && friends.inDetail){friends.render(parent);return}
         if(tab!="friends" || people)images?.attach(parent)
         if(club!=null && stage!=null && !people){
-            renderDiscussionHeader(parent)
+            runCatching {renderDiscussionHeader(parent)}.onFailure {renderDiscussionFallback(parent,it)}
         }else {
             val header=ui.row().apply {gravity=Gravity.CENTER_VERTICAL};parent.addView(header,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(if(gallery && !people && club==null) 16 else 14)})
             if(people || club!=null)ui.icon(header,"back","Voltar",40){back()}.apply {layoutParams=LinearLayout.LayoutParams(ui.dp(40),ui.dp(40)).apply {marginEnd=ui.dp(4)}}
@@ -414,8 +414,22 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         if(tab=="friends" && !people){friends.render(parent);return}
         if(error.isNotBlank() && stage==null){text(parent,error,13,ui.muted);action(parent,"Tentar novamente"){load()}}
         val body=ui.column();parent.addView(body)
-        when {people->peopleView(body);tab=="feed"->feedView(body);club==null->clubsView(body);clubPage=="books"->clubBooks(body);stage!=null->discussionView(body);else->clubView(body)}
+        when {people->peopleView(body);tab=="feed"->feedView(body);club==null->clubsView(body);clubPage=="books"->clubBooks(body);stage!=null->runCatching {discussionView(body)}.onFailure {renderDiscussionFallback(body,it)};else->clubView(body)}
         if(!loaded && !busy && error.isBlank())handler.post {if(active && !loaded && !busy)load()}
+    }
+    private fun safeErrorSummary(t:Throwable):String {
+        val frame=t.stackTrace.firstOrNull {it.className.startsWith("br.com.viblio.") || it.className.startsWith("br.com.centralcasa.")}
+        val where=frame?.let {" (${frame.fileName ?: frame.className.substringAfterLast('.')}:${frame.lineNumber})"}.orEmpty()
+        val msg=t.message?.take(120)?.takeIf {it.isNotBlank()}?.let {": $it"}.orEmpty()
+        return "${t::class.java.simpleName}$msg$where"
+    }
+    private fun renderDiscussionFallback(parent:LinearLayout,t:Throwable){
+        composerDock?.let {it.removeAllViews();it.visibility=View.GONE}
+        val box=ui.column().apply {setPadding(ui.dp(14),ui.dp(14),ui.dp(14),ui.dp(14));background=ui.outlined(ui.surface,ui.lineColor,0)}
+        parent.addView(box,LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(8);bottomMargin=ui.dp(12)})
+        text(box,"Não foi possível abrir esta conversa.",14,ui.text,bold=true)
+        text(box,safeErrorSummary(t),11,ui.muted)
+        action(box,"Voltar"){back()}
     }
     private fun renderDiscussionHeader(parent:LinearLayout){
         val selected=data.list("proposals",30).firstOrNull {it.s("id")==data.o("round").s("selected_id")}
@@ -1041,7 +1055,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll)?.post {if(active && identity==profile && who()==profile && context==Triple(club,clubPage,stage))activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll)?.scrollTo(0,0)}
     }
     private fun clubNavigate(page:String){clubPage=page;stage=null;draft="";replyToId=null;replyToUser="";reset(preserveClub=true);load();scrollTop()}
-    private fun openDiscussion(s:JsonObject){val sid=id(s.s("id")) ?: return;stage=sid;stageInfo=s;draft="";replyToId=null;replyToUser="";scrollToBottom=true;reset(preserveClub=true);load()}
+    private fun openDiscussion(s:JsonObject){val sid=id(s.s("id")) ?: return;if(busy && stage==sid)return;stage=sid;stageInfo=s;draft="";replyToId=null;replyToUser="";scrollToBottom=true;reset(preserveClub=true);load()}
     private fun chooseBook(){booksQuery="";clubNavigate("books")}
     private fun clubBooks(parent:LinearLayout){
         title(parent,"Livros dos participantes",23)
@@ -1499,7 +1513,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                         gText(badge,11.5f,ui.accent,medium=true).apply {
                             tag="club-discussion:${s.s("id")}";isEnabled=!busy;isFocusable=true
                             setPadding(ui.dp(8),ui.dp(6),0,ui.dp(6))
-                            setOnClickListener {openDiscussion(s)}
+                            setOnClickListener {if(!busy)openDiscussion(s)}
                         },
                         LinearLayout.LayoutParams(-2,-2),
                     )
@@ -1876,7 +1890,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             messagesFetching=false
             result.fold({response->
                 rows=response.list("items",40);cursor=response.s("next_cursor").ifBlank {null};if(response.has("stage"))stageInfo=response.o("stage");eventsApplied=seen;error=""
-                messageList?.let(::renderMessages);discussionControls();startLive()
+                messageList?.let {list->runCatching {renderMessages(list)}.onFailure {error=safeErrorSummary(it)}};discussionControls();startLive()
                 if(eventsSeen>eventsApplied){handler.removeCallbacks(liveRefresh);handler.postDelayed(liveRefresh,300)}
             },{failure->
                 error=failure.message ?: "Não foi possível atualizar os comentários.";discussionControls()
@@ -2046,7 +2060,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 if(key!=day){
                     day=key
                     val today=ReadingDays.at(System.currentTimeMillis());val yesterday=ReadingDays.at(System.currentTimeMillis()-86400000)
-                    val dayText=when(key){today->"HOJE";yesterday->"ONTEM";else->ReadingDays.label(key).uppercase()}
+                    val dayText=when(key){today->"HOJE";yesterday->"ONTEM";else->runCatching {ReadingDays.label(key).uppercase()}.getOrDefault(key)}
                     if(gallery){
                         parent.addView(
                             gText(dayText,10f,ui.tint(ui.muted,185),medium=true).apply {letterSpacing=0.10f},
@@ -2230,7 +2244,7 @@ private class ClubCoverBackdrop(private val bitmap:Bitmap,private val baseColor:
     private val paint=Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val scrimPaint=Paint()
     override fun draw(canvas:Canvas){
-        if(bounds.isEmpty || bitmap.isRecycled)return
+        if(bounds.isEmpty || bounds.width()<=0 || bounds.height()<=0 || bitmap.isRecycled || bitmap.width<=0 || bitmap.height<=0)return
         val scale=bounds.width().toFloat()/bitmap.width.coerceAtLeast(1)
         val halfW=bitmap.width*scale/2f
         val targetH=bitmap.height*scale
