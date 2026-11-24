@@ -212,3 +212,40 @@ def test_edit_and_delete_earlier_session_recalculates_finished_time(api):
     assert finished['total_duration_ms']==60000
     assert not any(e['kind']=='read' for e in feed)
     assert finished['book']['page']==100
+
+
+def test_feed_includes_own_activity_cover_and_respects_friend_sharing(api):
+    import psycopg
+    from test_api import DSN
+    a,b,outsider=setup(api);accept(api,a,b)
+    sa=data();sb=data()
+    result(sync(api,a,sa));result(sync(api,b,sb))
+    enabled(api,a);enabled(api,b)
+    session(sa,7,20,'a1');result(sync(api,a,sa,1))
+    session(sb,7,30,'b1');result(sync(api,b,sb,1))
+
+    feed_a=get(api,a,'/v1/friends/feed')
+    assert a['user']['id'] in feed_a['visible_actor_ids']
+    assert b['user']['id'] in feed_a['visible_actor_ids']
+    actor_ids=[e['actor']['id'] for e in feed_a['items']]
+    assert a['user']['id'] in actor_ids and b['user']['id'] in actor_ids
+    own=next(e for e in feed_a['items'] if e['actor']['id']==a['user']['id'])
+    cover_url=own['book']['cover']
+    assert cover_url.startswith('/v1/friends/'+a['user']['id']+'/cover')
+    own_cover=api.get(cover_url,headers=headers(a))
+    assert own_cover.status_code==200 and own_cover.headers['content-type']=='image/jpeg'
+    assert own_cover.headers['cache-control']=='no-store'
+    assert api.get(cover_url,headers=headers(outsider)).status_code==404
+    assert api.get('/v1/friends/'+a['user']['id']+'/library',headers=headers(a)).status_code==404
+
+    # If a user disables share_activity, they still see their own events, while friends do not.
+    with psycopg.connect(DSN) as db:
+        db.execute('UPDATE public.viblio_users SET share_activity=false WHERE id=%s',(b['user']['id'],))
+    session(sb,30,45,'b2');result(sync(api,b,sb,2))
+    feed_b=get(api,b,'/v1/friends/feed')
+    b_own_pages=[e.get('end_page') for e in feed_b['items'] if e['actor']['id']==b['user']['id']]
+    assert 45 in b_own_pages and 30 in b_own_pages
+    feed_a_after=get(api,a,'/v1/friends/feed')
+    assert all(e['actor']['id']!=b['user']['id'] for e in feed_a_after['items'])
+    assert any(e['actor']['id']==a['user']['id'] for e in feed_a_after['items'])
+

@@ -169,6 +169,13 @@ internal object FeedGrouping {
         return out.sortedByDescending { it.occurredAt }
     }
 
+    fun isSelf(entry: Entry, currentUserId: String, currentUsername: String): Boolean {
+        if (currentUserId.isNotBlank() && entry.actorId.isNotBlank()) {
+            return entry.actorId.equals(currentUserId, ignoreCase = true)
+        }
+        return currentUsername.isNotBlank() && entry.actorUsername.equals(currentUsername, ignoreCase = true)
+    }
+
     fun matchesFilter(entry: Entry, filter: String): Boolean = when (filter) {
         "read" -> entry.hasRead || entry.hasStarted
         "finished" -> entry.hasFinished

@@ -19,6 +19,7 @@ import java.util.concurrent.Executors
 /** Feed, directory and club views share no private repository state with other accounts. */
 class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,private val accounts:AccountManager,private val changed:()->Unit){
     var onBackdrop:()->Unit={}
+    var onOpenOwnBook:((String)->Boolean)?=null
     var composerDock:FrameLayout?=null
     private val ui=DisplayUi(activity)
     private val feedColors=linkedMapOf<String,Int?>()
@@ -576,30 +577,38 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             }
             val book=entry.book
             val palette=coverPalette(book.s("cover"))
+            val isSelf=FeedGrouping.isSelf(entry,accounts.userId,accounts.username)
+            val openEntry={
+                if(!isSelf || entry.bookId.isBlank() || onOpenOwnBook?.invoke(entry.bookId)!=true){
+                    consult(book,entry.actorUsername)
+                }
+            }
             if(gallery){
                 val item=ui.row().apply {
                     tag="feed-event:${entry.id}"
                     gravity=Gravity.TOP
                     setPadding(0,if(firstInDay) 0 else ui.dp(14),0,ui.dp(14))
                     isFocusable=true
-                    setOnClickListener {consult(book,entry.actorUsername)}
+                    setOnClickListener {openEntry()}
                 }
                 parent.addView(item,LinearLayout.LayoutParams(-1,-2))
                 picture(item,book.s("cover"),52,78,palette,marginEndDp=14,roundedDp=5)
                 val col=ui.column()
                 item.addView(col,LinearLayout.LayoutParams(0,-2,1f))
 
-                // Line 1: @username + time (clean, no micro-avatar, no boxed badge).
+                // Line 1: Você (accent) or @username (tap opens friend shelf) + time.
                 val r1=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
                 col.addView(r1,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
-                val userLabel=gText("@${entry.actorUsername}",11f,ui.muted).apply {
+                val userLabel=gText(if(isSelf)"Você" else "@${entry.actorUsername}",11f,if(isSelf) ui.accent else ui.muted,medium=isSelf).apply {
                     maxLines=1;ellipsize=TextUtils.TruncateAt.END
-                    isFocusable=true
-                    setOnClickListener {
-                        if(entry.actorId.isNotBlank()){
-                            tab="friends";people=false;club=null;stage=null;round=null
-                            friends.openFriend(entry.actorId,entry.actorUsername)
-                            changed()
+                    if(!isSelf){
+                        isFocusable=true
+                        setOnClickListener {
+                            if(entry.actorId.isNotBlank()){
+                                tab="friends";people=false;club=null;stage=null;round=null
+                                friends.openFriend(entry.actorId,entry.actorUsername)
+                                changed()
+                            }
                         }
                     }
                 }
@@ -676,32 +685,34 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             val col=ui.column()
             row.addView(col,LinearLayout.LayoutParams(0,-2,1f))
 
-            // Row 1: micro-avatar + @username (tap opens friend shelf) + action badge + time.
+            // Row 1: micro-avatar + Você / @username (tap opens friend shelf) + action badge + time.
             val r1=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
             col.addView(r1,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(3)})
             val userTap=ui.row().apply {
                 gravity=Gravity.CENTER_VERTICAL
-                isFocusable=true
-                setOnClickListener {
-                    if(entry.actorId.isNotBlank()){
-                        tab="friends";people=false;club=null;stage=null;round=null
-                        friends.openFriend(entry.actorId,entry.actorUsername)
-                        changed()
+                if(!isSelf){
+                    isFocusable=true
+                    setOnClickListener {
+                        if(entry.actorId.isNotBlank()){
+                            tab="friends";people=false;club=null;stage=null;round=null
+                            friends.openFriend(entry.actorId,entry.actorUsername)
+                            changed()
+                        }
                     }
                 }
             }
             r1.addView(userTap,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(6)})
             val microAv=TextView(activity).apply {
-                text=entry.actorUsername.take(1).uppercase();gravity=Gravity.CENTER;textSize=9f
+                text=entry.actorUsername.ifBlank {if(isSelf)"V" else "L"}.take(1).uppercase();gravity=Gravity.CENTER;textSize=9f
                 setTextColor(palette.accent);typeface=Typeface.create("serif",Typeface.NORMAL)
                 background=android.graphics.drawable.GradientDrawable().apply {
                     shape=android.graphics.drawable.GradientDrawable.OVAL
                     setColor(palette.activeSurface)
-                    setStroke(ui.dp(1).coerceAtLeast(1),palette.lineColor)
+                    setStroke(ui.dp(1).coerceAtLeast(1),if(isSelf) palette.accent else palette.lineColor)
                 }
             }
             userTap.addView(microAv,LinearLayout.LayoutParams(ui.dp(18),ui.dp(18)).apply {marginEnd=ui.dp(5)})
-            palette.label(userTap,"@${entry.actorUsername}",11,palette.text).apply {
+            palette.label(userTap,if(isSelf)"Você" else "@${entry.actorUsername}",11,if(isSelf) palette.accent else palette.text).apply {
                 typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
                 maxLines=1;ellipsize=TextUtils.TruncateAt.END
                 layoutParams=LinearLayout.LayoutParams(0,-2,1f)
@@ -787,11 +798,11 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                 }
             }
 
-            card.setOnClickListener {consult(book,entry.actorUsername)}
+            card.setOnClickListener {openEntry()}
             card.isFocusable=true
         }
         if(loaded && !busy && shown.isEmpty() && error.isBlank()){
-            val emptyMsg=if(consolidated.isEmpty())"Nenhuma atividade dos seus amigos." else "Nenhuma atividade neste filtro."
+            val emptyMsg=if(consolidated.isEmpty())"Nenhuma atividade ainda." else "Nenhuma atividade neste filtro."
             text(parent,emptyMsg,13,ui.muted)
         }
         if(cursor!=null && rows.size<400)action(parent,"Carregar mais"){load(more=true)}

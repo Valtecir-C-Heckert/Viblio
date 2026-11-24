@@ -201,7 +201,8 @@ def mount_friends(app,connect,storage,current):
     @app.get('/v1/friends/{other}/cover')
     def cover(other:uuid.UUID,book_id:str=Query(min_length=1,max_length=200),revision:int=Query(ge=1,le=2**63-1),user=Depends(current)):
         with connect() as db:
-            allowed(db,user['id'],other)
+            if other!=user['id']:
+                allowed(db,user['id'],other)
             row=db.execute('SELECT revision,filename FROM public.viblio_library_versions WHERE user_id=%s ORDER BY revision DESC LIMIT 1',(other,)).fetchone()
             if not row or revision!=row['revision']:raise HTTPException(404,'Capa desatualizada. Atualize a estante.')
             filename=row['filename']

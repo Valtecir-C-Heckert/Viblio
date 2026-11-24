@@ -19,7 +19,7 @@ def complete(book):
 
 def record_activity(db,owner,previous,snapshot,revision):
     setting=db.execute('SELECT share_activity,activity_enabled_at FROM public.viblio_users WHERE id=%s',(owner,)).fetchone()
-    if not setting['share_activity'] or not setting['activity_enabled_at']:return
+    if not setting or not setting['activity_enabled_at']:return
     now=datetime.now(timezone.utc);start=max(setting['activity_enabled_at'],now-timedelta(days=RETENTION_DAYS))
     floor=int(start.timestamp()*1000);ceiling=int((now+timedelta(minutes=5)).timestamp()*1000)
     lib=snapshot['library'];old=(previous or {}).get('library',{})
@@ -116,14 +116,14 @@ def mount_activity(app,connect,current):
         with connect() as db:
             friends=db.execute('''SELECT CASE WHEN user_low=%s THEN user_high ELSE user_low END id
                 FROM public.viblio_friendships WHERE (user_low=%s OR user_high=%s) AND status='accepted' FOR SHARE''',(user['id'],user['id'],user['id'])).fetchall()
-            actors=[r['id'] for r in friends]
-            visibility=db.execute('SELECT id FROM public.viblio_users WHERE id=ANY(%s::uuid[]) AND share_activity',(actors,)).fetchall()
-            actors=[r['id'] for r in visibility]
+            friend_ids=[r['id'] for r in friends]
+            visibility=db.execute('SELECT id FROM public.viblio_users WHERE id=ANY(%s::uuid[]) AND share_activity',(friend_ids,)).fetchall() if friend_ids else []
+            actors=[r['id'] for r in visibility]+[user['id']]
             rows=db.execute('''SELECT a.*,u.username FROM public.viblio_activity a
-                JOIN public.viblio_users u ON u.id=a.user_id AND u.share_activity
+                JOIN public.viblio_users u ON u.id=a.user_id AND (u.share_activity OR u.id=%s)
                 WHERE a.user_id=ANY(%s::uuid[]) AND a.occurred_at>=now()-interval '180 days'
                 AND (%s::timestamptz IS NULL OR (a.occurred_at,a.id)<(%s,%s))
-                ORDER BY a.occurred_at DESC,a.id DESC LIMIT 41''',(actors,position[0] if position else None,position[0] if position else None,position[1] if position else None)).fetchall() if actors else []
+                ORDER BY a.occurred_at DESC,a.id DESC LIMIT 41''',(user['id'],actors,position[0] if position else None,position[0] if position else None,position[1] if position else None)).fetchall()
             page_rows=rows[:40]
             pairs=list({(r['user_id'],r['book_id']) for r in page_rows})
             needed_users=[p[0] for p in pairs]
@@ -158,5 +158,6 @@ def mount_activity(app,connect,current):
             entry=book_by_pair.get((r['user_id'],r['book_id']))
             if not entry:continue
             rev,book=entry
-            items.append(dict(id=str(r['id']),actor=dict(id=str(r['user_id']),username=r['username']),kind=r['kind'],occurred_at=int(r['occurred_at'].timestamp()*1000),book=project(book,r['user_id'],rev),**r['data']))
+            actor_name=r['username'] or ('' if r['user_id']==user['id'] else 'Leitor')
+            items.append(dict(id=str(r['id']),actor=dict(id=str(r['user_id']),username=actor_name),kind=r['kind'],occurred_at=int(r['occurred_at'].timestamp()*1000),book=project(book,r['user_id'],rev),**r['data']))
         return dict(items=items,next_cursor=encode_cursor(rows[39]) if len(rows)>40 else None,sharing=setting['share_activity'],visible_actor_ids=[str(a) for a in actors])

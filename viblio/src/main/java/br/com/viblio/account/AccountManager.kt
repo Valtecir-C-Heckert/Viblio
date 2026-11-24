@@ -30,6 +30,7 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
     private var progress:ProgressDialog?=null
     var status="";private set
     val signedIn get()=session!=null
+    val userId get()=session?.getAsJsonObject("user")?.get("id")?.takeUnless {it.isJsonNull}?.asString.orEmpty()
     val email get()=session?.getAsJsonObject("user")?.get("email")?.asString.orEmpty()
     val username get()=session?.getAsJsonObject("user")?.get("username")?.takeUnless {it.isJsonNull}?.asString.orEmpty()
     val admin get()=session?.getAsJsonObject("user")?.get("admin")?.asBoolean==true

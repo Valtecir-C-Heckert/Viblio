@@ -274,6 +274,15 @@ class ViblioActivity : Activity() {
     private fun makeFriends()=br.com.viblio.ui.SocialPanel(this,ui,accounts){if(tab=="friends")render()}.apply {
         composerDock=this@ViblioActivity.composerDock
         onBackdrop={if(tab=="friends" && !needsLogin())applyBackground(displayTheme)}
+        onOpenOwnBook={ bookId ->
+            if(!library.isEditor && library.repository.book(bookId)!=null){
+                returnFromDetailTab="friends"
+                switchTab("shelf", keepReturn=true)
+                library.openBook(bookId)
+                scroll.post { scroll.scrollTo(0,0) }
+                true
+            } else false
+        }
     }
     private var suppressIconSwitch = false
     override fun startActivity(intent: Intent?, options: Bundle?) {
@@ -350,7 +359,7 @@ class ViblioActivity : Activity() {
         positions[tab]=scroll.scrollY
         if(tab=="shelf") { library.clearPlanSelection(); library.onStop() }
         if(tab=="search") search.hide()
-        if(tab=="friends") {friends.hide(resetSelection=true);positions["friends"]=0}
+        if(tab=="friends") {friends.hide(resetSelection=!keepReturn);if(!keepReturn)positions["friends"]=0}
         tab=destination
         if(tab=="shelf" && started) library.onStart()
         render()

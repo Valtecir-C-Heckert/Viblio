@@ -115,4 +115,17 @@ class FeedGroupingTest {
         assertTrue(FeedGrouping.matchesFilter(item, "added"))
         assertFalse(FeedGrouping.matchesFilter(item, "read"))
     }
+
+    @Test
+    fun identifiesSelfEntriesAndKeepsOwnAndFriendSameBookSeparate() {
+        val base = 1732030000000L
+        val mine = event("e20", "read", base + 5_000L, actorId = "me-uuid", username = "valtecir", bookId = "b1", pages = 15, startPage = 10, endPage = 25, durationMs = 600_000L)
+        val friend = event("e21", "read", base, actorId = "friend-uuid", username = "ana", bookId = "b1", pages = 10, startPage = 0, endPage = 10, durationMs = 400_000L)
+        val out = FeedGrouping.consolidate(listOf(mine, friend))
+        assertEquals(2, out.size)
+        assertTrue(FeedGrouping.isSelf(out[0], "ME-UUID", "other"))
+        assertFalse(FeedGrouping.isSelf(out[1], "me-uuid", "valtecir"))
+        assertTrue(FeedGrouping.isSelf(out[0], "", "VALTECIR"))
+        assertFalse(FeedGrouping.isSelf(out[1], "", "valtecir"))
+    }
 }
