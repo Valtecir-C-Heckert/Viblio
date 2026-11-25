@@ -310,27 +310,27 @@ def test_social_summary_counts_invites_votes_and_unread_messages(api):
     # Accept a <-> b, create club with proposal & invite b
     accept(api,a,b)
     sa=snapshot();result(sync(api,a,sa))
-    club=api.post('/v1/clubs',headers=headers(a),json={'name':'Clube Resumo'}).json()
-    cid=club['id']
-    assert api.post(f'/v1/clubs/{cid}/members',headers=headers(a),json={'username':b['user']['username']}).status_code==200
+    cid=club(api,a,'Clube Resumo')
+    call(api,a,f'/v1/clubs/{cid}/invite',{'user_id':b['user']['id']})
     assert get(api,b,'/v1/social/summary')['club_invites']==1
 
     # B accepts invite; A proposes a book -> open_votes becomes 1 for B until B votes
-    assert api.post(f'/v1/clubs/{cid}/accept',headers=headers(b)).status_code==200
-    prop=api.post(f'/v1/clubs/{cid}/proposals',headers=headers(a),json={'book_id':'b1'}).json()
+    call(api,b,f'/v1/clubs/{cid}/join')
+    prop=call(api,a,f'/v1/clubs/{cid}/proposals',{'book_id':'book'})['id']
     assert get(api,b,'/v1/social/summary')['open_votes']==1
-    assert api.post(f"/v1/clubs/{cid}/proposals/{prop['id']}/vote",headers=headers(b)).status_code==200
+    call(api,b,f'/v1/clubs/{cid}/vote',{'proposal_id':prop})
     assert get(api,b,'/v1/social/summary')['open_votes']==0
 
-    # Start round, add open stage, A posts message -> unread_messages == 1 for B until B reads messages
-    assert api.post(f'/v1/clubs/{cid}/select',headers=headers(a),json={'proposal_id':prop['id'],'due_at':'2026-12-31'}).status_code==200
-    st=api.post(f'/v1/clubs/{cid}/stages',headers=headers(a),json={'page_limit':50,'discuss_at':'2020-01-01T00:00:00Z'}).json()
-    sid=st['id']
-    assert api.post(f'/v1/clubs/{cid}/stages/{sid}/messages',headers=headers(a),json={'body':'Oi grupo'}).status_code==200
+    # Start round, create stage and shift schedule to open it, A posts message -> unread_messages == 1 for B until B reads
+    call(api,a,f'/v1/clubs/{cid}/start',{'proposal_id':prop,'due_at':future(10)})
+    sid=call(api,a,f'/v1/clubs/{cid}/stages',{'page_limit':50,'discuss_at':future(5)})['id']
+    call(api,a,f'/v1/clubs/{cid}/schedule',{'due_at':future(3),'shift_stages':True},'PATCH')
+    call(api,a,f'/v1/clubs/{cid}/stages/{sid}/messages',{'body':'Oi grupo'})
     summary_before=get(api,b,'/v1/social/summary')
-    assert summary_before['unread_messages']==1 and summary_before['total']==2  # 1 friend request + 1 unread msg
-    assert api.get(f'/v1/clubs/{cid}/stages/{sid}/messages',headers=headers(b)).status_code==200
+    assert summary_before['unread_messages']==1 and summary_before['total']==2
+    assert get(api,b,f'/v1/clubs/{cid}/stages/{sid}/messages')['items']
     summary_after=get(api,b,'/v1/social/summary')
     assert summary_after['unread_messages']==0 and summary_after['total']==1
+
 
 
