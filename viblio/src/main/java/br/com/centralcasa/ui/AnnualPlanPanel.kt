@@ -2182,10 +2182,15 @@ class AnnualPlanPanel(
                 .setItems(names) { _, idx ->
                     val targetMonth = idx + 1
                     val nextPos = (plan.entries.filter { it.month == targetMonth }.maxOfOrNull { it.position } ?: -1) + 1
+                    val targetExcl = if (entry.bookId.isNotBlank()) AnnualReadingPlan.monthExclusionKey(targetMonth, entry.bookId) else null
                     mutatePlan(
-                        plan.copy(entries = plan.entries.map {
-                            if (it.id == entry.id) it.copy(month = targetMonth, position = nextPos) else it
-                        }),
+                        plan.copy(
+                            entries = plan.entries.map {
+                                if (it.id == entry.id) it.copy(month = targetMonth, position = nextPos) else it
+                            },
+                            excludedMonthBooks = if (targetExcl != null) plan.excludedMonthBooks - targetExcl else plan.excludedMonthBooks,
+                            excludedYearBooks = if (entry.bookId.isNotBlank()) plan.excludedYearBooks - entry.bookId else plan.excludedYearBooks,
+                        ),
                     )
                     selectedMonth = targetMonth
                 }

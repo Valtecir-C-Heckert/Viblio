@@ -365,9 +365,23 @@ object AnnualPlanCalculator {
     ): YearPlanSummary {
         val activeBooks = books.filter { !it.archived }
         val booksById = activeBooks.associateBy { it.id }
-        val shelfEntriesByMonth = plan.entries
-            .filter { it.kind == PlanEntryKind.SHELF_BOOK }
-            .groupBy { it.month }
+        val activeBooksByTitle = activeBooks.groupBy { ShelfFilters.key(it.title) }
+        fun resolvedBookId(entry: PlanEntry): String {
+            if (entry.bookId.isNotBlank() && entry.bookId in booksById) return entry.bookId
+            val tKey = ShelfFilters.key(entry.title)
+            if (tKey.isBlank()) return entry.bookId
+            val candidates = activeBooksByTitle[tKey].orEmpty()
+            if (candidates.size == 1) return candidates[0].id
+            val aKey = ShelfFilters.key(entry.author)
+            if (aKey.isNotBlank()) {
+                val authorMatches = candidates.filter { ShelfFilters.key(it.author) == aKey }
+                if (authorMatches.size == 1) return authorMatches[0].id
+            }
+            return entry.bookId
+        }
+        val shelfEntries = plan.entries.filter { it.kind == PlanEntryKind.SHELF_BOOK }
+        val effectiveEntryBookIds = shelfEntries.associate { it.id to resolvedBookId(it) }
+        val shelfEntriesByMonth = shelfEntries.groupBy { it.month }
 
         val yearDays = (1..12).sumOf { daysInMonth(plan.year, it) }
         val monthlyBooksGoal = when (plan.booksGoalType) {
@@ -415,17 +429,18 @@ object AnnualPlanCalculator {
                     if (b != null && b.pagesKnown) list.sumOf { it.pages.coerceAtLeast(0) } else 0
                 }
         }
-        val manualEntriesByBook = plan.entries
-            .filter { it.kind == PlanEntryKind.SHELF_BOOK && it.bookId.isNotBlank() }
-            .groupBy { it.bookId }
+        val manualEntriesByBook = shelfEntries
+            .mapNotNull { e ->
+                val bId = effectiveEntryBookIds[e.id].orEmpty()
+                if (bId.isBlank()) null else bId to e
+            }
+            .groupBy({ it.first }, { it.second })
             .mapValues { (_, list) -> list.sortedBy { it.month } }
 
         fun futurePlannedMonthFor(bookId: String, month: Int): Int? {
             if (bookId.isBlank() || bookId in plan.excludedYearBooks) return null
             val planned = manualEntriesByBook[bookId] ?: return null
             if (planned.any { it.month == month }) return null
-            // If already planned in an earlier month (non-reread), this is carryover, not an advance.
-            if (planned.any { it.month < month && !it.reread }) return null
             return planned.firstOrNull { it.month > month }?.month
         }
 
@@ -445,7 +460,6 @@ object AnnualPlanCalculator {
             activeIds.addAll(periodM.bookIds)
             if (isCurrentM && currentBook != null) activeIds.add(currentBook.id)
             for (bookId in activeIds) {
-                if (AnnualReadingPlan.monthExclusionKey(m, bookId) in plan.excludedMonthBooks) continue
                 val target = futurePlannedMonthFor(bookId, m) ?: continue
                 redirectedOutOfMonth.getValue(m).add(bookId)
                 val p = pagesM[bookId] ?: 0
@@ -500,12 +514,13 @@ object AnnualPlanCalculator {
             val manualEntries = (shelfEntriesByMonth[m] ?: emptyList())
                 .sortedWith(compareBy<PlanEntry> { it.position }.thenBy { it.id })
             val manualResolved = manualEntries.map { entry ->
-                val bId = entry.bookId
+                val bId = effectiveEntryBookIds[entry.id] ?: entry.bookId
+                val resolvedEntry = if (bId.isNotBlank() && bId != entry.bookId) entry.copy(bookId = bId) else entry
                 val sPages = if (bId.isNotBlank()) (sessionPagesByBook[bId] ?: 0) + (advPages[bId] ?: 0) else 0
                 val compHere = bId.isNotBlank() && (bId in completedAutoIds || bId in advCompleted)
                 val readHere = bId.isNotBlank() && (bId in period.bookIds || bId in advRead)
                 resolveItem(
-                    entry = entry,
+                    entry = resolvedEntry,
                     booksById = booksById,
                     pagesReadInMonth = sPages,
                     completedInMonth = compHere,

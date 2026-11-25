@@ -290,4 +290,61 @@ class AnnualPlanCalculatorTest {
         assertEquals(2, summary.completedCount)
         assertEquals(650, summary.totalPagesReadInYear)
     }
+
+    @Test
+    fun redirectsAdvancedReadingEvenWhenExcludedInSourceMonthOrPlannedEarlierOrOrphanedId() {
+        val decExcl = book("dec_excl", "Retirado de Nov", 300, currentPage = 120)
+        val decAlsoOct = book("dec_oct", "Também em Outubro", 320, currentPage = 90)
+        val decOrphan = book("new_id", "Livro Recadastrado", 250, currentPage = 80)
+
+        val sessions = listOf(
+            ReadingSession("s1", "dec_excl", 1000L, 2000L, 1_800_000L, 0, 120, "2026-11-18"),
+            ReadingSession("s2", "dec_oct", 3000L, 4000L, 1_500_000L, 0, 90, "2026-11-20"),
+            ReadingSession("s3", "new_id", 5000L, 6000L, 1_200_000L, 0, 80, "2026-11-24"),
+        )
+        val plan = AnnualReadingPlan(
+            year = 2026,
+            pagesGoalType = PagesGoalType.PER_MONTH,
+            pagesGoalValue = 500,
+            goalConfigured = true,
+            excludedMonthBooks = setOf(AnnualReadingPlan.monthExclusionKey(11, "dec_excl")),
+            entries = listOf(
+                PlanEntry(month = 10, position = 0, kind = PlanEntryKind.SHELF_BOOK, bookId = "dec_oct"),
+                PlanEntry(month = 12, position = 0, kind = PlanEntryKind.SHELF_BOOK, bookId = "dec_excl"),
+                PlanEntry(month = 12, position = 1, kind = PlanEntryKind.SHELF_BOOK, bookId = "dec_oct"),
+                PlanEntry(
+                    month = 12,
+                    position = 2,
+                    kind = PlanEntryKind.SHELF_BOOK,
+                    bookId = "old_deleted_id",
+                    title = "Livro Recadastrado",
+                    author = "Autor Teste",
+                ),
+            ),
+        ).validated()
+
+        val summary = AnnualPlanCalculator.summarizeAt(
+            plan = plan,
+            books = listOf(decExcl, decAlsoOct, decOrphan),
+            sessions = sessions,
+            currentBookId = "dec_oct",
+            todayYear = 2026,
+            todayMonth = 11,
+            todayDay = 24,
+        )
+
+        val nov = summary.months[10]
+        val dec = summary.months[11]
+
+        // None of the December-planned books should appear or count pages in November.
+        assertTrue(nov.items.isEmpty())
+        assertEquals(0, nov.actualPagesRead)
+
+        // All three receive their November pages in December with Adiantado (NOV).
+        assertEquals(290, dec.actualPagesRead)
+        assertEquals(120, dec.items.first { it.bookId == "dec_excl" }.pagesReadInMonth)
+        assertEquals(90, dec.items.first { it.bookId == "dec_oct" }.pagesReadInMonth)
+        assertEquals(80, dec.items.first { it.bookId == "new_id" }.pagesReadInMonth)
+        assertTrue(dec.items.all { it.advancedFromMonth == 11 })
+    }
 }
