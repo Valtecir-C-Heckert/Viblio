@@ -60,6 +60,7 @@ class RateLimits:
             else ('friend-cover',240) if is_private_cover_get(path,request.method)
             else ('club-write',30) if path.startswith('/v1/clubs') and request.method!='GET'
             else ('clubs',60) if path.startswith('/v1/clubs')
+            else ('feed-reaction',60) if path.startswith('/v1/friends/feed/') and path.endswith('/reaction') and request.method!='GET'
             else ('friend-write',20) if path.startswith('/v1/friends') and request.method!='GET'
             else ('friends',60) if path.startswith('/v1/friends')
             else ('media-write',180) if path.startswith('/v1/me/media') and request.method!='GET'

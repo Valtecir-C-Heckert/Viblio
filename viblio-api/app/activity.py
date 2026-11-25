@@ -3,16 +3,49 @@ import base64
 import json
 import uuid
 from datetime import datetime,timezone,timedelta
+from typing import Literal
 from fastapi import Depends,HTTPException,Query
 from pydantic import BaseModel,ConfigDict,StrictBool
 from psycopg.types.json import Jsonb
 
 MAX_EVENTS_PER_SYNC=512
 RETENTION_DAYS=180
+ALLOWED_REACTIONS=('clap','fire','heart','book')
 
 class Sharing(BaseModel):
     model_config=ConfigDict(extra='forbid')
     enabled:StrictBool
+
+class ReactionBody(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    reaction:Literal['clap','fire','heart','book']
+
+def _reaction_summary(db,activity_ids,viewer_id):
+    if not activity_ids:return {}
+    rows=db.execute('''SELECT activity_id,reaction,count(*) n,bool_or(user_id=%s) mine
+        FROM public.viblio_activity_reactions
+        WHERE activity_id=ANY(%s::uuid[])
+        GROUP BY activity_id,reaction''',(viewer_id,list(activity_ids))).fetchall()
+    out={}
+    for r in rows:
+        aid=r['activity_id']
+        entry=out.setdefault(aid,dict(counts={},mine=None,total=0))
+        c=int(r['n'])
+        entry['counts'][r['reaction']]=c
+        entry['total']+=c
+        if r['mine']:entry['mine']=r['reaction']
+    return out
+
+def _can_see_activity(db,viewer_id,activity_id):
+    row=db.execute('''SELECT a.id,a.user_id FROM public.viblio_activity a
+        JOIN public.viblio_users u ON u.id=a.user_id
+        WHERE a.id=%s AND a.occurred_at>=now()-interval '180 days'
+          AND (a.user_id=%s OR (u.share_activity AND EXISTS (
+              SELECT 1 FROM public.viblio_friendships f
+              WHERE f.user_low=least(%s,a.user_id) AND f.user_high=greatest(%s,a.user_id)
+                AND f.status='accepted'
+          )))''',(activity_id,viewer_id,viewer_id,viewer_id)).fetchone()
+    return row is not None
 
 def complete(book):
     return bool(book.get('readFinished')) if not book.get('pagesKnown',True) else bool(book.get('totalPages') and book.get('currentPage',0)>=book['totalPages'])
@@ -125,6 +158,7 @@ def mount_activity(app,connect,current):
                 AND (%s::timestamptz IS NULL OR (a.occurred_at,a.id)<(%s,%s))
                 ORDER BY a.occurred_at DESC,a.id DESC LIMIT 41''',(user['id'],actors,position[0] if position else None,position[0] if position else None,position[1] if position else None)).fetchall()
             page_rows=rows[:40]
+            reactions_by_id=_reaction_summary(db,[r['id'] for r in page_rows],user['id'])
             pairs=list({(r['user_id'],r['book_id']) for r in page_rows})
             needed_users=[p[0] for p in pairs]
             needed_books=[p[1] for p in pairs]
@@ -159,5 +193,44 @@ def mount_activity(app,connect,current):
             if not entry:continue
             rev,book=entry
             actor_name=r['username'] or ('' if r['user_id']==user['id'] else 'Leitor')
-            items.append(dict(id=str(r['id']),actor=dict(id=str(r['user_id']),username=actor_name),kind=r['kind'],occurred_at=int(r['occurred_at'].timestamp()*1000),book=project(book,r['user_id'],rev),**r['data']))
+            rx=reactions_by_id.get(r['id'],dict(counts={},mine=None,total=0))
+            items.append(dict(id=str(r['id']),actor=dict(id=str(r['user_id']),username=actor_name),kind=r['kind'],occurred_at=int(r['occurred_at'].timestamp()*1000),book=project(book,r['user_id'],rev),reactions=rx,**r['data']))
         return dict(items=items,next_cursor=encode_cursor(rows[39]) if len(rows)>40 else None,sharing=setting['share_activity'],visible_actor_ids=[str(a) for a in actors])
+    @app.put('/v1/friends/feed/{activity_id}/reaction')
+    def set_reaction(activity_id:uuid.UUID,body:ReactionBody,user=Depends(current)):
+        with connect() as db:
+            if not _can_see_activity(db,user['id'],activity_id):raise HTTPException(404,'Atividade não encontrada.')
+            db.execute('''INSERT INTO public.viblio_activity_reactions(activity_id,user_id,reaction)
+                VALUES (%s,%s,%s) ON CONFLICT(activity_id,user_id) DO UPDATE SET reaction=EXCLUDED.reaction,created_at=now()''',(activity_id,user['id'],body.reaction))
+            rx=_reaction_summary(db,[activity_id],user['id']).get(activity_id,dict(counts={},mine=None,total=0))
+        return dict(ok=True,activity_id=str(activity_id),reactions=rx)
+    @app.delete('/v1/friends/feed/{activity_id}/reaction')
+    def clear_reaction(activity_id:uuid.UUID,user=Depends(current)):
+        with connect() as db:
+            if not _can_see_activity(db,user['id'],activity_id):raise HTTPException(404,'Atividade não encontrada.')
+            db.execute('DELETE FROM public.viblio_activity_reactions WHERE activity_id=%s AND user_id=%s',(activity_id,user['id']))
+            rx=_reaction_summary(db,[activity_id],user['id']).get(activity_id,dict(counts={},mine=None,total=0))
+        return dict(ok=True,activity_id=str(activity_id),reactions=rx)
+    @app.get('/v1/social/summary')
+    def social_summary(user=Depends(current)):
+        uid=user['id']
+        with connect() as db:
+            row=db.execute('''SELECT
+                (SELECT count(*) FROM public.viblio_friendships
+                 WHERE (user_low=%s OR user_high=%s) AND status='pending' AND requested_by<>%s) friend_requests,
+                (SELECT count(*) FROM public.viblio_club_members
+                 WHERE user_id=%s AND status='invited') club_invites,
+                (SELECT count(*) FROM public.viblio_club_members cm
+                 JOIN LATERAL (SELECT * FROM public.viblio_club_rounds WHERE club_id=cm.club_id ORDER BY created_at DESC LIMIT 1) r ON true
+                 WHERE cm.user_id=%s AND cm.status='active' AND r.state='voting'
+                   AND EXISTS (SELECT 1 FROM public.viblio_club_proposals p WHERE p.round_id=r.id)
+                   AND NOT EXISTS (SELECT 1 FROM public.viblio_club_votes v WHERE v.round_id=r.id AND v.user_id=%s)) open_votes,
+                (SELECT count(*) FROM public.viblio_club_members cm
+                 JOIN LATERAL (SELECT * FROM public.viblio_club_rounds WHERE club_id=cm.club_id ORDER BY created_at DESC LIMIT 1) r ON true
+                 JOIN public.viblio_club_stages s ON s.round_id=r.id AND (s.is_open OR s.discuss_at<=now())
+                 JOIN public.viblio_club_messages msg ON msg.stage_id=s.id AND msg.user_id<>%s
+                 LEFT JOIN public.viblio_club_stage_reads sr ON sr.stage_id=s.id AND sr.user_id=%s
+                 WHERE cm.user_id=%s AND cm.status='active' AND msg.id>coalesce(sr.last_read_message_id,0)) unread_messages''',
+                (uid,uid,uid,uid,uid,uid,uid,uid,uid)).fetchone()
+        fr=int(row['friend_requests']);ci=int(row['club_invites']);ov=int(row['open_votes']);um=int(row['unread_messages'])
+        return dict(friend_requests=fr,club_invites=ci,open_votes=ov,unread_messages=um,total=fr+ci+ov+um)

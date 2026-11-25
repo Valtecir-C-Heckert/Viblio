@@ -104,6 +104,9 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     private var heatmapMonth=java.util.Calendar.getInstance().get(java.util.Calendar.MONTH)+1
     private var heatmapSelectedDay:String?=null
     private var progressDialog:AlertDialog?=null
+    private val customShelfStore = CustomShelfStore(activity)
+    private var selectedCustomShelfId: String? = null
+    private var customShelfDialog: AlertDialog? = null
     private var manualScrollDirection=0
     private val manualAutoScroll=object:Runnable {
         override fun run() {
@@ -163,7 +166,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     fun currentReadingThumbnail(): android.graphics.Bitmap? = repository.current()?.let { images.thumbnail(it.cover) }
     val isCurrentReading get()=isDetail && selected!=null && selected==repository.current()?.id
     val isEditor get() = screen in listOf("editor", "collection_editor")
-    val canReplaceLibrary get() = !isEditor && manualDraft==null && !busy && (progressDialog?.isShowing!=true) && (goalsPanel?.isEditing!=true) && (annualPlanPanel?.isEditing!=true) && !datesEditor.isEditing
+    val canReplaceLibrary get() = !isEditor && manualDraft==null && !busy && (progressDialog?.isShowing!=true) && (customShelfDialog?.isShowing!=true) && (goalsPanel?.isEditing!=true) && (annualPlanPanel?.isEditing!=true) && !datesEditor.isEditing
     private var editingGenre = ""
     private val editingSubgenres = mutableListOf<String>()
     private var subgenreInput: AutoCompleteTextView? = null
@@ -195,9 +198,10 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     init { repository.recover(); settings.migrateGenreColors() }
     fun onStart() { visible = true; handler.removeCallbacks(tick); handler.post(tick) }
     fun onStop() { stopManualScroll();captureEditor(); captureCollectionEditor(); visible = false; handler.removeCallbacks(tick); repository.checkpoint() }
-    fun onDestroy() { datesEditor.close();goalsPanel?.close();goalsPanel=null;annualPlanPanel?.close();annualPlanPanel=null;retrospectiveDialog?.destroy();retrospectiveDialog=null;progressDialog?.dismiss();progressDialog=null;destroyed = true;refreshSpines=null; if(useAsyncShelfImages || useSpineLayout) shelfThumbnails.close(); handler.removeCallbacksAndMessages(null); worker.execute { repository.close() }; worker.shutdown() }
+    fun onDestroy() { datesEditor.close();goalsPanel?.close();goalsPanel=null;annualPlanPanel?.close();annualPlanPanel=null;retrospectiveDialog?.destroy();retrospectiveDialog=null;progressDialog?.dismiss();progressDialog=null;customShelfDialog?.dismiss();customShelfDialog=null;destroyed = true;refreshSpines=null; if(useAsyncShelfImages || useSpineLayout) shelfThumbnails.close(); handler.removeCallbacksAndMessages(null); worker.execute { repository.close() }; worker.shutdown() }
     fun saveState(out: Bundle) {
         out.putBoolean("books.manualView",manualView)
+        out.putString("books.customShelf", selectedCustomShelfId)
         manualDraft?.let { out.putStringArrayList("books.manualDraft",ArrayList(it)) }
         out.putString("books.catalogCover",catalogCover)
         captureEditor(); captureCollectionEditor(); persistShelfFilters(); out.putString("books.type", shelfType); out.putString("books.screen", screen); out.putString("books.selected", selected); out.putString("books.collection", selectedCollection)
@@ -235,6 +239,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     fun restoreState(state: Bundle?) {
         if (state == null) return
         manualView=state.getBoolean("books.manualView")
+        selectedCustomShelfId = state.getString("books.customShelf")
         manualDraft=state.getStringArrayList("books.manualDraft")
         catalogCover=state.getString("books.catalogCover").orEmpty()
         shelfType = state.getString("books.type")?.takeIf { it in CollectionKinds.labels } ?: shelfType
@@ -1052,6 +1057,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                     setPadding(ui.dp(6), ui.dp(2), ui.dp(2), ui.dp(2))
                     isFocusable = true
                     setOnClickListener {
+                        selectedCustomShelfId = null
                         shelfFilters = ShelfFilters()
                         manualView = useManualShelfOrder && manualIsDefault()
                         shelfScroll = 0
@@ -1092,7 +1098,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                             "Backup / importar", "Catálogo do servidor" -> backupMenu()
                             "Cores por gênero" -> customizeGenreColors()
                             "Organizar estante" -> beginManualOrder(all)
-                            "Minha ordem · limpar filtros" -> { shelfFilters = ShelfFilters(); manualView = true; shelfScroll = 0; persistShelfFilters(); changed() }
+                            "Minha ordem · limpar filtros" -> { selectedCustomShelfId = null; shelfFilters = ShelfFilters(); manualView = true; shelfScroll = 0; persistShelfFilters(); changed() }
                             "Conta" -> onAccount?.invoke()
                             else -> AlertDialog.Builder(activity).setTitle("Capas por linha · ${CollectionKinds.labels[shelfType]}").setSingleChoiceItems((1..6).map { "$it" }.toTypedArray(), settings.shelfColumns(shelfType) - 1) { dialog, which -> settings.setShelfColumns(shelfType, which + 1); dialog.dismiss(); changed() }.setNegativeButton("Cancelar", null).show()
                         }
@@ -1127,6 +1133,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             }
             resultInfo = ui.label(parent, "", 10, ui.muted).apply { gravity = Gravity.CENTER; setPadding(0, ui.dp(2), 0, ui.dp(4)) }
         }
+        if (!arranging) renderCustomShelvesBar(parent, all, gallery)
         val grid = ui.column().apply { tag = "shelf-pinch-grid" }
         if(arranging)grid.setOnDragListener {view,event->
             when(event.action){
@@ -1143,12 +1150,16 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         val refresh:()->Unit = refresh@{
             if(useAsyncShelfImages || spineMode()) shelfThumbnails.reset()
             grid.removeAllViews()
+            val customShelves = customShelfStore.load()
+            val activeCustomShelf = selectedCustomShelfId?.let { id -> customShelves.firstOrNull { it.id == id } }
+            if (selectedCustomShelfId != null && activeCustomShelf == null) selectedCustomShelfId = null
             val candidates=if(!useCollectionInventory || shelfFilters.collectionCompletion==CollectionCompletion.ALL)all else all.filter {book->
                 collections.firstOrNull {it.id==book.id}?.let {CollectionInventory.of(it,volumes).status==shelfFilters.collectionCompletion} ?: false
             }
-            val filtered=shelfFilters.select(candidates,currentShelfId)
+            val scopedCandidates = if (activeCustomShelf == null || arranging) candidates else candidates.filter { it.id in activeCustomShelf.bookIds }
+            val filtered=shelfFilters.select(scopedCandidates,currentShelfId)
             val matches=if(useManual) ManualShelfOrder.select(if(arranging) all else filtered,manualDraft ?: savedManualOrder()) else filtered
-            val active = listOfNotNull(shelfFilters.collectionCompletion.takeIf {it!=CollectionCompletion.ALL}?.label,shelfFilters.status.takeIf { it != ShelfStatus.ALL }?.label, shelfFilters.genre, shelfFilters.subgenre, shelfFilters.saga, shelfFilters.author, shelfFilters.covers.takeIf { it != ShelfCovers.ALL }?.label)
+            val active = listOfNotNull(activeCustomShelf?.name,shelfFilters.collectionCompletion.takeIf {it!=CollectionCompletion.ALL}?.label,shelfFilters.status.takeIf { it != ShelfStatus.ALL }?.label, shelfFilters.genre, shelfFilters.subgenre, shelfFilters.saga, shelfFilters.author, shelfFilters.covers.takeIf { it != ShelfCovers.ALL }?.label)
             if (gallery) {
                 galleryClearSearch?.visibility = if (shelfFilters.query.isNotEmpty()) View.VISIBLE else View.GONE
                 galleryFilterChip?.text = if (shelfFilters.activeCount > 0) "Filtros (${shelfFilters.activeCount}) ▾" else "Filtros ▾"
@@ -1162,7 +1173,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 filterButton?.text = (if(useManual) "Filtrar · Minha ordem" else "Filtrar e ordenar · ${shelfFilters.order.size} critérios") + if (shelfFilters.activeCount > 0) " · ${shelfFilters.activeCount} filtros" else ""
                 resultInfo?.text = (if(useManual) "Minha ordem" else shelfFilters.order.joinToString(" › ") { it.label }) + if (active.isEmpty() && shelfFilters.query.isBlank()) "" else "\n${matches.size} de ${all.size} livros" + if (active.isEmpty()) "" else " · ${active.joinToString(" · ")}"
             }
-            if (matches.isEmpty()) { ui.label(grid, if (all.isEmpty()) "Sua biblioteca começa aqui" else "Nenhum livro com esses filtros", 20, bold = true); ui.label(grid, if (all.isEmpty()) "Adicione um livro pelo botão + no topo." else "Toque em Limpar ou ajuste os filtros.", 12, ui.muted) }
+            if (matches.isEmpty()) { ui.label(grid, if (all.isEmpty()) "Sua biblioteca começa aqui" else if (activeCustomShelf != null) "Nenhum livro nesta prateleira" else "Nenhum livro com esses filtros", 20, bold = true); ui.label(grid, if (all.isEmpty()) "Adicione um livro pelo botão + no topo." else if (activeCustomShelf != null) "Abra um livro e toque em Prateleiras para adicioná-lo." else "Toque em Limpar ou ajuste os filtros.", 12, ui.muted) }
             val currentBookId = currentShelfId
             val availableWidth = if (grid.width > 0) grid.width / activity.resources.displayMetrics.density else (activity.resources.configuration.screenWidthDp - 40).toFloat()
             if(spineMode() && !arranging){
@@ -2268,6 +2279,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         titleIdentity(hero, b.title, b.author, b.publisher)
         classificationTiles(hero, b.genre, b.selectedSubgenres, classificationColor(b))
         sagaIdentity(hero, b)
+        renderBookCustomShelvesRow(hero, b, ui, false)
 
         if (!b.pagesKnown) {
             val reading = genreDetailPanel(parent, b, 12)
@@ -2565,6 +2577,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(12) },
             )
         }
+        renderBookCustomShelvesRow(hero, b, palette, true)
 
         // Unified translucent reading card tinted with the book's cover palette.
         val unifiedCard = ui.column().apply {
@@ -2839,6 +2852,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     private fun bookMenu(b: LibraryBook) {
         if (!baseUi.rectilinear) {
             val options = mutableListOf("Editar livro", "Adicionar datas de leitura").apply { if (b.pagesKnown) add(1, "Informar página exata") }
+            options.add("Prateleiras")
             options.add("Trocar capa")
             if (repository.currentId() != b.id) options.add("Tornar livro atual")
             if (repository.draft()?.bookId == b.id) options.addAll(listOf("Pausar leitura e salvar", "Descartar tempo da leitura"))
@@ -2847,6 +2861,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             AlertDialog.Builder(activity).setTitle(b.title).setItems(options.toTypedArray()) { _, index ->
                 when (options[index]) {
                     "Conta" -> onAccount?.invoke()
+                    "Prateleiras" -> editBookCustomShelves(b)
                     "Remover da Estante" -> AlertDialog.Builder(activity).setTitle("Remover da Estante?").setMessage("Nota e histórico serão guardados em Conta → Removidos da Estante.").setPositiveButton("Remover") { _, _ -> attempt { repository.archive(b.id); selected = null; show("library") } }.setNegativeButton("Cancelar", null).show()
                     "Trocar capa" -> personalCover(b)
                     "Editar livro" -> { fields.clear(); editor = repository.book(b.id); newBook = false; show("editor") }
@@ -2947,6 +2962,16 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             }
 
             sheetSectionHeader(body, palette, "Livro")
+            val assignedShelves = CustomShelves.shelvesForBook(customShelfStore.load(), b.id)
+            sheetRow(
+                body,
+                palette,
+                "Prateleiras",
+                subtitle = if (assignedShelves.isEmpty()) "Organizar em listas próprias" else assignedShelves.joinToString(" · ") { it.name },
+            ) {
+                dialog.dismiss()
+                editBookCustomShelves(b)
+            }
             val bookRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
             tile(bookRow, "Editar livro", "Dados e páginas", marginEndDp = 7) {
                 dialog.dismiss()
@@ -2973,6 +2998,244 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 }
             }
         }
+    }
+
+    private fun showTrackedCustomShelfDialog(dialog: AlertDialog) {
+        customShelfDialog?.dismiss()
+        customShelfDialog = dialog
+        dialog.setOnDismissListener { if (customShelfDialog === dialog) customShelfDialog = null }
+        dialog.show()
+    }
+
+    private fun renderCustomShelvesBar(parent: LinearLayout, all: List<LibraryBook>, gallery: Boolean) {
+        val shelves = customShelfStore.load()
+        if (selectedCustomShelfId != null && shelves.none { it.id == selectedCustomShelfId }) selectedCustomShelfId = null
+        val allIds = all.mapTo(HashSet()) { it.id }
+        val strip = HorizontalScrollView(activity).apply {
+            isHorizontalScrollBarEnabled = false
+            tag = "custom-shelves-bar"
+        }
+        val row = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        strip.addView(row)
+        parent.addView(strip, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
+
+        fun addShelfChip(label: String, active: Boolean, tagName: String, onClick: () -> Unit, onLongClick: (() -> Unit)? = null) {
+            val fg = if (active) (if (gallery) ui.background else ui.accent) else ui.muted
+            val bg = if (gallery) {
+                if (active) ui.pillRipple(ui.accent, 16, darkRipple = true)
+                else ui.pillRipple(ui.gallerySurface(175), 16, ui.galleryHairline(120))
+            } else {
+                ui.outlined(if (active) ui.activeSurface else ui.surface, if (active) ui.accent else ui.lineColor, 0)
+            }
+            val chip = TextView(activity).apply {
+                text = label
+                tag = tagName
+                textSize = 11f
+                maxLines = 1
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+                setTextColor(fg)
+                typeface = Typeface.create(if (active) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
+                setPadding(ui.dp(11), ui.dp(6), ui.dp(11), ui.dp(6))
+                background = bg
+                isFocusable = true
+                isSelected = active
+                setOnClickListener { onClick() }
+                if (onLongClick != null) setOnLongClickListener { onLongClick(); true }
+            }
+            row.addView(chip, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(7) })
+        }
+
+        if (shelves.isNotEmpty()) {
+            addShelfChip("Todas", selectedCustomShelfId == null, "custom-shelf:all", {
+                if (selectedCustomShelfId != null) {
+                    selectedCustomShelfId = null; shelfScroll = 0; changed()
+                }
+            })
+        }
+        shelves.forEach { shelf ->
+            val count = shelf.bookIds.count { it in allIds }
+            val active = selectedCustomShelfId == shelf.id
+            addShelfChip(
+                label = "${shelf.name} ($count)",
+                active = active,
+                tagName = "custom-shelf:${shelf.id}",
+                onClick = {
+                    selectedCustomShelfId = if (active) null else shelf.id
+                    shelfScroll = 0
+                    changed()
+                },
+                onLongClick = { promptManageCustomShelf(shelf) },
+            )
+        }
+        addShelfChip("+ Prateleira", false, "custom-shelf:add", { promptCreateCustomShelf() })
+    }
+
+    private fun renderBookCustomShelvesRow(hero: LinearLayout, b: LibraryBook, palette: DisplayUi, gallery: Boolean) {
+        val assigned = CustomShelves.shelvesForBook(customShelfStore.load(), b.id)
+        val scrollStrip = HorizontalScrollView(activity).apply {
+            isHorizontalScrollBarEnabled = false
+            tag = "book-custom-shelves"
+        }
+        val row = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        scrollStrip.addView(row)
+        hero.addView(scrollStrip, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(10) })
+
+        fun pill(label: String, highlighted: Boolean) {
+            val tv = TextView(activity).apply {
+                text = label
+                textSize = 11f
+                maxLines = 1
+                includeFontPadding = false
+                setTextColor(if (highlighted) palette.accent else palette.muted)
+                typeface = Typeface.create(if (highlighted) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
+                setPadding(ui.dp(11), ui.dp(5), ui.dp(11), ui.dp(5))
+                background = if (gallery) {
+                    palette.pillRipple(
+                        if (highlighted) palette.tint(palette.accent, 28) else palette.gallerySurface(170),
+                        16,
+                        if (highlighted) palette.tint(palette.accent, 110) else palette.galleryHairline(115),
+                    )
+                } else {
+                    palette.outlined(if (highlighted) palette.activeSurface else palette.surface, if (highlighted) palette.accent else palette.lineColor, 0)
+                }
+                isFocusable = true
+                setOnClickListener { editBookCustomShelves(b) }
+            }
+            row.addView(tv, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) })
+        }
+
+        if (assigned.isEmpty()) {
+            pill("+ Prateleira", false)
+        } else {
+            assigned.forEach { shelf -> pill(shelf.name, true) }
+            pill("+", false)
+        }
+    }
+
+    private fun promptCreateCustomShelf(initialBookId: String? = null, onCreated: ((CustomShelf) -> Unit)? = null) {
+        val body = ui.column().apply { setPadding(ui.dp(20), ui.dp(10), ui.dp(20), 0) }
+        val inputField = EditText(activity).apply {
+            hint = "Nome da prateleira"
+            isSingleLine = true
+            filters = arrayOf(android.text.InputFilter.LengthFilter(40))
+            setTextColor(ui.text); setHintTextColor(ui.muted)
+        }
+        body.addView(inputField, LinearLayout.LayoutParams(-1, ui.dp(48)))
+        val dialog = AlertDialog.Builder(activity)
+            .setTitle("Nova prateleira")
+            .setView(body)
+            .setPositiveButton("Criar", null)
+            .setNegativeButton("Cancelar", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val name = inputField.text.toString()
+                try {
+                    val (updated, created) = CustomShelves.create(customShelfStore.load(), name, initialBookId)
+                    customShelfStore.save(updated)
+                    dialog.dismiss()
+                    if (onCreated != null) onCreated(created) else changed()
+                } catch (e: Exception) {
+                    inputField.error = e.message ?: "Nome inválido"
+                }
+            }
+        }
+        showTrackedCustomShelfDialog(dialog)
+    }
+
+    private fun promptManageCustomShelf(shelf: CustomShelf) {
+        val options = arrayOf("Renomear", "Excluir prateleira")
+        val dialog = AlertDialog.Builder(activity)
+            .setTitle(shelf.name)
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> {
+                        val body = ui.column().apply { setPadding(ui.dp(20), ui.dp(10), ui.dp(20), 0) }
+                        val inputField = EditText(activity).apply {
+                            setText(shelf.name)
+                            setSelection(shelf.name.length)
+                            isSingleLine = true
+                            filters = arrayOf(android.text.InputFilter.LengthFilter(40))
+                            setTextColor(ui.text); setHintTextColor(ui.muted)
+                        }
+                        body.addView(inputField, LinearLayout.LayoutParams(-1, ui.dp(48)))
+                        val renameDialog = AlertDialog.Builder(activity)
+                            .setTitle("Renomear prateleira")
+                            .setView(body)
+                            .setPositiveButton("Salvar", null)
+                            .setNegativeButton("Cancelar", null)
+                            .create()
+                        renameDialog.setOnShowListener {
+                            renameDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                                try {
+                                    val updated = CustomShelves.rename(customShelfStore.load(), shelf.id, inputField.text.toString())
+                                    customShelfStore.save(updated)
+                                    renameDialog.dismiss()
+                                    changed()
+                                } catch (e: Exception) {
+                                    inputField.error = e.message ?: "Nome inválido"
+                                }
+                            }
+                        }
+                        showTrackedCustomShelfDialog(renameDialog)
+                    }
+                    1 -> {
+                        val confirm = AlertDialog.Builder(activity)
+                            .setTitle("Excluir \"${shelf.name}\"?")
+                            .setMessage("Os livros continuam na sua estante.")
+                            .setPositiveButton("Excluir") { _, _ ->
+                                val updated = CustomShelves.delete(customShelfStore.load(), shelf.id)
+                                customShelfStore.save(updated)
+                                if (selectedCustomShelfId == shelf.id) selectedCustomShelfId = null
+                                changed()
+                            }
+                            .setNegativeButton("Cancelar", null)
+                            .create()
+                        showTrackedCustomShelfDialog(confirm)
+                    }
+                }
+            }
+            .setNegativeButton("Fechar", null)
+            .create()
+        showTrackedCustomShelfDialog(dialog)
+    }
+
+    private fun editBookCustomShelves(b: LibraryBook) {
+        val shelves = customShelfStore.load()
+        if (shelves.isEmpty()) {
+            promptCreateCustomShelf(initialBookId = b.id) { created ->
+                toast("Adicionado em \"${created.name}\"")
+                changed()
+            }
+            return
+        }
+        val names = shelves.map { it.name }.toTypedArray()
+        val checked = BooleanArray(shelves.size) { b.id in shelves[it].bookIds }
+        val dialog = AlertDialog.Builder(activity)
+            .setTitle("Prateleiras")
+            .setMultiChoiceItems(names, checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton("Salvar") { _, _ ->
+                val selectedIds = shelves.indices.filter { checked[it] }.mapTo(HashSet()) { shelves[it].id }
+                try {
+                    val updated = CustomShelves.setBookShelves(customShelfStore.load(), b.id, selectedIds)
+                    customShelfStore.save(updated)
+                    changed()
+                } catch (e: Exception) {
+                    toast(e.message ?: "Não foi possível salvar.")
+                }
+            }
+            .setNeutralButton("Nova prateleira") { _, _ ->
+                promptCreateCustomShelf(initialBookId = b.id) { created ->
+                    toast("Adicionado em \"${created.name}\"")
+                    changed()
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .create()
+        showTrackedCustomShelfDialog(dialog)
     }
     private fun readingAccent(b: LibraryBook): Int {
         if(ui.rectilinear && repository.currentId()==b.id)return ui.accent

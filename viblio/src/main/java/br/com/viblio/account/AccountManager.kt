@@ -24,10 +24,12 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
     private val config=activity.getSharedPreferences("viblio_catalog",0)
     private var session=runCatching {JsonParser.parseString(secret.load()).asJsonObject}.getOrNull()
     private var closed=false;private var running=false;private var busy=false;private var retryAfter=0L
+    private var consecutiveFailures=0
     private var automaticPending=false
     private var syncError=false
     private var conflictProfile:String?=null
     private var progress:ProgressDialog?=null
+    var onSyncUploaded:(()->Unit)?=null
     var status="";private set
     val signedIn get()=session!=null
     val userId get()=session?.getAsJsonObject("user")?.get("id")?.takeUnless {it.isJsonNull}?.asString.orEmpty()
@@ -38,6 +40,7 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
     val address get()=session?.get("address")?.asString ?: defaultAddress.ifBlank {config.getString("url","").orEmpty()}
     private val owner get()=session?.getAsJsonObject("user")?.let {LibraryProfiles.key(it.get("server_id").asString,it.get("id").asString)}.orEmpty()
     val linked get()=signedIn && LibraryProfiles.owner(activity)==owner
+    fun hasPendingOrError()=syncError || automaticPending
     fun syncStatus():AccountSyncStatus {
         val hasConflict=linked && (conflictProfile!=null || preferences().getBoolean("remote_changed",false))
         return resolveSyncStatus(signedIn,linked,hasConflict,syncError,busy || automaticPending)
@@ -55,20 +58,52 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
     private val periodic=object:Runnable {override fun run(){if(running && !closed){automatic();handler.postDelayed(this,60000)}}}
     private var identityLoaded=false
     private var observingNetwork=false
+    private var networkCallback:android.net.ConnectivityManager.NetworkCallback?=null
     private val network=object:android.content.BroadcastReceiver(){
         override fun onReceive(context:android.content.Context?,intent:android.content.Intent?){
-            retryAfter=0;deferAutomatic(1500)
+            retryAfter=0;consecutiveFailures=0;deferAutomatic(1500)
         }
     }
+    @Suppress("DEPRECATION")
     fun start(){
         running=true;handler.removeCallbacks(periodic)
-        if(!observingNetwork){activity.registerReceiver(network,android.content.IntentFilter(android.net.ConnectivityManager.CONNECTIVITY_ACTION));observingNetwork=true}
+        if(!observingNetwork){
+            val cm=activity.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+            if(android.os.Build.VERSION.SDK_INT>=24 && cm!=null){
+                val cb=object:android.net.ConnectivityManager.NetworkCallback(){
+                    override fun onAvailable(network:android.net.Network){
+                        post {retryAfter=0;consecutiveFailures=0;deferAutomatic(1500)}
+                    }
+                }
+                val registered=runCatching {cm.registerDefaultNetworkCallback(cb);true}.getOrDefault(false)
+                if(registered){networkCallback=cb;observingNetwork=true}
+            }
+            if(!observingNetwork){
+                activity.registerReceiver(network,android.content.IntentFilter(android.net.ConnectivityManager.CONNECTIVITY_ACTION))
+                observingNetwork=true
+            }
+        }
         if(signedIn && !identityLoaded){identityLoaded=true;work("Atualizando conta…",modal=false,action={api().call("/v1/me")}) {user->session?.add("user",user);session?.let {secret.save(it.toString())};changed()}}
         handler.post(periodic)
     }
-    fun stop(){if(observingNetwork){activity.unregisterReceiver(network);observingNetwork=false};running=false;handler.removeCallbacks(periodic);handler.removeCallbacks(scheduled)}
-    fun localChanged(){deferAutomatic(5000)}
-    fun syncSilently(){if(signedIn) deferAutomatic(0)}
+    fun stop(){
+        if(observingNetwork){
+            val cb=networkCallback
+            if(cb!=null){
+                val cm=activity.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+                runCatching {cm?.unregisterNetworkCallback(cb)}
+                networkCallback=null
+            }else runCatching {activity.unregisterReceiver(network)}
+            observingNetwork=false
+        }
+        running=false;handler.removeCallbacks(periodic);handler.removeCallbacks(scheduled)
+    }
+    fun localChanged(){retryAfter=0;consecutiveFailures=0;deferAutomatic(5000)}
+    fun syncSilently(force:Boolean=false){
+        if(!signedIn)return
+        if(force){retryAfter=0;consecutiveFailures=0}
+        deferAutomatic(0)
+    }
     private fun <T> work(label:String,modal:Boolean=true,trackSync:Boolean=false,action:()->T,done:(T)->Unit) {
         if(closed || busy){if(modal)toast("Aguarde a operação atual.");return};busy=true
         val profile=LibraryProfiles.database(activity)
@@ -77,11 +112,20 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
             val result=runCatching {check(!closed && LibraryProfiles.database(activity)==profile){"O perfil mudou. Tente novamente nesta conta."};action()}
             post {busy=false;dialog?.dismiss();progress=null
                 if(LibraryProfiles.database(activity)!=profile){resumePending();return@post}
-                try {result.fold(done,{error->
-                    if(error is AccountFailure && error.code==401 && signedIn){secret.clear();session=null;syncError=false;LibraryProfiles.anonymous(activity);reloaded()}
-                    else if(trackSync){syncError=true}
+                try {result.fold({value->
+                    consecutiveFailures=0;retryAfter=0
+                    done(value)
+                },{error->
+                    if(error is AccountFailure && error.code==401 && signedIn){
+                        secret.clear();session=null;syncError=false;consecutiveFailures=0;retryAfter=0
+                        br.com.viblio.ui.SocialCache(activity).clearAll()
+                        br.com.viblio.reminder.SocialNotifier.clearState(activity)
+                        LibraryProfiles.anonymous(activity);reloaded()
+                    }else if(trackSync){syncError=true;automaticPending=true}
                     status=if(error is java.net.ConnectException || error is java.net.SocketTimeoutException)"Servidor indisponível. Sua Estante continua no aparelho." else error.message ?: "Não foi possível concluir."
-                    retryAfter=System.currentTimeMillis()+300000;if(modal)toast(status);changed()
+                    consecutiveFailures=(consecutiveFailures+1).coerceAtMost(10)
+                    retryAfter=System.currentTimeMillis()+nextRetryDelayMs(consecutiveFailures)
+                    if(modal)toast(status);changed()
                 })}finally {resumePending()}
             }
         }
@@ -148,7 +192,13 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
         if(!signedIn)return
         if(!canReplace() || busy){toast("Salve o formulário e aguarde a operação atual antes de sair.");return}
         AlertDialog.Builder(activity).setTitle("Sair da conta?").setMessage("A cópia local permanece guardada neste perfil. Entre novamente nessa conta para reabrir a Estante. Outras contas têm acervos separados.")
-            .setPositiveButton("Sair") {_,_->val client=api();worker.execute {runCatching {client.call("/v1/auth/logout","POST")}};secret.clear();session=null;syncError=false;LibraryProfiles.anonymous(activity);status="Sessão encerrada. Sua Estante continua guardada no perfil.";reloaded();changed()}.setNegativeButton("Cancelar",null).show()
+            .setPositiveButton("Sair") {_,_->
+                val client=api();worker.execute {runCatching {client.call("/v1/auth/logout","POST")}}
+                secret.clear();session=null;syncError=false;consecutiveFailures=0;retryAfter=0
+                br.com.viblio.ui.SocialCache(activity).clearAll()
+                br.com.viblio.reminder.SocialNotifier.clearState(activity)
+                LibraryProfiles.anonymous(activity);status="Sessão encerrada. Sua Estante continua guardada no perfil.";reloaded();changed()
+            }.setNegativeButton("Cancelar",null).show()
     }
     private fun ready():Boolean {
         if(!linked){toast("Entre e conclua a vinculação primeiro.");return false}
@@ -156,7 +206,7 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
         val repo=LibraryRepository(activity);val draft=repo.draft();repo.close()
         if(draft!=null){toast("Pause e salve a página da sessão antes de sincronizar.");return false};return true
     }
-    private data class AutoSyncResult(val response:JsonObject,val uploadedHash:String,val conflict:Boolean,val useMedia:Boolean)
+    private data class AutoSyncResult(val response:JsonObject,val uploadedHash:String,val conflict:Boolean,val useMedia:Boolean,val uploaded:Boolean)
     private val mediaHeaders=mapOf("X-Viblio-Media" to "1")
     private fun sendLibrary(client:AccountApi,io:AccountLibrary,snapshot:JsonObject,base:Long,useMedia:Boolean,resolutions:JsonObject?=null,against:Long?=null):JsonObject {
         if(!useMedia)return LibrarySyncPolicy.submit(snapshot,base,resolutions=resolutions,against=against){client.call("/v1/me/library/sync","POST",it,gzip=true)}
@@ -194,17 +244,18 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
             val local=io.capture(useMedia);val hash=io.hash(local)
             if(remote==base && hash==prefs.getString("local_hash",""))return@work null
             try {
-                val response=if(hash==prefs.getString("local_hash","") && remote!=base)JsonObject().apply {
+                val downloadOnly=hash==prefs.getString("local_hash","") && remote!=base
+                val response=if(downloadOnly)JsonObject().apply {
                     addProperty("revision",remote)
                     add("snapshot",client.call("/v1/me/library?revision=$remote",extraHeaders=if(useMedia)mediaHeaders else emptyMap()))
                 }else sendLibrary(client,io,local,base,useMedia)
                 response.addProperty("_matches_local",io.hash(response.getAsJsonObject("snapshot"))==hash)
-                AutoSyncResult(response,hash,false,useMedia)
-            }catch(e:AccountFailure){if(e.code==409)AutoSyncResult(e.response,hash,true,useMedia) else throw e}
+                AutoSyncResult(response,hash,false,useMedia,!downloadOnly)
+            }catch(e:AccountFailure){if(e.code==409)AutoSyncResult(e.response,hash,true,useMedia,false) else throw e}
         }) {result->
             if(expected!=owner)return@work
             if(result==null){syncError=false;conflictProfile=null;prefs.edit().putBoolean("remote_changed",false).commit();status=if(automaticPending)"Alterações aguardando envio." else "Estante sincronizada. Backup salvo na conta.";changed();return@work}
-            val (response,uploadedHash,conflict,useMedia)=result
+            val (response,uploadedHash,conflict,useMedia,uploaded)=result
             if(conflict){
                 conflictProfile=if(response.get("detail")?.takeIf {it.isJsonObject}?.asJsonObject?.get("code")?.takeIf {it.isJsonPrimitive}?.asString=="changed_again")null else LibraryProfiles.database(activity)
                 prefs.edit().putBoolean("remote_changed",true).commit()
@@ -213,7 +264,9 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
             if(response.get("_matches_local")?.asBoolean==true){
                 syncError=false;conflictProfile=null
                 prefs.edit().putLong("revision",response.get("revision").asLong).putString("local_hash",uploadedHash).putBoolean("remote_changed",false).putLong("synced_at",System.currentTimeMillis()).commit()
-                status=if(automaticPending)"Alterações aguardando envio." else "Estante sincronizada. Backup salvo na conta.";changed();return@work
+                status=if(automaticPending)"Alterações aguardando envio." else "Estante sincronizada. Backup salvo na conta."
+                if(uploaded)onSyncUploaded?.invoke()
+                changed();return@work
             }
             // Nothing is replaced while a form, active reading or newer local edits exist.
             if(!running || !canReplace()){localChanged();return@work}
@@ -228,8 +281,11 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
                 prefs.edit().putLong("revision",response.get("revision").asLong).putString("local_hash",io.hash(io.capture(useMedia))).putBoolean("remote_changed",false).putLong("synced_at",System.currentTimeMillis()).commit()
                 true
             }) {applied->
-                if(applied){syncError=false;conflictProfile=null;status="Estante sincronizada. Backup salvo na conta.";reloaded();changed()}
-                else localChanged()
+                if(applied){
+                    syncError=false;conflictProfile=null;status="Estante sincronizada. Backup salvo na conta."
+                    if(uploaded)onSyncUploaded?.invoke()
+                    reloaded();changed()
+                }else localChanged()
             }
         }
     }
@@ -353,6 +409,13 @@ class AccountManager(private val activity:Activity,private val changed:()->Unit,
     fun close(){stop();closed=true;running=false;progress?.dismiss();progress=null;handler.removeCallbacksAndMessages(null);worker.shutdown()}
 
     companion object {
+        internal fun nextRetryDelayMs(consecutiveFailures:Int):Long = when(consecutiveFailures.coerceAtLeast(1)){
+            1 -> 15_000L
+            2 -> 30_000L
+            3 -> 60_000L
+            else -> 120_000L
+        }
+
         fun resolveSyncStatus(
             signedIn: Boolean,
             linked: Boolean,

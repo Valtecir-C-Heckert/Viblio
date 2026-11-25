@@ -9,6 +9,15 @@ import kotlin.math.roundToInt
  * Removes empty sub-second sessions (0 pages & < 1s) and merges duplicate same-book/same-day cards.
  */
 internal object FeedGrouping {
+    val REACTION_ORDER = listOf("clap", "fire", "heart", "book")
+    fun reactionEmoji(key: String): String = when (key) {
+        "clap" -> "👏"
+        "fire" -> "🔥"
+        "heart" -> "❤️"
+        "book" -> "📖"
+        else -> "👏"
+    }
+
     data class Entry(
         val id: String,
         val dayKey: String,
@@ -30,6 +39,9 @@ internal object FeedGrouping {
         val totalDurationMs: Long,
         val rating: Double?,
         val sessionCount: Int,
+        val reactionCounts: Map<String, Int> = emptyMap(),
+        val myReaction: String? = null,
+        val reactionTotal: Int = 0,
     ) {
         val primaryType: String
             get() = when {
@@ -105,8 +117,19 @@ internal object FeedGrouping {
             var totalDurationMs = 0L
             var rating: Double? = null
             var sessionCount = 0
+            val rxCounts = LinkedHashMap<String, Int>()
+            var myRx: String? = null
 
             for (ev in sorted) {
+                val rx = ev.obj("reactions")
+                val countsObj = rx.obj("counts")
+                for (k in REACTION_ORDER) {
+                    val c = countsObj.num(k).toInt()
+                    if (c > 0) rxCounts[k] = (rxCounts[k] ?: 0) + c
+                }
+                if (myRx == null) {
+                    rx.str("mine").takeIf { it in REACTION_ORDER }?.let { myRx = it }
+                }
                 when (ev.str("kind")) {
                     "added" -> hasAdded = true
                     "started" -> hasStarted = true
@@ -163,6 +186,9 @@ internal object FeedGrouping {
                     totalDurationMs = totalDurationMs,
                     rating = rating,
                     sessionCount = sessionCount,
+                    reactionCounts = rxCounts,
+                    myReaction = myRx,
+                    reactionTotal = rxCounts.values.sum(),
                 ),
             )
         }

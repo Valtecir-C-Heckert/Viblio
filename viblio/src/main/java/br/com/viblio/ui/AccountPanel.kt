@@ -117,8 +117,70 @@ class AccountPanel(private val activity:Activity,private val ui:DisplayUi,privat
             Toast.makeText(activity,if(next)"Novo visual Galeria ativado." else "Visual Clássico restaurado.",Toast.LENGTH_SHORT).show()
             changed()
         }.apply {background=ui.outlined();(layoutParams as LinearLayout.LayoutParams).topMargin=ui.dp(10)}
+        if(accounts.signedIn){
+            val socialOn=br.com.viblio.reminder.SocialNotifier.isEnabled(activity)
+            ui.action(parent,if(socialOn)"Avisos sociais: Ativado" else "Avisos sociais: Desativado") {
+                val next=!br.com.viblio.reminder.SocialNotifier.isEnabled(activity)
+                if(next && android.os.Build.VERSION.SDK_INT>=33 && activity.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED){
+                    activity.requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),945)
+                }
+                br.com.viblio.reminder.SocialNotifier.setEnabled(activity,next)
+                Toast.makeText(activity,if(next)"Avisos de clubes e convites ativados." else "Avisos sociais desativados.",Toast.LENGTH_SHORT).show()
+                changed()
+            }.apply {background=ui.outlined();(layoutParams as LinearLayout.LayoutParams).topMargin=ui.dp(10)}
+        }
         ui.action(parent,"Removidos da Estante",onClick=::removed).apply {background=ui.outlined();(layoutParams as LinearLayout.LayoutParams).topMargin=ui.dp(10)}
         ui.action(parent,"Continuar na Estante",onClick=shelf)
+        val version=br.com.viblio.account.AppUpdateChecker.currentVersion(activity)
+        ui.action(parent,"Viblio ${version.versionName} (${version.versionCode}) · Verificar atualização") {
+            checkForUpdate(version)
+        }.apply {
+            tag="account-app-version"
+            background=null
+            setTextColor(ui.muted)
+            textSize=12f
+            gravity=Gravity.CENTER
+            (layoutParams as LinearLayout.LayoutParams).topMargin=ui.dp(10)
+            (layoutParams as LinearLayout.LayoutParams).bottomMargin=ui.dp(8)
+        }
+    }
+    @Volatile private var checkingUpdate=false
+    private fun checkForUpdate(version:br.com.viblio.account.AppVersionInfo){
+        if(checkingUpdate)return
+        checkingUpdate=true
+        Toast.makeText(activity,"Verificando atualizações…",Toast.LENGTH_SHORT).show()
+        java.util.concurrent.Executors.newSingleThreadExecutor().let { exec ->
+            exec.execute {
+                val result=runCatching {br.com.viblio.account.AppUpdateChecker.fetchLatestNewer(version.versionName)}
+                exec.shutdown()
+                activity.runOnUiThread {
+                    checkingUpdate=false
+                    if(activity.isFinishing || activity.isDestroyed)return@runOnUiThread
+                    result.fold({release->
+                        if(release==null){
+                            Toast.makeText(activity,"Você já está na versão mais recente (${version.versionName}).",Toast.LENGTH_LONG).show()
+                        }else {
+                            AlertDialog.Builder(activity)
+                                .setTitle("Nova versão ${release.version} disponível")
+                                .setMessage("Sua versão atual é ${version.versionName}. Deseja baixar o APK assinado da ${release.version}?")
+                                .setPositiveButton("Baixar atualização") {_,_->
+                                    if(br.com.viblio.account.AppUpdateChecker.isAllowedApkUrl(release.apkUrl)){
+                                        runCatching {
+                                            activity.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW,android.net.Uri.parse(release.apkUrl)))
+                                        }.onFailure {
+                                            Toast.makeText(activity,"Não foi possível abrir o navegador.",Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                }
+                                .setNegativeButton("Agora não",null)
+                                .show()
+                        }
+                    },{err->
+                        Toast.makeText(activity,err.message ?: "Não foi possível verificar atualizações.",Toast.LENGTH_LONG).show()
+                    })
+                }
+            }
+        }
     }
     private fun removed() {
         val repo=LibraryRepository(activity);val titles=repo.collections(true).filter {it.archived};val books=repo.books(true).filter {it.archived};repo.close()

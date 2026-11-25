@@ -20,12 +20,15 @@ import java.util.concurrent.Executors
 class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,private val accounts:AccountManager,private val changed:()->Unit){
     var onBackdrop:()->Unit={}
     var onOpenOwnBook:((String)->Boolean)?=null
+    var onSocialActivityChanged:(()->Unit)?=null
+    var ownBooksProvider:(()->List<LibraryBook>)?=null
     var clubCurrentBookInfo:((ClubBookDescriptor)->ClubCurrentBookState?)?=null
     var onClubProgressPauseDraft:((String)->Unit)?=null
     var onClubProgressResumeDraft:((String)->Unit)?=null
     var onClubProgressSaved:((ClubBookDescriptor,Int,Long?)->Unit)?=null
     var composerDock:FrameLayout?=null
     private val ui=DisplayUi(activity)
+    private val cache=SocialCache(activity)
     private val feedColors=linkedMapOf<String,Int?>()
     private var clubPage="home";private var clubFeed=emptyList<JsonObject>();private var clubFeedCursor:String?=null;private var booksQuery="";private var stageInfo=JsonObject()
     private var themeClub:String?=null;private var themeCover="";private var themeResolved=false
@@ -34,6 +37,8 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     private val backdropWorker=Executors.newSingleThreadExecutor()
     private val clubFeedWorker=Executors.newSingleThreadExecutor()
     private val clubSyncWorker=Executors.newSingleThreadExecutor()
+    private val reactionWorker=Executors.newSingleThreadExecutor()
+    private val pendingReactions=mutableSetOf<String>()
     private var requestConnection:AccountConnection?=null;private var clubFeedConnection:AccountConnection?=null;private var clubSyncConnection:AccountConnection?=null
     private var api:AccountApi?=null;private var apiIdentity="";private var images:FriendCoverLoader?=null
     private var clubSyncApi:AccountApi?=null;private var clubSyncApiIdentity="";private var clubSyncEpoch=0
@@ -61,7 +66,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         }
     }
     private val dialogs=mutableSetOf<Dialog>();private val invited=mutableSetOf<String>()
-    private val friends=FriendsPanel(activity,ui,accounts,onDiscover=::discover,embedded=true,sharedImages={images}){if(active && tab=="friends" && !people)changed()}
+    private val friends=FriendsPanel(activity,ui,accounts,onDiscover=::discover,embedded=true,sharedImages={images},ownBooks={ownBooksProvider?.invoke().orEmpty()},onActivityChanged={onSocialActivityChanged?.invoke()}){if(active && tab=="friends" && !people)changed()}
     private fun discover(){friends.hide(resetSelection=true);people=true;inviteClub=null;reset();changed()}
     val canReplaceLibrary get()=draft.isBlank() && dialogs.isEmpty() && !busy
     val displayTheme get()=if(tab=="friends" && !people)friends.displayTheme else ui
@@ -211,17 +216,48 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         }
         if(hideNavigation && themeCover.isNotBlank())ensureBackdrop()
     }
-    private fun date(ms:Long,pattern:String="dd/MM 'às' HH'h'mm")=SimpleDateFormat(pattern,Locale("pt","BR")).format(Date(ms))
-    private fun shortDate(ms:Long)=SimpleDateFormat("dd MMM",Locale("pt","BR")).format(Date(ms)).replace(".","")
-    private fun instant(value:String)=runCatching {SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss",Locale.US).apply {timeZone=TimeZone.getTimeZone("UTC")}.parse(value.take(19))!!.time}.getOrDefault(0L)
-    private fun iso(ms:Long)=SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'",Locale.US).apply {timeZone=TimeZone.getTimeZone("UTC")}.format(Date(ms))
+    private fun threadLocalFmt(build:()->SimpleDateFormat)=object:ThreadLocal<SimpleDateFormat>(){override fun initialValue()=build()}
+    private val fmtDate=threadLocalFmt {SimpleDateFormat("dd/MM 'às' HH'h'mm",Locale("pt","BR"))}
+    private val fmtTime=threadLocalFmt {SimpleDateFormat("HH'h'mm",Locale("pt","BR"))}
+    private val fmtShort=threadLocalFmt {SimpleDateFormat("dd MMM",Locale("pt","BR"))}
+    private val fmtUtcParse=threadLocalFmt {SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss",Locale.US).apply {timeZone=TimeZone.getTimeZone("UTC")}}
+    private val fmtUtcWrite=threadLocalFmt {SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'",Locale.US).apply {timeZone=TimeZone.getTimeZone("UTC")}}
+    private fun date(ms:Long,pattern:String="dd/MM 'às' HH'h'mm")=when(pattern){
+        "dd/MM 'às' HH'h'mm" -> fmtDate.get()!!.format(Date(ms))
+        "HH'h'mm" -> fmtTime.get()!!.format(Date(ms))
+        else -> SimpleDateFormat(pattern,Locale("pt","BR")).format(Date(ms))
+    }
+    private fun shortDate(ms:Long)=fmtShort.get()!!.format(Date(ms)).replace(".","")
+    private fun instant(value:String)=runCatching {fmtUtcParse.get()!!.parse(value.take(19))!!.time}.getOrDefault(0L)
+    private fun iso(ms:Long)=fmtUtcWrite.get()!!.format(Date(ms))
     private fun duration(ms:Long):String {val minutes=ms.coerceAtLeast(0)/60000;return if(minutes>=60)"${minutes/60}h${(minutes%60).toString().padStart(2,'0')}min" else if(minutes>0)"$minutes min" else "${ms.coerceAtLeast(0)/1000} s"}
     private fun tracked(d:Dialog){dialogs.add(d);d.setOnDismissListener {dialogs.remove(d)};d.show();d.window?.setBackgroundDrawable(ui.shape(ui.surface,0))}
     private val tick=Runnable {scheduled=false;if(active && !closed && tab!="friends" && !people && clubPage!="books" && !busy && loaded && dialogs.isEmpty() && stage==null && SystemClock.elapsedRealtime()-editedAt>=3000){load(poll=true)};arm()}
     private fun arm(){if(active && !closed && !scheduled){scheduled=true;handler.postDelayed(tick,delay)}}
     private fun reset(preserveClub:Boolean=false){stopLive();generation++;clubFeedEpoch++;requestConnection?.cancel();requestConnection=null;clubFeedConnection?.cancel();clubFeedConnection=null;clubFeedBusy=false;busy=false;loaded=false;error="";rows=emptyList();cursor=null;messageBefore=null;if(!preserveClub){data=JsonObject();clubFeed=emptyList();clubFeedCursor=null};if(images==null)images=api?.let {FriendCoverLoader(it::thumbnail)}}
+    private fun hydrateCacheIfEmpty(){
+        if(rows.isNotEmpty() || people || identity.isBlank())return
+        if(tab=="feed"){
+            cache.loadFeed(identity)?.let {cached->
+                rows=cached.list("items",40).distinctBy {it.s("id")}.take(400)
+                cursor=cached.s("next_cursor").ifBlank {null}
+            }
+        }else if(tab=="clubs" && club==null){
+            cache.loadClubs(identity)?.let {cached->
+                rows=cached.list("items",50).distinctBy {it.s("id")}.take(400)
+                cursor=cached.s("next_cursor").ifBlank {null}
+            }
+        }
+    }
+    fun onLibrarySynced(){
+        if(closed || !accounts.signedIn)return
+        if(tab=="feed" && !people){
+            delay=30000L
+            if(active && !busy)load(poll=true) else loaded=false
+        }
+    }
     fun hide(resetSelection:Boolean=false){active=false;stopLive();clearBackdrop();generation++;clubFeedEpoch++;requestConnection?.cancel();requestConnection=null;clubFeedConnection?.cancel();clubFeedConnection=null;clubFeedBusy=false;busy=false;loaded=false;scheduled=false;coverRedrawScheduled=false;handler.removeCallbacksAndMessages(null);api?.cancel();images?.detach();dialogs.toList().forEach {it.dismiss()};dialogs.clear();rows=emptyList();data=JsonObject();friends.hide(resetSelection);if(resetSelection){club=null;stage=null;round=null;clubPage="home";people=false;inviteClub=null;draft="";replyToId=null;replyToUser="";invited.clear()}}
-    fun close(){hide();closed=true;clubSyncEpoch++;clubSyncConnection?.cancel();clubSyncConnection=null;pendingClubSyncBook=null;clubSyncApi?.close();clubSyncApi=null;clubSyncApiIdentity="";images?.close();images=null;feedColors.clear();identity="";api?.close();api=null;apiIdentity="";friends.close();worker.shutdownNow();liveWorker.shutdownNow();messagesWorker.shutdownNow();backdropWorker.shutdownNow();clubFeedWorker.shutdownNow();clubSyncWorker.shutdownNow()}
+    fun close(){hide();closed=true;clubSyncEpoch++;clubSyncConnection?.cancel();clubSyncConnection=null;pendingClubSyncBook=null;clubSyncApi?.close();clubSyncApi=null;clubSyncApiIdentity="";images?.close();images=null;feedColors.clear();identity="";api?.close();api=null;apiIdentity="";friends.close();worker.shutdownNow();liveWorker.shutdownNow();messagesWorker.shutdownNow();backdropWorker.shutdownNow();clubFeedWorker.shutdownNow();clubSyncWorker.shutdownNow();reactionWorker.shutdownNow()}
     fun markClubProgressSynced(bookId:String,page:Int){suppressClubSyncBookId=bookId;suppressClubSyncPage=page}
     fun retryPendingClubProgressSync(books:List<LibraryBook>){
         val pending=pendingClubSyncBook ?: return
@@ -300,7 +336,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             if(closed || !active || generation!=epoch || identity!=profile || who()!=profile)return@post
             busy=false;requestConnection=null
             result.fold({delay=30000;done(it)},{failure->
-                delay=(delay*2).coerceIn(60000,300000);error=if(failure is AccountFailure && failure.code==404 && (path=="/v1/clubs" || path.startsWith("/v1/friends/feed") || path.startsWith("/v1/friends/people")))"Atualize a API para usar Feed, Pessoas e Clubes." else SocialRequests.message(failure,accounts.address)
+                delay=(delay*2).coerceIn(30000,120000);error=if(failure is AccountFailure && failure.code==404 && (path=="/v1/clubs" || path.startsWith("/v1/friends/feed") || path.startsWith("/v1/friends/people")))"Atualize a API para usar Feed, Pessoas e Clubes." else SocialRequests.message(failure,accounts.address)
                 if(method=="GET" && failure is AccountFailure && failure.code in listOf(401,403,404)){rows=emptyList();data=JsonObject();dialogs.toList().forEach {it.dismiss()}}
                 loaded=true;changed()
             })
@@ -309,6 +345,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     private fun mutate(path:String,method:String="POST",body:JsonObject?=null,after:()->Unit={}){
         request(path,method,body){
             after()
+            onSocialActivityChanged?.invoke()
             if(stage!=null && path.contains("/messages")){
                 composer?.takeIf {draft.isEmpty()}?.setText("")
                 updateReplyBanner()
@@ -326,11 +363,14 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         request(path){response->
             val scroll=activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll);val position=scroll?.scrollY ?: 0
             if(tab=="feed" && !people){
+                if(!more)cache.saveFeed(identity,response)
                 val allowed=response.getAsJsonArray("visible_actor_ids")?.mapNotNull {it.runCatching {asString}.getOrNull()}?.toSet().orEmpty()
                 if(poll && position>ui.dp(50)){rows=rows.filter {it.o("actor").s("id") in allowed}}
                 else {rows=(if(more)rows+response.list("items",40) else response.list("items",40)).distinctBy {it.s("id")}.take(400);cursor=response.s("next_cursor").ifBlank {null}}
-            }else if(people || club==null || clubPage=="books"){rows=(if(more)rows+response.list("items",50) else response.list("items",50)).distinctBy {if(clubPage=="books" && !people)it.o("owner").s("id")+":"+it.s("id") else it.s("id")}.take(400);cursor=response.s("next_cursor").ifBlank {null}}
-            else if(stage!=null){rows=response.list("items",40);cursor=response.s("next_cursor").ifBlank {null};if(response.has("stage"))stageInfo=response.o("stage")}
+            }else if(people || club==null || clubPage=="books"){
+                if(!people && club==null && !more)cache.saveClubs(identity,response)
+                rows=(if(more)rows+response.list("items",50) else response.list("items",50)).distinctBy {if(clubPage=="books" && !people)it.o("owner").s("id")+":"+it.s("id") else it.s("id")}.take(400);cursor=response.s("next_cursor").ifBlank {null}
+            }else if(stage!=null){rows=response.list("items",40);cursor=response.s("next_cursor").ifBlank {null};if(response.has("stage"))stageInfo=response.o("stage");onSocialActivityChanged?.invoke()}
             else {if(data.o("round").s("id")!=response.o("round").s("id")){clubFeed=emptyList();clubFeedCursor=null};data=response}
             loaded=true;changed();if(club!=null && !people && stage==null && clubPage=="home")loadClubFeed(poll=poll);if(poll)scroll?.post {if(active)scroll.scrollTo(0,position)}
         }
@@ -361,6 +401,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     val isRefreshing get()=if(tab=="friends" && !people) friends.isLoading else busy
     fun triggerRefresh(){
         if(!active || closed || !accounts.signedIn)return
+        delay=30000L
         if(tab=="friends" && !people) friends.refresh()
         else if(stage!=null){ eventsSeen++; refreshMessages() }
         else load()
@@ -389,6 +430,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         }
         val gallery = br.com.centralcasa.data.LocalSettings(activity).galleryUiStyle()
         if(!accounts.signedIn){feedColors.clear();images?.close();images=null;identity="";title(parent,if(gallery)"Amigos" else "AMIGOS",30);text(parent,"Entre para ver seus amigos.",14,ui.muted);return}
+        if(!loaded)hydrateCacheIfEmpty()
         updateTheme()
         arm()
         if(tab=="friends" && !people && friends.inDetail){friends.render(parent);return}
@@ -749,6 +791,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                         LinearLayout.LayoutParams(-1,-2),
                     )
                 }
+                addFeedReactions(col,entry,palette,gallery=true)
 
                 val nextSameDay=shown.getOrNull(idx+1)?.dayKey==day
                 if(nextSameDay){
@@ -883,6 +926,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
                     layoutParams=LinearLayout.LayoutParams(-2,-2)
                 }
             }
+            addFeedReactions(col,entry,palette,gallery=false)
 
             card.setOnClickListener {openEntry()}
             card.isFocusable=true
@@ -892,6 +936,116 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             text(parent,emptyMsg,13,ui.muted)
         }
         if(cursor!=null && rows.size<400)action(parent,"Carregar mais"){load(more=true)}
+    }
+    private fun addFeedReactions(parent:LinearLayout,entry:FeedGrouping.Entry,palette:DisplayUi,gallery:Boolean){
+        val activityId=id(entry.id) ?: return
+        val bar=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+        parent.addView(bar,LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(6)})
+        fun rxChip(label:String,selected:Boolean,tagName:String,onTap:()->Unit,onLong:(()->Unit)?=null)=TextView(activity).apply {
+            tag=tagName;text=label;textSize=10.5f;gravity=Gravity.CENTER;includeFontPadding=false;isFocusable=true
+            setTextColor(if(selected)palette.accent else ui.muted)
+            typeface=Typeface.create(if(selected)"sans-serif-medium" else "sans-serif",Typeface.NORMAL)
+            setPadding(ui.dp(8),ui.dp(3),ui.dp(8),ui.dp(3))
+            background=if(gallery) ui.pillRipple(
+                if(selected) alphaColor(palette.accent,36) else ui.gallerySurface(170),
+                14,
+                if(selected) alphaColor(palette.accent,130) else ui.galleryHairline(110),
+            ) else palette.outlined(
+                if(selected) alphaColor(palette.accent,34) else palette.activeSurface,
+                if(selected) palette.accent else palette.lineColor,
+                0,
+            )
+            setOnClickListener {onTap()}
+            if(onLong!=null)setOnLongClickListener {onLong();true}
+        }
+        val activeKeys=FeedGrouping.REACTION_ORDER.filter {(entry.reactionCounts[it] ?: 0)>0}
+        if(activeKeys.isEmpty()){
+            bar.addView(
+                rxChip("👏",false,"feed-react:$activityId",{toggleFeedReaction(activityId,"clap",entry.myReaction)},{openReactionPicker(activityId,entry.myReaction)}),
+                LinearLayout.LayoutParams(-2,-2),
+            )
+        }else {
+            activeKeys.forEach {k->
+                val c=entry.reactionCounts[k] ?: 0
+                val isMine=entry.myReaction==k
+                bar.addView(
+                    rxChip("${FeedGrouping.reactionEmoji(k)} $c",isMine,"feed-react:$activityId:$k",{toggleFeedReaction(activityId,k,entry.myReaction)},{openReactionPicker(activityId,entry.myReaction)}),
+                    LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(5)},
+                )
+            }
+            bar.addView(
+                rxChip("+",false,"feed-react-more:$activityId",{openReactionPicker(activityId,entry.myReaction)}),
+                LinearLayout.LayoutParams(-2,-2),
+            )
+        }
+    }
+    private fun openReactionPicker(activityId:String,currentMine:String?){
+        val labels=FeedGrouping.REACTION_ORDER.map {k->
+            val mark=if(k==currentMine)" (remover)" else ""
+            when(k){"clap"->"👏 Parabéns$mark";"fire"->"🔥 Ritmo forte$mark";"heart"->"❤️ Curti$mark";else->"📖 Boa leitura$mark"}
+        }.toTypedArray()
+        tracked(AlertDialog.Builder(activity).setTitle("Reagir").setItems(labels){_,idx->
+            toggleFeedReaction(activityId,FeedGrouping.REACTION_ORDER[idx],currentMine)
+        }.setNegativeButton("Cancelar",null).create())
+    }
+    private fun toggleFeedReaction(activityId:String,reaction:String,currentMine:String?){
+        if(closed || !active || activityId in pendingReactions || who()!=identity)return
+        val client=api ?: return
+        val removing=currentMine==reaction
+        val targetRow=rows.firstOrNull {it.s("id")==activityId} ?: return
+        val previousRx=targetRow.get("reactions")?.deepCopy()
+        // Optimistic update on target event
+        val nextCounts=LinkedHashMap<String,Int>()
+        val curCounts=targetRow.o("reactions").o("counts")
+        FeedGrouping.REACTION_ORDER.forEach {k->val c=curCounts.n(k).toInt();if(c>0)nextCounts[k]=c}
+        if(currentMine!=null && currentMine in FeedGrouping.REACTION_ORDER){
+            val dec=(nextCounts[currentMine] ?: 0)-1
+            if(dec>0)nextCounts[currentMine]=dec else nextCounts.remove(currentMine)
+        }
+        if(!removing){
+            nextCounts[reaction]=(nextCounts[reaction] ?: 0)+1
+        }
+        val optObj=JsonObject().apply {
+            val co=JsonObject();nextCounts.forEach {(k,v)->co.addProperty(k,v)}
+            add("counts",co)
+            if(removing)add("mine",JsonNull.INSTANCE) else addProperty("mine",reaction)
+            addProperty("total",nextCounts.values.sum())
+        }
+        targetRow.add("reactions",optObj)
+        pendingReactions.add(activityId)
+        val profile=identity
+        val scroll=activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll);val pos=scroll?.scrollY ?: 0
+        changed();scroll?.post {if(active)scroll.scrollTo(0,pos)}
+        reactionWorker.execute {
+            val result=runCatching {
+                if(removing)SocialRequests.call(client,"/v1/friends/feed/$activityId/reaction","DELETE")
+                else SocialRequests.call(client,"/v1/friends/feed/$activityId/reaction","PUT",JsonObject().apply {addProperty("reaction",reaction)})
+            }
+            handler.post {
+                pendingReactions.remove(activityId)
+                if(closed || identity!=profile || who()!=profile)return@post
+                result.fold({resp->
+                    val serverRx=resp.get("reactions")?.takeIf {it.isJsonObject}?.asJsonObject
+                    if(serverRx!=null){
+                        rows.firstOrNull {it.s("id")==activityId}?.add("reactions",serverRx)
+                    }
+                    if(active && tab=="feed" && !people){
+                        val s2=activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll);val y2=s2?.scrollY ?: 0
+                        changed();s2?.post {if(active)s2.scrollTo(0,y2)}
+                    }
+                },{err->
+                    rows.firstOrNull {it.s("id")==activityId}?.let {r->
+                        if(previousRx!=null)r.add("reactions",previousRx) else r.remove("reactions")
+                    }
+                    val msg=if(err is AccountFailure && err.code==404)"Atualize a API para usar reações no Feed." else SocialRequests.message(err,accounts.address)
+                    Toast.makeText(activity,msg,Toast.LENGTH_SHORT).show()
+                    if(active && tab=="feed" && !people){
+                        val s2=activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll);val y2=s2?.scrollY ?: 0
+                        changed();s2?.post {if(active)s2.scrollTo(0,y2)}
+                    }
+                })
+            }
+        }
     }
     private fun peopleView(parent:LinearLayout){
         rows.forEach {person->val personId=id(person.s("id")) ?: return@forEach

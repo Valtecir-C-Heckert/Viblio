@@ -256,3 +256,81 @@ def test_feed_includes_own_activity_cover_and_respects_friend_sharing(api):
     assert all(e['actor']['id']!=b['user']['id'] for e in feed_a_after['items'])
     assert any(e['actor']['id']==a['user']['id'] for e in feed_a_after['items'])
 
+
+def _direct_test_user():
+    import uuid, psycopg
+    from app.accounts import digest
+    from test_api import DSN
+    identifier=uuid.uuid4();token=uuid.uuid4().hex+uuid.uuid4().hex;name='rx_'+identifier.hex[:12]
+    with psycopg.connect(DSN) as db:
+        db.execute("INSERT INTO public.viblio_users(id,email,password_hash,is_admin,username) VALUES (%s,%s,'unused-test-hash',false,%s)",(identifier,str(identifier)+'@example.test',name))
+        db.execute('INSERT INTO public.viblio_sessions(token_hash,user_id) VALUES (%s,%s)',(digest(token),identifier))
+    return {'token':token,'user':{'id':str(identifier),'username':name}}
+
+
+def test_feed_reactions_authorization_and_aggregation(api):
+    a,b,outsider=_direct_test_user(),_direct_test_user(),_direct_test_user()
+    accept(api,a,b)
+    sb=snapshot();result(sync(api,b,sb));enabled(api,b)
+    session(sb,0,50,'rx1');result(sync(api,b,sb,1))
+    event_id=next(e['id'] for e in get(api,a,'/v1/friends/feed')['items'] if e['kind']=='read')
+
+    # Outsider cannot react or probe the activity ID.
+    assert api.put(f'/v1/friends/feed/{event_id}/reaction',headers=headers(outsider),json={'reaction':'clap'}).status_code==404
+    # Invalid reaction rejected.
+    assert api.put(f'/v1/friends/feed/{event_id}/reaction',headers=headers(a),json={'reaction':'invalid'}).status_code==422
+
+    # Accepted friend reacts and switches reaction; owner can also react.
+    r1=api.put(f'/v1/friends/feed/{event_id}/reaction',headers=headers(a),json={'reaction':'clap'})
+    assert r1.status_code==200 and r1.json()['reactions']=={'counts':{'clap':1},'mine':'clap','total':1}
+    r2=api.put(f'/v1/friends/feed/{event_id}/reaction',headers=headers(b),json={'reaction':'fire'})
+    assert r2.status_code==200 and r2.json()['reactions']=={'counts':{'clap':1,'fire':1},'mine':'fire','total':2}
+    r3=api.put(f'/v1/friends/feed/{event_id}/reaction',headers=headers(a),json={'reaction':'fire'})
+    assert r3.status_code==200 and r3.json()['reactions']=={'counts':{'fire':2},'mine':'fire','total':2}
+
+    # Feed projection includes aggregated reactions.
+    feed_item=next(e for e in get(api,a,'/v1/friends/feed')['items'] if e['id']==event_id)
+    assert feed_item['reactions']=={'counts':{'fire':2},'mine':'fire','total':2}
+
+    # Removing reaction updates count and clears mine.
+    d1=api.delete(f'/v1/friends/feed/{event_id}/reaction',headers=headers(a))
+    assert d1.status_code==200 and d1.json()['reactions']=={'counts':{'fire':1},'mine':None,'total':1}
+    assert api.delete(f'/v1/friends/feed/{event_id}/reaction',headers=headers(outsider)).status_code==404
+
+
+def test_social_summary_counts_invites_votes_and_unread_messages(api):
+    a,b,c=_direct_test_user(),_direct_test_user(),_direct_test_user()
+    assert get(api,b,'/v1/social/summary')=={'friend_requests':0,'club_invites':0,'open_votes':0,'unread_messages':0,'total':0}
+
+    # Incoming friend request from c -> b
+    assert api.post('/v1/friends/requests',headers=headers(c),json={'username':b['user']['username']}).status_code==200
+    assert get(api,b,'/v1/social/summary')['friend_requests']==1
+    assert get(api,c,'/v1/social/summary')['friend_requests']==0
+
+    # Accept a <-> b, create club with proposal & invite b
+    accept(api,a,b)
+    sa=snapshot();result(sync(api,a,sa))
+    club=api.post('/v1/clubs',headers=headers(a),json={'name':'Clube Resumo'}).json()
+    cid=club['id']
+    assert api.post(f'/v1/clubs/{cid}/members',headers=headers(a),json={'username':b['user']['username']}).status_code==200
+    assert get(api,b,'/v1/social/summary')['club_invites']==1
+
+    # B accepts invite; A proposes a book -> open_votes becomes 1 for B until B votes
+    assert api.post(f'/v1/clubs/{cid}/accept',headers=headers(b)).status_code==200
+    prop=api.post(f'/v1/clubs/{cid}/proposals',headers=headers(a),json={'book_id':'b1'}).json()
+    assert get(api,b,'/v1/social/summary')['open_votes']==1
+    assert api.post(f"/v1/clubs/{cid}/proposals/{prop['id']}/vote",headers=headers(b)).status_code==200
+    assert get(api,b,'/v1/social/summary')['open_votes']==0
+
+    # Start round, add open stage, A posts message -> unread_messages == 1 for B until B reads messages
+    assert api.post(f'/v1/clubs/{cid}/select',headers=headers(a),json={'proposal_id':prop['id'],'due_at':'2026-12-31'}).status_code==200
+    st=api.post(f'/v1/clubs/{cid}/stages',headers=headers(a),json={'page_limit':50,'discuss_at':'2020-01-01T00:00:00Z'}).json()
+    sid=st['id']
+    assert api.post(f'/v1/clubs/{cid}/stages/{sid}/messages',headers=headers(a),json={'body':'Oi grupo'}).status_code==200
+    summary_before=get(api,b,'/v1/social/summary')
+    assert summary_before['unread_messages']==1 and summary_before['total']==2  # 1 friend request + 1 unread msg
+    assert api.get(f'/v1/clubs/{cid}/stages/{sid}/messages',headers=headers(b)).status_code==200
+    summary_after=get(api,b,'/v1/social/summary')
+    assert summary_after['unread_messages']==0 and summary_after['total']==1
+
+

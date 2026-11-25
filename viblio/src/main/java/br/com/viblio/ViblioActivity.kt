@@ -46,12 +46,42 @@ class ViblioActivity : Activity() {
     }
     private fun needsLogin()= !accounts.signedIn && !offline
     private val navigationCovers=java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val socialSummaryWorker=java.util.concurrent.Executors.newSingleThreadExecutor()
+    @Volatile private var socialSummaryConn:br.com.viblio.account.AccountConnection?=null
+    private var socialBadgeCount=0
+    private var lastSummaryFetchMs=0L
     private var stopped=false
     private var needsRender=false
     private var started=false
     private var themeBookKey:String?=null
     private var observedShelfPages=mutableMapOf<String,Int>()
     private var observedCurrentBookId:String?=null
+    private fun refreshSocialSummary(force:Boolean=false) {
+        if(!::accounts.isInitialized || isDestroyed) return
+        if(!accounts.signedIn) {
+            if(socialBadgeCount!=0){socialBadgeCount=0;if(!stopped && !needsLogin())render()}
+            return
+        }
+        val now=System.currentTimeMillis()
+        if(!force && now-lastSummaryFetchMs<15_000L) return
+        lastSummaryFetchMs=now
+        val expectedProfile=br.com.centralcasa.books.LibraryProfiles.database(this)
+        val appCtx=applicationContext
+        socialSummaryWorker.execute {
+            val summary=br.com.viblio.reminder.SocialNotifier.fetchSummaryBlocking(appCtx){ socialSummaryConn=it }
+            socialSummaryConn=null
+            if(summary==null) return@execute
+            root.post {
+                if(!isDestroyed && accounts.signedIn && br.com.centralcasa.books.LibraryProfiles.database(this)==expectedProfile){
+                    if(tab=="friends") br.com.viblio.reminder.SocialNotifier.markSeen(this,summary)
+                    if(socialBadgeCount!=summary.total){
+                        socialBadgeCount=summary.total
+                        if(!stopped && !needsLogin()) render()
+                    }
+                }
+            }
+        }
+    }
     private fun snapshotShelfPages() {
         observedShelfPages.clear()
         library.repository.books().forEach { if (!it.archived && it.pagesKnown) observedShelfPages[it.id] = it.currentPage }
@@ -218,10 +248,12 @@ class ViblioActivity : Activity() {
             pullBadge.animate().translationY(ui.dp(14).toFloat()).alpha(1f).setDuration(140).start()
             root.removeCallbacks(pullTimeout)
             if (tab == "friends") {
+                if (accounts.signedIn && accounts.hasPendingOrError()) accounts.syncSilently(force = true)
                 friends.triggerRefresh()
+                refreshSocialSummary(force = true)
                 root.postDelayed(pullTimeout, 10000L)
             } else if (tab == "shelf" && accounts.signedIn) {
-                accounts.syncSilently()
+                accounts.syncSilently(force = true)
                 root.postDelayed(pullTimeout, 900L)
             } else {
                 stopPullSpinner()
@@ -254,6 +286,7 @@ class ViblioActivity : Activity() {
         window.navigationBarColor = Color.TRANSPARENT
         setContentView(root)
         accounts=br.com.viblio.account.AccountManager(this,changed={if(!accounts.signedIn)offline=false;if(accounts.signedIn && ::friends.isInitialized && ::library.isInitialized && !accounts.syncStatus().isPending && !accounts.syncStatus().isError)friends.retryPendingClubProgressSync(library.repository.books());if(needsLogin() || navigation.visibility==android.view.View.GONE || tab=="account")render()},reloaded=::reloadProfile,canReplace={::library.isInitialized && library.canReplaceLibrary && (statistics?.canReplaceLibrary ?: true) && (!::friends.isInitialized || friends.canReplaceLibrary)})
+        accounts.onSyncUploaded={ if(::friends.isInitialized) friends.onLibrarySynced() }
         homeAssistant=br.com.viblio.homeassistant.HomeAssistantBridge(this)
         library=makeLibrary()
         catalog=br.com.viblio.catalog.ViblioCatalog(this,changed={force->accounts.localChanged();if(force || tab=="shelf" && !library.isEditor)render()},personalToken=accounts::catalogToken,personalMode=accounts::personalMode,scanner={launchIsbnScanner("editor")})
@@ -299,6 +332,8 @@ class ViblioActivity : Activity() {
     private fun makeFriends()=br.com.viblio.ui.SocialPanel(this,ui,accounts){if(tab=="friends")render()}.apply {
         composerDock=this@ViblioActivity.composerDock
         onBackdrop={if(tab=="friends" && !needsLogin())applyBackground(displayTheme)}
+        ownBooksProvider={ if(::library.isInitialized) library.repository.books() else emptyList() }
+        onSocialActivityChanged={ refreshSocialSummary(force=true) }
         onOpenOwnBook={ bookId ->
             if(!library.isEditor && library.repository.book(bookId)!=null){
                 returnFromDetailTab="friends"
@@ -399,6 +434,7 @@ class ViblioActivity : Activity() {
     }
     private fun reloadProfile() {
         themeBookKey=null;ui.readingColor(null);saveIntroCoverColor(null);br.com.viblio.ui.DynamicAppIcon.applyForColorAsync(this,null)
+        socialBadgeCount=0;lastSummaryFetchMs=0L;socialSummaryConn?.let { c -> socialSummaryWorker.execute { runCatching { c.cancel() } } };socialSummaryConn=null
         if(!accounts.signedIn)offline=false
         library.onStop();library.onDestroy();statistics?.onDestroy();statistics=null
         search.close();catalog.close();friends.close();friends=makeFriends()
@@ -407,16 +443,26 @@ class ViblioActivity : Activity() {
         library=makeLibrary().apply {catalog=this@ViblioActivity.catalog}
         snapshotShelfPages()
         refreshWidgetsAsync()
-        if(started){homeAssistant.start();if(tab=="shelf" && !needsLogin())library.onStart()};render()
+        if(started){homeAssistant.start();if(tab=="shelf" && !needsLogin())library.onStart();refreshSocialSummary(force=true)};render()
     }
     public override fun onNewIntent(intent:Intent) {
         super.onNewIntent(intent);setIntent(intent);openIncomingReading(intent)
     }
     private fun openIncomingReading(incoming:Intent?) {
-        if(incoming?.action!=Intent.ACTION_VIEW || incoming.data?.scheme!="viblio" || incoming.data?.host!="current") return
+        if(incoming?.action!=Intent.ACTION_VIEW || incoming.data?.scheme!="viblio") return
+        val host=incoming.data?.host
+        if(host!="current" && host!="friends") return
         if(needsLogin())return
         // Consume deep link so configuration changes (rotation) never replay it.
         if(intent===incoming) setIntent(Intent(this, ViblioActivity::class.java))
+        if(host=="friends") {
+            val open={ switchTab("friends");friends.triggerRefresh();refreshSocialSummary(force=true);scroll.post { scroll.scrollTo(0,0) } }
+            if(library.isEditor) AlertDialog.Builder(this).setTitle("Abrir Amigos?")
+                .setMessage("Há um formulário em edição. Abrir Amigos descarta as alterações ainda não salvas.")
+                .setPositiveButton("Abrir Amigos") { _,_->open() }.setNegativeButton("Continuar editando",null).show()
+            else open()
+            return
+        }
         val open={ switchTab("shelf");library.openCurrent();scroll.post { scroll.scrollTo(0,0) } }
         if(library.isEditor) AlertDialog.Builder(this).setTitle("Abrir livro atual?")
             .setMessage("Há um formulário em edição. Abrir a leitura descarta as alterações ainda não salvas.")
@@ -432,6 +478,7 @@ class ViblioActivity : Activity() {
         if(tab=="friends") {friends.hide(resetSelection=!keepReturn);if(!keepReturn)positions["friends"]=0}
         tab=destination
         if(tab=="shelf" && started) library.onStart()
+        if(tab=="friends" && accounts.signedIn) refreshSocialSummary(force=true)
         render()
         scroll.post { scroll.scrollTo(0,positions[tab] ?: 0) }
     }
@@ -508,7 +555,9 @@ class ViblioActivity : Activity() {
         listOf(Triple("current","Livro atual","books"),Triple("shelf","Estante","book_nav"),Triple("search","Pesquisa","search"),Triple("stats","Estatísticas","stats"),Triple("friends","Amigos","people")).forEach { (key,label,icon)->
             val selectedTab=if(tab=="shelf" && library.isCurrentReading)"current" else tab
             val item=navUi.column().apply { gravity=Gravity.CENTER;background=navUi.ripple(if(!navUi.rectilinear && selectedTab==key) navUi.activeSurface else Color.TRANSPARENT,14)
-                setPadding(navUi.dp(4),navUi.dp(6),navUi.dp(4),navUi.dp(6));contentDescription=label;isFocusable=true;isSelected=selectedTab==key
+                setPadding(navUi.dp(4),navUi.dp(6),navUi.dp(4),navUi.dp(6))
+                contentDescription=if(key=="friends" && socialBadgeCount>0) "$label, $socialBadgeCount pendências" else label
+                isFocusable=true;isSelected=selectedTab==key
             }
             navigation.addView(item,LinearLayout.LayoutParams(0,-1,1f).apply { marginStart=navUi.dp(2);marginEnd=navUi.dp(2) })
             val image=ImageView(this).apply {
@@ -518,7 +567,27 @@ class ViblioActivity : Activity() {
                 }
                 importantForAccessibility=android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO
             }
-            item.addView(image,LinearLayout.LayoutParams(navUi.dp(28),navUi.dp(28)))
+            if(key=="friends" && socialBadgeCount>0){
+                val iconHost=FrameLayout(this)
+                iconHost.addView(image,FrameLayout.LayoutParams(navUi.dp(28),navUi.dp(28),Gravity.CENTER))
+                val badge=android.widget.TextView(this).apply {
+                    tag="friends-nav-badge"
+                    text=if(socialBadgeCount>9) "9+" else socialBadgeCount.toString()
+                    textSize=8.5f
+                    gravity=Gravity.CENTER
+                    includeFontPadding=false
+                    setTextColor(navUi.background)
+                    typeface=android.graphics.Typeface.create("sans-serif-medium",android.graphics.Typeface.NORMAL)
+                    background=navUi.pillShape(navUi.accent,8)
+                    minWidth=navUi.dp(15)
+                    setPadding(navUi.dp(3),0,navUi.dp(3),0)
+                    importantForAccessibility=android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                }
+                iconHost.addView(badge,FrameLayout.LayoutParams(-2,navUi.dp(15),Gravity.TOP or Gravity.END))
+                item.addView(iconHost,LinearLayout.LayoutParams(navUi.dp(38),navUi.dp(28)))
+            } else {
+                item.addView(image,LinearLayout.LayoutParams(navUi.dp(28),navUi.dp(28)))
+            }
             if(key=="current"){
                 val source=library
                 // Decode from the profile's local cover cache outside the UI thread.
@@ -612,10 +681,10 @@ class ViblioActivity : Activity() {
             .setPositiveButton("Abrir cadastro") { _,_->open() }.setNegativeButton("Continuar editando") { _,_->switchTab("shelf") }.show()
         else open()
     }
-    override fun onStart() { super.onStart();suppressIconSwitch=false;stopped=false;accounts.start();homeAssistant.start();started=true;if(tab=="shelf" && !needsLogin()) library.onStart();catalog.retry();if(br.com.viblio.reminder.ReadingReminder.isEnabled(this)) br.com.viblio.reminder.ReadingReminder.scheduleNext(this);if(needsRender)render() }
+    override fun onStart() { super.onStart();suppressIconSwitch=false;stopped=false;accounts.start();homeAssistant.start();started=true;if(tab=="shelf" && !needsLogin()) library.onStart();catalog.retry();if(br.com.viblio.reminder.ReadingReminder.isEnabled(this)) br.com.viblio.reminder.ReadingReminder.scheduleNext(this);if(accounts.signedIn && br.com.viblio.reminder.SocialNotifier.isEnabled(this)) br.com.viblio.reminder.SocialNotifier.schedule(this);if(accounts.signedIn) refreshSocialSummary();if(needsRender)render() }
     override fun onStop() { stopped=true;accounts.stop();homeAssistant.stop();started=false;library.onStop();if(tab=="search") search.hide();if(tab=="friends")friends.hide();refreshWidgetsAsync(captureLastBook=true);super.onStop() }
-    override fun onResume() { super.onResume();if(accounts.signedIn)friends.retryPendingClubProgressSync(library.repository.books());if(tab=="search" || tab=="friends") render() }
-    override fun onDestroy() { root.removeCallbacks(pullTimeout);introView?.cancel();introView=null;navigationCovers.shutdownNow();accounts.close();homeAssistant.close();search.close();catalog.close();friends.close();statistics?.onDestroy();library.onDestroy();super.onDestroy() }
+    override fun onResume() { super.onResume();if(accounts.signedIn){friends.retryPendingClubProgressSync(library.repository.books());refreshSocialSummary()};if(tab=="search" || tab=="friends") render() }
+    override fun onDestroy() { root.removeCallbacks(pullTimeout);introView?.cancel();introView=null;socialSummaryConn?.let { runCatching { it.cancel() } };socialSummaryConn=null;socialSummaryWorker.shutdownNow();navigationCovers.shutdownNow();accounts.close();homeAssistant.close();search.close();catalog.close();friends.close();statistics?.onDestroy();library.onDestroy();super.onDestroy() }
     override fun onSaveInstanceState(outState:Bundle) {
         outState.putString("scan.target",scanTarget);outState.putString("scan.profile",scanProfile);outState.putString("scan.editor",scanEditor)
         outState.putBoolean("viblio.offline",offline)
@@ -647,10 +716,17 @@ class ViblioActivity : Activity() {
     }
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        val granted = grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED
         if (requestCode == 935) {
-            val granted = grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED
             statistics?.onReminderPermissionResult(granted)
             library.onReminderPermissionResult(granted)
+        } else if (requestCode == 945) {
+            if (granted && br.com.viblio.reminder.SocialNotifier.isEnabled(this)) {
+                br.com.viblio.reminder.SocialNotifier.schedule(this)
+            } else if (!granted) {
+                br.com.viblio.reminder.SocialNotifier.setEnabled(this, false)
+            }
+            if (tab == "account") render()
         }
     }
 }
