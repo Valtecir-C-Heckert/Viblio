@@ -234,7 +234,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
     private fun tracked(d:Dialog){dialogs.add(d);d.setOnDismissListener {dialogs.remove(d)};d.show();d.window?.setBackgroundDrawable(ui.shape(ui.surface,0))}
     private val tick=Runnable {scheduled=false;if(active && !closed && tab!="friends" && !people && clubPage!="books" && !busy && loaded && dialogs.isEmpty() && stage==null && SystemClock.elapsedRealtime()-editedAt>=3000){load(poll=true)};arm()}
     private fun arm(){if(active && !closed && !scheduled){scheduled=true;handler.postDelayed(tick,delay)}}
-    private fun reset(preserveClub:Boolean=false){stopLive();generation++;clubFeedEpoch++;requestConnection?.cancel();requestConnection=null;clubFeedConnection?.cancel();clubFeedConnection=null;clubFeedBusy=false;busy=false;loaded=false;error="";rows=emptyList();cursor=null;messageBefore=null;if(!preserveClub){data=JsonObject();clubFeed=emptyList();clubFeedCursor=null};if(images==null)images=api?.let {FriendCoverLoader(it::thumbnail)}}
+    private fun reset(preserveClub:Boolean=false){stopLive();openReactionTrayId=null;generation++;clubFeedEpoch++;requestConnection?.cancel();requestConnection=null;clubFeedConnection?.cancel();clubFeedConnection=null;clubFeedBusy=false;busy=false;loaded=false;error="";rows=emptyList();cursor=null;messageBefore=null;if(!preserveClub){data=JsonObject();clubFeed=emptyList();clubFeedCursor=null};if(images==null)images=api?.let {FriendCoverLoader(it::thumbnail)}}
     private fun hydrateCacheIfEmpty(){
         if(rows.isNotEmpty() || people || identity.isBlank())return
         if(tab=="feed"){
@@ -256,7 +256,7 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
             if(active && !busy)load(poll=true) else loaded=false
         }
     }
-    fun hide(resetSelection:Boolean=false){active=false;stopLive();clearBackdrop();generation++;clubFeedEpoch++;requestConnection?.cancel();requestConnection=null;clubFeedConnection?.cancel();clubFeedConnection=null;clubFeedBusy=false;busy=false;loaded=false;scheduled=false;coverRedrawScheduled=false;handler.removeCallbacksAndMessages(null);api?.cancel();images?.detach();dialogs.toList().forEach {it.dismiss()};dialogs.clear();rows=emptyList();data=JsonObject();friends.hide(resetSelection);if(resetSelection){club=null;stage=null;round=null;clubPage="home";people=false;inviteClub=null;draft="";replyToId=null;replyToUser="";invited.clear()}}
+    fun hide(resetSelection:Boolean=false){active=false;openReactionTrayId=null;stopLive();clearBackdrop();generation++;clubFeedEpoch++;requestConnection?.cancel();requestConnection=null;clubFeedConnection?.cancel();clubFeedConnection=null;clubFeedBusy=false;busy=false;loaded=false;scheduled=false;coverRedrawScheduled=false;handler.removeCallbacksAndMessages(null);api?.cancel();images?.detach();dialogs.toList().forEach {it.dismiss()};dialogs.clear();rows=emptyList();data=JsonObject();friends.hide(resetSelection);if(resetSelection){club=null;stage=null;round=null;clubPage="home";people=false;inviteClub=null;draft="";replyToId=null;replyToUser="";invited.clear()}}
     fun close(){hide();closed=true;clubSyncEpoch++;clubSyncConnection?.cancel();clubSyncConnection=null;pendingClubSyncBook=null;clubSyncApi?.close();clubSyncApi=null;clubSyncApiIdentity="";images?.close();images=null;feedColors.clear();identity="";api?.close();api=null;apiIdentity="";friends.close();worker.shutdownNow();liveWorker.shutdownNow();messagesWorker.shutdownNow();backdropWorker.shutdownNow();clubFeedWorker.shutdownNow();clubSyncWorker.shutdownNow();reactionWorker.shutdownNow()}
     fun markClubProgressSynced(bookId:String,page:Int){suppressClubSyncBookId=bookId;suppressClubSyncPage=page}
     fun retryPendingClubProgressSync(books:List<LibraryBook>){
@@ -937,59 +937,103 @@ class SocialPanel(private val activity:Activity,private val baseUi:DisplayUi,pri
         }
         if(cursor!=null && rows.size<400)action(parent,"Carregar mais"){load(more=true)}
     }
+    private var openReactionTrayId:String?=null
+    private fun toggleReactionTray(activityId:String){
+        openReactionTrayId=if(openReactionTrayId==activityId) null else activityId
+        val scroll=activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll);val pos=scroll?.scrollY ?: 0
+        changed();scroll?.post {if(active)scroll.scrollTo(0,pos)}
+    }
     private fun addFeedReactions(parent:LinearLayout,entry:FeedGrouping.Entry,palette:DisplayUi,gallery:Boolean){
         val activityId=id(entry.id) ?: return
+        val trayOpen=openReactionTrayId==activityId
+        val container=ui.column()
+        parent.addView(container,LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(7)})
         val bar=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
-        parent.addView(bar,LinearLayout.LayoutParams(-1,-2).apply {topMargin=ui.dp(6)})
-        fun rxChip(label:String,selected:Boolean,tagName:String,onTap:()->Unit,onLong:(()->Unit)?=null)=TextView(activity).apply {
-            tag=tagName;text=label;textSize=10.5f;gravity=Gravity.CENTER;includeFontPadding=false;isFocusable=true
+        container.addView(bar,LinearLayout.LayoutParams(-1,-2))
+        fun rxChip(label:String,selected:Boolean,tagName:String,onTap:(View)->Unit,onLong:(()->Unit)?=null)=TextView(activity).apply {
+            tag=tagName;text=label;textSize=11f;gravity=Gravity.CENTER;includeFontPadding=false;isFocusable=true
             setTextColor(if(selected)palette.accent else ui.muted)
             typeface=Typeface.create(if(selected)"sans-serif-medium" else "sans-serif",Typeface.NORMAL)
-            setPadding(ui.dp(8),ui.dp(3),ui.dp(8),ui.dp(3))
+            setPadding(ui.dp(9),ui.dp(4),ui.dp(9),ui.dp(4))
             background=if(gallery) ui.pillRipple(
-                if(selected) alphaColor(palette.accent,36) else ui.gallerySurface(170),
-                14,
-                if(selected) alphaColor(palette.accent,130) else ui.galleryHairline(110),
+                if(selected) alphaColor(palette.accent,40) else ui.gallerySurface(175),
+                16,
+                if(selected) alphaColor(palette.accent,145) else ui.galleryHairline(115),
             ) else palette.outlined(
-                if(selected) alphaColor(palette.accent,34) else palette.activeSurface,
+                if(selected) alphaColor(palette.accent,36) else palette.activeSurface,
                 if(selected) palette.accent else palette.lineColor,
                 0,
             )
-            setOnClickListener {onTap()}
-            if(onLong!=null)setOnLongClickListener {onLong();true}
+            setOnClickListener {v->
+                v.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+                onTap(v)
+            }
+            if(onLong!=null)setOnLongClickListener {v->
+                v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                onLong();true
+            }
         }
         val activeKeys=FeedGrouping.REACTION_ORDER.filter {(entry.reactionCounts[it] ?: 0)>0}
         if(activeKeys.isEmpty()){
             bar.addView(
-                rxChip("👏",false,"feed-react:$activityId",{toggleFeedReaction(activityId,"clap",entry.myReaction)},{openReactionPicker(activityId,entry.myReaction)}),
-                LinearLayout.LayoutParams(-2,-2),
+                rxChip("♡ Curtir",false,"feed-react:$activityId",{toggleFeedReaction(activityId,"heart",entry.myReaction)},{toggleReactionTray(activityId)}),
+                LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(6)},
             )
         }else {
             activeKeys.forEach {k->
                 val c=entry.reactionCounts[k] ?: 0
                 val isMine=entry.myReaction==k
                 bar.addView(
-                    rxChip("${FeedGrouping.reactionEmoji(k)} $c",isMine,"feed-react:$activityId:$k",{toggleFeedReaction(activityId,k,entry.myReaction)},{openReactionPicker(activityId,entry.myReaction)}),
-                    LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(5)},
+                    rxChip("${FeedGrouping.reactionEmoji(k)} $c",isMine,"feed-react:$activityId:$k",{toggleFeedReaction(activityId,k,entry.myReaction)},{toggleReactionTray(activityId)}),
+                    LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(6)},
                 )
             }
-            bar.addView(
-                rxChip("+",false,"feed-react-more:$activityId",{openReactionPicker(activityId,entry.myReaction)}),
-                LinearLayout.LayoutParams(-2,-2),
-            )
         }
-    }
-    private fun openReactionPicker(activityId:String,currentMine:String?){
-        val labels=FeedGrouping.REACTION_ORDER.map {k->
-            val mark=if(k==currentMine)" (remover)" else ""
-            when(k){"clap"->"👏 Parabéns$mark";"fire"->"🔥 Ritmo forte$mark";"heart"->"❤️ Curti$mark";else->"📖 Boa leitura$mark"}
-        }.toTypedArray()
-        tracked(AlertDialog.Builder(activity).setTitle("Reagir").setItems(labels){_,idx->
-            toggleFeedReaction(activityId,FeedGrouping.REACTION_ORDER[idx],currentMine)
-        }.setNegativeButton("Cancelar",null).create())
+        bar.addView(
+            rxChip(if(trayOpen)"×" else "☺",trayOpen,"feed-react-more:$activityId",{toggleReactionTray(activityId)}),
+            LinearLayout.LayoutParams(-2,-2),
+        )
+        if(trayOpen){
+            val tray=ui.row().apply {
+                tag="feed-react-tray:$activityId"
+                gravity=Gravity.CENTER_VERTICAL
+                setPadding(ui.dp(6),ui.dp(4),ui.dp(6),ui.dp(4))
+                background=if(gallery) ui.pillShape(ui.galleryPill(242),22,alphaColor(palette.accent,120))
+                    else palette.outlined(palette.surface,palette.accent,0)
+                if(gallery) elevation=ui.dp(6).toFloat()
+            }
+            container.addView(tray,LinearLayout.LayoutParams(-2,-2).apply {topMargin=ui.dp(6)})
+            FeedGrouping.REACTION_ORDER.forEachIndexed {idx,k->
+                val isMine=entry.myReaction==k
+                val emojiBtn=TextView(activity).apply {
+                    tag="feed-react-pick:$activityId:$k"
+                    text=FeedGrouping.reactionEmoji(k)
+                    textSize=18f
+                    gravity=Gravity.CENTER
+                    includeFontPadding=false
+                    isFocusable=true
+                    contentDescription=when(k){"heart"->"Curtir";"clap"->"Parabéns";"fire"->"Ritmo forte";else->"Boa leitura"}
+                    background=if(gallery) ui.pillRipple(
+                        if(isMine) alphaColor(palette.accent,55) else Color.TRANSPARENT,
+                        18,
+                        if(isMine) alphaColor(palette.accent,170) else Color.TRANSPARENT,
+                    ) else palette.outlined(
+                        if(isMine) alphaColor(palette.accent,45) else Color.TRANSPARENT,
+                        if(isMine) palette.accent else Color.TRANSPARENT,
+                        0,
+                    )
+                    setOnClickListener {v->
+                        v.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+                        toggleFeedReaction(activityId,k,entry.myReaction)
+                    }
+                }
+                tray.addView(emojiBtn,LinearLayout.LayoutParams(ui.dp(40),ui.dp(36)).apply {if(idx>0)marginStart=ui.dp(4)})
+            }
+        }
     }
     private fun toggleFeedReaction(activityId:String,reaction:String,currentMine:String?){
         if(closed || !active || activityId in pendingReactions || who()!=identity)return
+        openReactionTrayId=null
         val client=api ?: return
         val removing=currentMine==reaction
         val targetRow=rows.firstOrNull {it.s("id")==activityId} ?: return

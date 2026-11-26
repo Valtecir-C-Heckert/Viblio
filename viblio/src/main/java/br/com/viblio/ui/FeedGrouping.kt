@@ -9,7 +9,7 @@ import kotlin.math.roundToInt
  * Removes empty sub-second sessions (0 pages & < 1s) and merges duplicate same-book/same-day cards.
  */
 internal object FeedGrouping {
-    val REACTION_ORDER = listOf("clap", "fire", "heart", "book")
+    val REACTION_ORDER = listOf("heart", "clap", "fire", "book")
     fun reactionEmoji(key: String): String = when (key) {
         "clap" -> "👏"
         "fire" -> "🔥"

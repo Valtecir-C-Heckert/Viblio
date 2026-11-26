@@ -142,6 +142,78 @@ class ViblioActivity : Activity() {
     private lateinit var pullSpinner: ProgressBar
     private var pullSpinning = false
     private val pullTimeout = Runnable { stopPullSpinner() }
+    private lateinit var updateToastBar: LinearLayout
+    private lateinit var updateToastLabel: android.widget.TextView
+    private lateinit var updateToastAction: android.widget.TextView
+    private lateinit var updateToastClose: android.widget.TextView
+    private var availableUpdate: br.com.viblio.account.AppUpdateRelease? = null
+    private var updateToastDismissedTag: String? = null
+    private val updateWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    private fun purgeRemovedCustomShelves() {
+        val prefs = getSharedPreferences(br.com.centralcasa.books.LibraryProfiles.settings(this), MODE_PRIVATE)
+        if (prefs.contains("SHELF_CUSTOM_SHELVES")) {
+            prefs.edit().remove("SHELF_CUSTOM_SHELVES").commit()
+            if (::accounts.isInitialized && accounts.signedIn) accounts.localChanged()
+        }
+    }
+
+    private fun checkAppUpdateSilently() {
+        if (isDestroyed) return
+        val appCtx = applicationContext
+        val current = br.com.viblio.account.AppUpdateChecker.currentVersion(appCtx)
+        br.com.viblio.account.AppUpdateChecker.cachedNewerRelease(appCtx, current.versionName)?.let { cached ->
+            availableUpdate = cached
+            refreshUpdateToastVisibility()
+        }
+        if (!br.com.viblio.account.AppUpdateChecker.shouldAutoCheck(appCtx)) return
+        updateWorker.execute {
+            val found = runCatching { br.com.viblio.account.AppUpdateChecker.fetchLatestNewer(current.versionName) }
+            found.onSuccess { release ->
+                br.com.viblio.account.AppUpdateChecker.recordCheckResult(appCtx, release)
+                root.post {
+                    if (!isDestroyed) {
+                        availableUpdate = release
+                        refreshUpdateToastVisibility()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun refreshUpdateToastVisibility() {
+        if (!::updateToastBar.isInitialized) return
+        val release = availableUpdate
+        val show = release != null &&
+            release.tag != updateToastDismissedTag &&
+            !needsLogin() &&
+            (!::composerDock.isInitialized || composerDock.visibility != android.view.View.VISIBLE)
+        if (show && release != null) {
+            updateToastLabel.text = "Nova versão ${release.version} disponível"
+            updateToastBar.visibility = android.view.View.VISIBLE
+        } else {
+            updateToastBar.visibility = android.view.View.GONE
+        }
+    }
+
+    private fun updateToastTheme(theme: DisplayUi) {
+        if (!::updateToastBar.isInitialized) return
+        val gallery = br.com.centralcasa.data.LocalSettings(this).galleryUiStyle()
+        updateToastBar.background = if (gallery) {
+            theme.pillShape(theme.galleryPill(246), 18, theme.tint(theme.accent, 150))
+        } else {
+            theme.outlined(theme.surface, theme.accent, 0)
+        }
+        updateToastLabel.setTextColor(theme.text)
+        updateToastAction.setTextColor(theme.background)
+        updateToastAction.background = if (gallery) {
+            theme.pillRipple(theme.accent, 14, darkRipple = true)
+        } else {
+            theme.outlined(theme.accent, theme.accent, 0)
+        }
+        updateToastClose.setTextColor(theme.muted)
+        refreshUpdateToastVisibility()
+    }
 
     private fun stopPullSpinner() {
         pullSpinning = false
@@ -214,9 +286,65 @@ class ViblioActivity : Activity() {
             addView(pullIcon, FrameLayout.LayoutParams(ui.dp(20), ui.dp(20), Gravity.CENTER))
             addView(pullSpinner, FrameLayout.LayoutParams(ui.dp(20), ui.dp(20), Gravity.CENTER))
         }
+        updateToastLabel = android.widget.TextView(this).apply {
+            textSize = 12.5f
+            setTextColor(ui.text)
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            includeFontPadding = false
+        }
+        updateToastAction = android.widget.TextView(this).apply {
+            tag = "app-update-toast-action"
+            text = "Atualizar"
+            textSize = 11.5f
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setTextColor(ui.background)
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+            setPadding(ui.dp(12), ui.dp(7), ui.dp(12), ui.dp(7))
+            isFocusable = true
+            setOnClickListener {
+                val release = availableUpdate ?: return@setOnClickListener
+                if (br.com.viblio.account.AppUpdateChecker.isAllowedApkUrl(release.apkUrl)) {
+                    runCatching {
+                        startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(release.apkUrl)))
+                    }.onFailure {
+                        android.widget.Toast.makeText(this@ViblioActivity, "Não foi possível abrir o navegador.", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+        updateToastClose = android.widget.TextView(this).apply {
+            tag = "app-update-toast-close"
+            text = "×"
+            textSize = 18f
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setTextColor(ui.muted)
+            contentDescription = "Dispensar aviso de atualização"
+            isFocusable = true
+            setOnClickListener {
+                updateToastDismissedTag = availableUpdate?.tag
+                refreshUpdateToastVisibility()
+            }
+        }
+        updateToastBar = ui.row().apply {
+            tag = "app-update-toast"
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(ui.dp(14), ui.dp(10), ui.dp(8), ui.dp(10))
+            elevation = ui.dp(10).toFloat()
+            visibility = android.view.View.GONE
+            addView(updateToastLabel, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(10) })
+            addView(updateToastAction, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(4) })
+            addView(updateToastClose, LinearLayout.LayoutParams(ui.dp(32), ui.dp(32)))
+        }
         val scrollHost = FrameLayout(this).apply {
             addView(scroll, FrameLayout.LayoutParams(-1, -1))
             addView(pullBadge, FrameLayout.LayoutParams(ui.dp(38), ui.dp(38), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+            addView(updateToastBar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
+                setMargins(ui.dp(14), 0, ui.dp(14), ui.dp(12))
+            })
         }
         scroll.canPullRefresh = {
             !pullSpinning && !needsLogin() && (tab == "friends" || (tab == "shelf" && accounts.signedIn && !library.isEditor))
@@ -294,6 +422,7 @@ class ViblioActivity : Activity() {
         search=makeSearch()
         friends=makeFriends()
         snapshotShelfPages()
+        purgeRemovedCustomShelves()
         account=AccountPanel(this,ui,accounts,changed={accounts.localChanged();render()},shelf={switchTab("shelf")},backup={library.backupSettings()})
         offline=state?.getBoolean("viblio.offline",false) ?: false
         scanTarget=state?.getString("scan.target");scanProfile=state?.getString("scan.profile");scanEditor=state?.getString("scan.editor")
@@ -442,6 +571,7 @@ class ViblioActivity : Activity() {
         search=makeSearch();homeAssistant.close();homeAssistant=br.com.viblio.homeassistant.HomeAssistantBridge(this)
         library=makeLibrary().apply {catalog=this@ViblioActivity.catalog}
         snapshotShelfPages()
+        purgeRemovedCustomShelves()
         refreshWidgetsAsync()
         if(started){homeAssistant.start();if(tab=="shelf" && !needsLogin())library.onStart();refreshSocialSummary(force=true)};render()
     }
@@ -492,6 +622,7 @@ class ViblioActivity : Activity() {
         composerDock.visibility=android.view.View.GONE
         if(needsLogin()){
             navigation.visibility=android.view.View.GONE
+            refreshUpdateToastVisibility()
             applyBackground(ui)
             scroll.moveBook=null;scroll.pinchColumns=null;scroll.canPinchAt={_,_->false}
             account.renderLogin(content){offline=true;tab="shelf";if(library.repository.current()!=null)library.openCurrent() else render();if(started)library.onStart();scroll.scrollTo(0,0);openIncomingReading(intent)}
@@ -532,6 +663,22 @@ class ViblioActivity : Activity() {
                         library.openShelf()
                         scroll.post { scroll.scrollTo(0,0) }
                     }
+                    onRequestShelfBookForPurchase={ entryId, goalName ->
+                        library.planSelectionTitle=goalName
+                        library.onPlanBookSelected={ picked ->
+                            library.clearPlanSelection()
+                            switchTab("stats")
+                            statistics?.completePurchaseBookSelection(entryId,picked)
+                        }
+                        library.onCancelPlanSelection={
+                            library.clearPlanSelection()
+                            switchTab("stats")
+                            statistics?.completePurchaseBookSelection(entryId,null)
+                        }
+                        switchTab("shelf")
+                        library.openShelf()
+                        scroll.post { scroll.scrollTo(0,0) }
+                    }
                     prepareStatistics()
                     onStatisticsBack={switchTab("shelf")}
                 }.also { statistics=it }
@@ -544,6 +691,7 @@ class ViblioActivity : Activity() {
         val navUi=if(tab=="friends")friends.displayTheme else if(tab=="shelf" && (library.isEditor || library.isDetail || library.isCollection))library.displayTheme() else ui
         applyBackground(navUi)
         updatePullTheme(navUi)
+        updateToastTheme(navUi)
         if (pullSpinning && (tab != "friends" || !friends.isRefreshing)) {
             if (tab == "friends") { root.removeCallbacks(pullTimeout); stopPullSpinner() }
         }
@@ -681,10 +829,10 @@ class ViblioActivity : Activity() {
             .setPositiveButton("Abrir cadastro") { _,_->open() }.setNegativeButton("Continuar editando") { _,_->switchTab("shelf") }.show()
         else open()
     }
-    override fun onStart() { super.onStart();suppressIconSwitch=false;stopped=false;accounts.start();homeAssistant.start();started=true;if(tab=="shelf" && !needsLogin()) library.onStart();catalog.retry();if(br.com.viblio.reminder.ReadingReminder.isEnabled(this)) br.com.viblio.reminder.ReadingReminder.scheduleNext(this);if(accounts.signedIn && br.com.viblio.reminder.SocialNotifier.isEnabled(this)) br.com.viblio.reminder.SocialNotifier.schedule(this);if(accounts.signedIn) refreshSocialSummary();if(needsRender)render() }
+    override fun onStart() { super.onStart();suppressIconSwitch=false;stopped=false;accounts.start();homeAssistant.start();started=true;if(tab=="shelf" && !needsLogin()) library.onStart();catalog.retry();if(br.com.viblio.reminder.ReadingReminder.isEnabled(this)) br.com.viblio.reminder.ReadingReminder.scheduleNext(this);if(accounts.signedIn && br.com.viblio.reminder.SocialNotifier.isEnabled(this)) br.com.viblio.reminder.SocialNotifier.schedule(this);if(accounts.signedIn) refreshSocialSummary();checkAppUpdateSilently();if(needsRender)render() }
     override fun onStop() { stopped=true;accounts.stop();homeAssistant.stop();started=false;library.onStop();if(tab=="search") search.hide();if(tab=="friends")friends.hide();refreshWidgetsAsync(captureLastBook=true);super.onStop() }
     override fun onResume() { super.onResume();if(accounts.signedIn){friends.retryPendingClubProgressSync(library.repository.books());refreshSocialSummary()};if(tab=="search" || tab=="friends") render() }
-    override fun onDestroy() { root.removeCallbacks(pullTimeout);introView?.cancel();introView=null;socialSummaryConn?.let { runCatching { it.cancel() } };socialSummaryConn=null;socialSummaryWorker.shutdownNow();navigationCovers.shutdownNow();accounts.close();homeAssistant.close();search.close();catalog.close();friends.close();statistics?.onDestroy();library.onDestroy();super.onDestroy() }
+    override fun onDestroy() { root.removeCallbacks(pullTimeout);introView?.cancel();introView=null;socialSummaryConn?.let { runCatching { it.cancel() } };socialSummaryConn=null;socialSummaryWorker.shutdownNow();updateWorker.shutdownNow();navigationCovers.shutdownNow();accounts.close();homeAssistant.close();search.close();catalog.close();friends.close();statistics?.onDestroy();library.onDestroy();super.onDestroy() }
     override fun onSaveInstanceState(outState:Bundle) {
         outState.putString("scan.target",scanTarget);outState.putString("scan.profile",scanProfile);outState.putString("scan.editor",scanEditor)
         outState.putBoolean("viblio.offline",offline)

@@ -157,6 +157,7 @@ class AccountPanel(private val activity:Activity,private val ui:DisplayUi,privat
                     checkingUpdate=false
                     if(activity.isFinishing || activity.isDestroyed)return@runOnUiThread
                     result.fold({release->
+                        br.com.viblio.account.AppUpdateChecker.recordCheckResult(activity,release)
                         if(release==null){
                             Toast.makeText(activity,"Você já está na versão mais recente (${version.versionName}).",Toast.LENGTH_LONG).show()
                         }else {

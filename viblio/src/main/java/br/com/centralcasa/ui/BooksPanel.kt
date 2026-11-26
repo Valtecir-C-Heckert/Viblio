@@ -68,6 +68,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     var onOpenPlannedBook:((String)->Unit)?=null
     var onAddCatalogToShelf:((br.com.centralcasa.books.catalog.CatalogBook)->Unit)?=null
     var onRequestShelfBookForPlan:((Int,Int)->Unit)?=null
+    var onRequestShelfBookForPurchase:((String,String)->Unit)?=null
     var planSelectionTitle:String?=null
     var onPlanBookSelected:((LibraryBook)->Unit)?=null
     var onCancelPlanSelection:(()->Unit)?=null
@@ -77,9 +78,19 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         statisticsTab="plan"
         val panel=annualPlanPanel ?: AnnualPlanPanel(
             activity=activity,ui=baseUi,repo=repository,catalogProvider={planCatalogProvider()},
-            onOpenBook=onOpenPlannedBook,onAddCatalogBook=onAddCatalogToShelf,onPickBookFromShelf=onRequestShelfBookForPlan,
+            onOpenBook=onOpenPlannedBook,onAddCatalogBook=onAddCatalogToShelf,
+            onPickBookFromShelf=onRequestShelfBookForPlan,onPickBookFromShelfForPurchase=onRequestShelfBookForPurchase,
         ){ if(!destroyed) changed() }.also { annualPlanPanel=it }
         panel.onShelfBookPicked(year,month,book)
+    }
+    fun completePurchaseBookSelection(entryId:String,book:LibraryBook?){
+        statisticsTab="plan"
+        val panel=annualPlanPanel ?: AnnualPlanPanel(
+            activity=activity,ui=baseUi,repo=repository,catalogProvider={planCatalogProvider()},
+            onOpenBook=onOpenPlannedBook,onAddCatalogBook=onAddCatalogToShelf,
+            onPickBookFromShelf=onRequestShelfBookForPlan,onPickBookFromShelfForPurchase=onRequestShelfBookForPurchase,
+        ){ if(!destroyed) changed() }.also { annualPlanPanel=it }
+        panel.onPurchaseBookPicked(entryId,book)
     }
     var onAccount:(()->Unit)?=null
     var accountMenuBadge:(()->AccountMenuBadge)?=null
@@ -103,10 +114,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     private var heatmapYear=java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
     private var heatmapMonth=java.util.Calendar.getInstance().get(java.util.Calendar.MONTH)+1
     private var heatmapSelectedDay:String?=null
-    private var progressDialog:AlertDialog?=null
-    private val customShelfStore = CustomShelfStore(activity)
-    private var selectedCustomShelfId: String? = null
-    private var customShelfDialog: AlertDialog? = null
+    private var progressDialog:android.app.Dialog?=null
     private var manualScrollDirection=0
     private val manualAutoScroll=object:Runnable {
         override fun run() {
@@ -166,7 +174,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     fun currentReadingThumbnail(): android.graphics.Bitmap? = repository.current()?.let { images.thumbnail(it.cover) }
     val isCurrentReading get()=isDetail && selected!=null && selected==repository.current()?.id
     val isEditor get() = screen in listOf("editor", "collection_editor")
-    val canReplaceLibrary get() = !isEditor && manualDraft==null && !busy && (progressDialog?.isShowing!=true) && (customShelfDialog?.isShowing!=true) && (goalsPanel?.isEditing!=true) && (annualPlanPanel?.isEditing!=true) && !datesEditor.isEditing
+    val canReplaceLibrary get() = !isEditor && manualDraft==null && !busy && (progressDialog?.isShowing!=true) && (goalsPanel?.isEditing!=true) && (annualPlanPanel?.isEditing!=true) && !datesEditor.isEditing
     private var editingGenre = ""
     private val editingSubgenres = mutableListOf<String>()
     private var subgenreInput: AutoCompleteTextView? = null
@@ -198,10 +206,9 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     init { repository.recover(); settings.migrateGenreColors() }
     fun onStart() { visible = true; handler.removeCallbacks(tick); handler.post(tick) }
     fun onStop() { stopManualScroll();captureEditor(); captureCollectionEditor(); visible = false; handler.removeCallbacks(tick); repository.checkpoint() }
-    fun onDestroy() { datesEditor.close();goalsPanel?.close();goalsPanel=null;annualPlanPanel?.close();annualPlanPanel=null;retrospectiveDialog?.destroy();retrospectiveDialog=null;progressDialog?.dismiss();progressDialog=null;customShelfDialog?.dismiss();customShelfDialog=null;destroyed = true;refreshSpines=null; if(useAsyncShelfImages || useSpineLayout) shelfThumbnails.close(); handler.removeCallbacksAndMessages(null); worker.execute { repository.close() }; worker.shutdown() }
+    fun onDestroy() { datesEditor.close();goalsPanel?.close();goalsPanel=null;annualPlanPanel?.close();annualPlanPanel=null;retrospectiveDialog?.destroy();retrospectiveDialog=null;progressDialog?.dismiss();progressDialog=null;destroyed = true;refreshSpines=null; if(useAsyncShelfImages || useSpineLayout) shelfThumbnails.close(); handler.removeCallbacksAndMessages(null); worker.execute { repository.close() }; worker.shutdown() }
     fun saveState(out: Bundle) {
         out.putBoolean("books.manualView",manualView)
-        out.putString("books.customShelf", selectedCustomShelfId)
         manualDraft?.let { out.putStringArrayList("books.manualDraft",ArrayList(it)) }
         out.putString("books.catalogCover",catalogCover)
         captureEditor(); captureCollectionEditor(); persistShelfFilters(); out.putString("books.type", shelfType); out.putString("books.screen", screen); out.putString("books.selected", selected); out.putString("books.collection", selectedCollection)
@@ -239,7 +246,6 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     fun restoreState(state: Bundle?) {
         if (state == null) return
         manualView=state.getBoolean("books.manualView")
-        selectedCustomShelfId = state.getString("books.customShelf")
         manualDraft=state.getStringArrayList("books.manualDraft")
         catalogCover=state.getString("books.catalogCover").orEmpty()
         shelfType = state.getString("books.type")?.takeIf { it in CollectionKinds.labels } ?: shelfType
@@ -1057,7 +1063,6 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                     setPadding(ui.dp(6), ui.dp(2), ui.dp(2), ui.dp(2))
                     isFocusable = true
                     setOnClickListener {
-                        selectedCustomShelfId = null
                         shelfFilters = ShelfFilters()
                         manualView = useManualShelfOrder && manualIsDefault()
                         shelfScroll = 0
@@ -1098,7 +1103,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                             "Backup / importar", "Catálogo do servidor" -> backupMenu()
                             "Cores por gênero" -> customizeGenreColors()
                             "Organizar estante" -> beginManualOrder(all)
-                            "Minha ordem · limpar filtros" -> { selectedCustomShelfId = null; shelfFilters = ShelfFilters(); manualView = true; shelfScroll = 0; persistShelfFilters(); changed() }
+                            "Minha ordem · limpar filtros" -> { shelfFilters = ShelfFilters(); manualView = true; shelfScroll = 0; persistShelfFilters(); changed() }
                             "Conta" -> onAccount?.invoke()
                             else -> AlertDialog.Builder(activity).setTitle("Capas por linha · ${CollectionKinds.labels[shelfType]}").setSingleChoiceItems((1..6).map { "$it" }.toTypedArray(), settings.shelfColumns(shelfType) - 1) { dialog, which -> settings.setShelfColumns(shelfType, which + 1); dialog.dismiss(); changed() }.setNegativeButton("Cancelar", null).show()
                         }
@@ -1133,7 +1138,6 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             }
             resultInfo = ui.label(parent, "", 10, ui.muted).apply { gravity = Gravity.CENTER; setPadding(0, ui.dp(2), 0, ui.dp(4)) }
         }
-        if (!arranging) renderCustomShelvesBar(parent, all, gallery)
         val grid = ui.column().apply { tag = "shelf-pinch-grid" }
         if(arranging)grid.setOnDragListener {view,event->
             when(event.action){
@@ -1150,16 +1154,12 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         val refresh:()->Unit = refresh@{
             if(useAsyncShelfImages || spineMode()) shelfThumbnails.reset()
             grid.removeAllViews()
-            val customShelves = customShelfStore.load()
-            val activeCustomShelf = selectedCustomShelfId?.let { id -> customShelves.firstOrNull { it.id == id } }
-            if (selectedCustomShelfId != null && activeCustomShelf == null) selectedCustomShelfId = null
             val candidates=if(!useCollectionInventory || shelfFilters.collectionCompletion==CollectionCompletion.ALL)all else all.filter {book->
                 collections.firstOrNull {it.id==book.id}?.let {CollectionInventory.of(it,volumes).status==shelfFilters.collectionCompletion} ?: false
             }
-            val scopedCandidates = if (activeCustomShelf == null || arranging) candidates else candidates.filter { it.id in activeCustomShelf.bookIds }
-            val filtered=shelfFilters.select(scopedCandidates,currentShelfId)
+            val filtered=shelfFilters.select(candidates,currentShelfId)
             val matches=if(useManual) ManualShelfOrder.select(if(arranging) all else filtered,manualDraft ?: savedManualOrder()) else filtered
-            val active = listOfNotNull(activeCustomShelf?.name,shelfFilters.collectionCompletion.takeIf {it!=CollectionCompletion.ALL}?.label,shelfFilters.status.takeIf { it != ShelfStatus.ALL }?.label, shelfFilters.genre, shelfFilters.subgenre, shelfFilters.saga, shelfFilters.author, shelfFilters.covers.takeIf { it != ShelfCovers.ALL }?.label)
+            val active = listOfNotNull(shelfFilters.collectionCompletion.takeIf {it!=CollectionCompletion.ALL}?.label,shelfFilters.status.takeIf { it != ShelfStatus.ALL }?.label, shelfFilters.genre, shelfFilters.subgenre, shelfFilters.saga, shelfFilters.author, shelfFilters.covers.takeIf { it != ShelfCovers.ALL }?.label)
             if (gallery) {
                 galleryClearSearch?.visibility = if (shelfFilters.query.isNotEmpty()) View.VISIBLE else View.GONE
                 galleryFilterChip?.text = if (shelfFilters.activeCount > 0) "Filtros (${shelfFilters.activeCount}) ▾" else "Filtros ▾"
@@ -1173,7 +1173,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 filterButton?.text = (if(useManual) "Filtrar · Minha ordem" else "Filtrar e ordenar · ${shelfFilters.order.size} critérios") + if (shelfFilters.activeCount > 0) " · ${shelfFilters.activeCount} filtros" else ""
                 resultInfo?.text = (if(useManual) "Minha ordem" else shelfFilters.order.joinToString(" › ") { it.label }) + if (active.isEmpty() && shelfFilters.query.isBlank()) "" else "\n${matches.size} de ${all.size} livros" + if (active.isEmpty()) "" else " · ${active.joinToString(" · ")}"
             }
-            if (matches.isEmpty()) { ui.label(grid, if (all.isEmpty()) "Sua biblioteca começa aqui" else if (activeCustomShelf != null) "Nenhum livro nesta prateleira" else "Nenhum livro com esses filtros", 20, bold = true); ui.label(grid, if (all.isEmpty()) "Adicione um livro pelo botão + no topo." else if (activeCustomShelf != null) "Abra um livro e toque em Prateleiras para adicioná-lo." else "Toque em Limpar ou ajuste os filtros.", 12, ui.muted) }
+            if (matches.isEmpty()) { ui.label(grid, if (all.isEmpty()) "Sua biblioteca começa aqui" else "Nenhum livro com esses filtros", 20, bold = true); ui.label(grid, if (all.isEmpty()) "Adicione um livro pelo botão + no topo." else "Toque em Limpar ou ajuste os filtros.", 12, ui.muted) }
             val currentBookId = currentShelfId
             val availableWidth = if (grid.width > 0) grid.width / activity.resources.displayMetrics.density else (activity.resources.configuration.screenWidthDp - 40).toFloat()
             if(spineMode() && !arranging){
@@ -1327,6 +1327,8 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     private fun showCenteredModal(
         palette: DisplayUi,
         title: String? = null,
+        eyebrow: String? = null,
+        onClose: (() -> Unit)? = null,
         build: (LinearLayout, android.app.Dialog) -> Unit,
     ): android.app.Dialog {
         val dialog = android.app.Dialog(activity)
@@ -1389,15 +1391,29 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             gravity = Gravity.CENTER_VERTICAL
         }
         card.addView(topBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = palette.dp(10) })
-        if (!title.isNullOrBlank()) {
-            topBar.addView(
-                TextView(activity).apply {
-                    text = title; textSize = 19f; setTextColor(palette.text); includeFontPadding = false
-                    typeface = Typeface.create("serif", Typeface.NORMAL)
-                    maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
-                },
-                LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = palette.dp(8) },
-            )
+        if (!title.isNullOrBlank() || !eyebrow.isNullOrBlank()) {
+            val titleCol = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+            if (!eyebrow.isNullOrBlank()) {
+                titleCol.addView(
+                    TextView(activity).apply {
+                        text = eyebrow; textSize = 11f; setTextColor(palette.accent); includeFontPadding = false
+                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                        maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                    },
+                    LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = palette.dp(2) },
+                )
+            }
+            if (!title.isNullOrBlank()) {
+                titleCol.addView(
+                    TextView(activity).apply {
+                        text = title; textSize = 19f; setTextColor(palette.text); includeFontPadding = false
+                        typeface = Typeface.create("serif", Typeface.NORMAL)
+                        maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                    },
+                    LinearLayout.LayoutParams(-1, -2),
+                )
+            }
+            topBar.addView(titleCol, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = palette.dp(8) })
         } else {
             topBar.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f))
         }
@@ -1406,7 +1422,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 text = "×"; textSize = 22f; setTextColor(palette.muted); includeFontPadding = false
                 gravity = Gravity.CENTER; contentDescription = "Fechar"; isFocusable = true
                 background = palette.pillRipple(Color.TRANSPARENT, 18)
-                setOnClickListener { dialog.dismiss() }
+                setOnClickListener { onClose?.invoke(); dialog.dismiss() }
             },
             LinearLayout.LayoutParams(palette.dp(34), palette.dp(34)),
         )
@@ -1430,7 +1446,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     }
 
     private fun showMenuModal(palette: DisplayUi, title: String, build: (LinearLayout, android.app.Dialog) -> Unit): android.app.Dialog =
-        if (baseUi.rectilinear && settings.galleryUiStyle()) showCenteredModal(palette, title, build)
+        if (baseUi.rectilinear && settings.galleryUiStyle()) showCenteredModal(palette, title, build = build)
         else showBottomSheet(palette, build)
 
     private fun addAccountSheetCard(body: LinearLayout, palette: DisplayUi, dialog: android.app.Dialog) {
@@ -2279,7 +2295,6 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         titleIdentity(hero, b.title, b.author, b.publisher)
         classificationTiles(hero, b.genre, b.selectedSubgenres, classificationColor(b))
         sagaIdentity(hero, b)
-        renderBookCustomShelvesRow(hero, b, ui, false)
 
         if (!b.pagesKnown) {
             val reading = genreDetailPanel(parent, b, 12)
@@ -2410,69 +2425,260 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 if(!ui.rectilinear){attempt {repository.updateProgress(b.id,page)};return}
                 val current=repository.book(b.id) ?: return
                 if(current.currentPage==page)return
+                val gallery=settings.galleryUiStyle()
+                val palette=if(repository.currentId()==b.id) ui else bookPalette(b)
+                val accent=palette.accent
+                val hairline=palette.galleryHairline(115)
+                val errorColor=0xFFE8867A.toInt()
                 fun refresh(){val scroll=activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll);val position=scroll.scrollY;changed();scroll.post {scroll.scrollTo(0,position)}}
-                val body=ui.column().apply {setPadding(ui.dp(20),ui.dp(8),ui.dp(20),0)}
-                ui.label(body,"Página atual",12,ui.muted)
-                val destination=EditText(activity).apply {
-                    tag="reading-page";inputType=InputType.TYPE_CLASS_NUMBER;isSingleLine=true
-                    filters=arrayOf(android.text.InputFilter.LengthFilter(6));setText(page.toString());setSelectAllOnFocus(true)
-                    setTextColor(ui.text);setHintTextColor(ui.muted)
+                fun mText(value:CharSequence,sp:Float,color:Int,serif:Boolean=false,medium:Boolean=false)=TextView(activity).apply {
+                    text=value;textSize=sp;setTextColor(color);includeFontPadding=false
+                    typeface=when {
+                        serif -> Typeface.create("serif",Typeface.NORMAL)
+                        medium -> Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                        else -> Typeface.create("sans-serif",Typeface.NORMAL)
+                    }
                 }
-                body.addView(destination,LinearLayout.LayoutParams(-1,ui.dp(52)))
-                fun chosenPage():Int? {
-                    val value=destination.text.toString().toIntOrNull()
-                    if(value==null || value !in 0..current.totalPages){destination.error="Use uma página entre 0 e ${current.totalPages}";return null}
-                    destination.error=null;return value
+                fun fieldBg()=if(gallery) palette.pillShape(palette.background,14,palette.galleryHairline(145))
+                    else palette.outlined(palette.background,palette.lineColor,0)
+                fun btnBg(primary:Boolean,outlined:Boolean=false)=if(gallery){
+                    when {
+                        primary -> palette.pillRipple(accent,20,darkRipple=true)
+                        outlined -> palette.pillRipple(palette.activeSurface,20,palette.galleryHairline(145))
+                        else -> palette.pillRipple(Color.TRANSPARENT,20,palette.galleryHairline(115))
+                    }
+                } else {
+                    when {
+                        primary -> palette.outlined(accent,accent,0)
+                        outlined -> palette.outlined(palette.activeSurface,palette.lineColor,0)
+                        else -> palette.outlined(Color.TRANSPARENT,palette.lineColor,0)
+                    }
                 }
                 fun correctPage(value:Int){
                     val latest=requireNotNull(repository.book(b.id)){"Livro não encontrado."}
                     require(latest.currentPage==current.currentPage && latest.totalPages==current.totalPages){"A página mudou. Confira o progresso antes de corrigir."}
                     repository.updateProgress(b.id,value)
                 }
-                fun showDialog(dialog:AlertDialog){
-                    progressDialog=dialog;dialog.setOnDismissListener {if(progressDialog===dialog)progressDialog=null};dialog.show()
-                }
-                if(page<current.currentPage){
-                    fun restore(){val latestPage=repository.book(b.id)?.currentPage ?: current.currentPage;slider.progress=latestPage;preview(latestPage)}
-                    val dialog=AlertDialog.Builder(activity).setTitle("Corrigir página").setView(body)
-                        .setPositiveButton("Só corrigir página",null).setNegativeButton("Cancelar"){_,_->restore()}.create()
-                    dialog.setOnCancelListener {restore()}
-                    dialog.setOnShowListener {dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                        val target=chosenPage() ?: return@setOnClickListener
-                        try {correctPage(target);dialog.dismiss();refresh()}catch(e:Exception){destination.error=e.message ?: "Não foi possível corrigir"}
-                    }}
-                    showDialog(dialog);return
-                }
-                val draft=repository.draft()?.takeIf {it.bookId==b.id}
+                val backward=page<current.currentPage
+                val draft=if(backward) null else repository.draft()?.takeIf {it.bookId==b.id}
                 if(draft?.runningSince!=null)repository.pause()
-                val interval=ui.label(body,"${draft?.startPage ?: current.currentPage} → $page páginas",16)
-                destination.addTextChangedListener(object:TextWatcher {
-                    override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
-                    override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){interval.text="${draft?.startPage ?: current.currentPage} → ${s?.toString().orEmpty()} páginas";destination.error=null}
-                    override fun afterTextChanged(s:Editable?){}
-                })
-                val time=ui.row();body.addView(time)
-                fun input(hint:String,max:Int)=EditText(activity).apply {this.hint=hint;inputType=InputType.TYPE_CLASS_NUMBER;filters=arrayOf(android.text.InputFilter.LengthFilter(max));setTextColor(ui.text);setHintTextColor(ui.muted);time.addView(this,LinearLayout.LayoutParams(0,ui.dp(52),1f))}
-                val hours=input("Horas",3).apply {tag="reading-hours"};val minutes=input("Minutos",2).apply {tag="reading-minutes"}
-                if(draft!=null){val total=(repository.elapsed(draft)+59999)/60000;hours.setText((total/60).toString());minutes.setText((total%60).toString())}
-                fun restore(){val latestPage=repository.book(b.id)?.currentPage ?: current.currentPage;slider.progress=latestPage;preview(latestPage);if(draft?.runningSince!=null){repository.start(b.id);refresh()}}
-                val dialog=AlertDialog.Builder(activity).setTitle("Registrar leitura").setView(body).setPositiveButton("Registrar leitura",null)
-                    .setNeutralButton("Só corrigir página",null).setNegativeButton("Cancelar"){_,_->restore()}.create()
-                dialog.setOnCancelListener {restore()}
-                dialog.setOnShowListener {
-                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                        val target=chosenPage() ?: return@setOnClickListener
-                        try {correctPage(target);if(draft?.runningSince!=null)repository.start(b.id);dialog.dismiss();refresh()}catch(e:Exception){destination.error=e.message ?: "Não foi possível corrigir"}
-                    }
-                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                        val target=chosenPage() ?: return@setOnClickListener
-                        if(target<=(draft?.startPage ?: current.currentPage)){destination.error="Para voltar a página, use Só corrigir página";return@setOnClickListener}
-                        val h=hours.text.toString().toIntOrNull() ?: 0;val m=minutes.text.toString().toIntOrNull() ?: 0
-                        if(m !in 0..59 || h*60+m<=0){minutes.error="Informe o tempo de leitura";return@setOnClickListener}
-                        try {repository.recordReading(b.id,current.currentPage,target,(h*60L+m)*60000);dialog.dismiss();refresh()}catch(e:Exception){destination.error=e.message ?: "Não foi possível registrar"}
-                    }
+                val startRef=draft?.startPage ?: current.currentPage
+                var committed=false
+                var restored=false
+                fun restoreOnce(){
+                    if(committed || restored)return
+                    restored=true
+                    val latestPage=repository.book(b.id)?.currentPage ?: current.currentPage
+                    slider.progress=latestPage;preview(latestPage)
+                    if(draft?.runningSince!=null){repository.start(b.id);refresh()}
                 }
-                showDialog(dialog)
+                val dialog=showCenteredModal(
+                    palette=palette,
+                    title=if(backward)"Corrigir página" else "Registrar leitura",
+                    eyebrow=current.title,
+                    onClose={restoreOnce()},
+                ){ body, dlg ->
+                    // 1) Live progress preview pill card
+                    val summaryCard=LinearLayout(activity).apply {
+                        orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL
+                        background=if(gallery) palette.pillShape(palette.activeSurface,14,palette.galleryHairline(125))
+                            else palette.outlined(palette.activeSurface,palette.lineColor,0)
+                        setPadding(palette.dp(14),palette.dp(11),palette.dp(14),palette.dp(11))
+                    }
+                    body.addView(summaryCard,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(14)})
+                    val rangeTxt=mText("",17f,palette.text,serif=true).apply {fontFeatureSettings="tnum"}
+                    summaryCard.addView(rangeTxt,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=palette.dp(8)})
+                    val deltaBadge=mText("",11.5f,accent,medium=true).apply {
+                        fontFeatureSettings="tnum";gravity=Gravity.CENTER
+                        setPadding(palette.dp(10),palette.dp(4),palette.dp(10),palette.dp(4))
+                        background=if(gallery) palette.pillShape(palette.tint(accent,32),14,palette.tint(accent,110))
+                            else palette.outlined(palette.surface,accent,0)
+                    }
+                    summaryCard.addView(deltaBadge,LinearLayout.LayoutParams(-2,-2))
+
+                    fun updateSummary(raw:String){
+                        val parsed=raw.toIntOrNull()
+                        val displayDest=parsed?.toString() ?: "—"
+                        rangeTxt.text="p. $startRef → $displayDest"
+                        if(parsed!=null && parsed in 0..current.totalPages){
+                            val diff=parsed-startRef
+                            val pct=if(parsed==current.totalPages) 100 else Math.round(parsed*100f/current.totalPages).coerceIn(0,99)
+                            val diffStr=when {
+                                diff>0 -> "+$diff págs"
+                                diff<0 -> "$diff págs"
+                                else -> "0 págs"
+                            }
+                            deltaBadge.text="$diffStr · $pct%"
+                            deltaBadge.visibility=View.VISIBLE
+                        } else {
+                            deltaBadge.visibility=View.GONE
+                        }
+                    }
+
+                    // 2) Destination page input with "/ total" suffix
+                    body.addView(
+                        mText("PÁGINA ATUAL",10f,palette.muted,medium=true).apply {letterSpacing=0.08f},
+                        LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(6)},
+                    )
+                    val pageBox=LinearLayout(activity).apply {
+                        orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL
+                        background=fieldBg()
+                        setPadding(palette.dp(14),palette.dp(2),palette.dp(14),palette.dp(2))
+                    }
+                    body.addView(pageBox,LinearLayout.LayoutParams(-1,palette.dp(50)).apply {bottomMargin=palette.dp(if(backward) 8 else 14)})
+                    val destination=EditText(activity).apply {
+                        tag="reading-page";inputType=InputType.TYPE_CLASS_NUMBER;isSingleLine=true
+                        filters=arrayOf(android.text.InputFilter.LengthFilter(6))
+                        setText(page.toString());setSelectAllOnFocus(true)
+                        setTextColor(palette.text);setHintTextColor(palette.muted)
+                        textSize=18f;typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                        fontFeatureSettings="tnum";background=null;setPadding(0,0,0,0)
+                    }
+                    pageBox.addView(destination,LinearLayout.LayoutParams(0,-1,1f))
+                    pageBox.addView(
+                        mText("/ ${current.totalPages}",13f,palette.muted).apply {fontFeatureSettings="tnum"},
+                        LinearLayout.LayoutParams(-2,-2),
+                    )
+                    updateSummary(page.toString())
+
+                    val errorText=mText("",11.5f,errorColor,medium=true).apply {visibility=View.GONE}
+                    fun showError(msg:String){errorText.text=msg;errorText.visibility=View.VISIBLE}
+                    fun clearError(){errorText.text="";errorText.visibility=View.GONE}
+
+                    destination.addTextChangedListener(object:TextWatcher {
+                        override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
+                        override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){
+                            updateSummary(s?.toString().orEmpty());clearError()
+                        }
+                        override fun afterTextChanged(s:Editable?){}
+                    })
+
+                    fun chosenPage():Int? {
+                        val value=destination.text.toString().toIntOrNull()
+                        if(value==null || value !in 0..current.totalPages){
+                            showError("Use uma página entre 0 e ${current.totalPages}.")
+                            return null
+                        }
+                        clearError();return value
+                    }
+
+                    if(backward){
+                        body.addView(errorText,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(10)})
+                        body.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {topMargin=palette.dp(4);bottomMargin=palette.dp(12)})
+                        val btnRow=LinearLayout(activity).apply {orientation=LinearLayout.HORIZONTAL}
+                        body.addView(btnRow,LinearLayout.LayoutParams(-1,-2))
+                        btnRow.addView(
+                            mText("Cancelar",12.5f,palette.muted,medium=true).apply {
+                                tag="reading-cancel";gravity=Gravity.CENTER;minHeight=palette.dp(44);isFocusable=true
+                                background=btnBg(false,outlined=true)
+                                setOnClickListener {restoreOnce();dlg.dismiss()}
+                            },
+                            LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=palette.dp(8)},
+                        )
+                        btnRow.addView(
+                            mText("Só corrigir página",12.5f,palette.background,medium=true).apply {
+                                tag="reading-correct";gravity=Gravity.CENTER;minHeight=palette.dp(44);isFocusable=true
+                                background=btnBg(true)
+                                setOnClickListener {
+                                    val target=chosenPage() ?: return@setOnClickListener
+                                    try {correctPage(target);committed=true;dlg.dismiss();refresh()}
+                                    catch(e:Exception){showError(e.message ?: "Não foi possível corrigir.")}
+                                }
+                            },
+                            LinearLayout.LayoutParams(0,-2,1.35f),
+                        )
+                        return@showCenteredModal
+                    }
+
+                    // 3) Reading duration inputs (Hours + Minutes side-by-side)
+                    val timeHead=LinearLayout(activity).apply {orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL}
+                    body.addView(timeHead,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(6)})
+                    timeHead.addView(
+                        mText("TEMPO DE LEITURA",10f,palette.muted,medium=true).apply {letterSpacing=0.08f},
+                        LinearLayout.LayoutParams(0,-2,1f),
+                    )
+                    if(draft!=null){
+                        timeHead.addView(mText("do cronômetro",10.5f,accent,medium=true),LinearLayout.LayoutParams(-2,-2))
+                    }
+                    val timeRow=LinearLayout(activity).apply {orientation=LinearLayout.HORIZONTAL}
+                    body.addView(timeRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(8)})
+                    fun timeField(hintLabel:String,unitSuffix:String,maxLen:Int,tagName:String,endMargin:Int):EditText {
+                        val box=LinearLayout(activity).apply {
+                            orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL
+                            background=fieldBg()
+                            setPadding(palette.dp(14),palette.dp(2),palette.dp(12),palette.dp(2))
+                        }
+                        val ed=EditText(activity).apply {
+                            tag=tagName;hint=hintLabel;inputType=InputType.TYPE_CLASS_NUMBER;isSingleLine=true
+                            filters=arrayOf(android.text.InputFilter.LengthFilter(maxLen))
+                            setTextColor(palette.text);setHintTextColor(palette.tint(palette.muted,150))
+                            textSize=18f;typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                            fontFeatureSettings="tnum";background=null;setPadding(0,0,0,0)
+                            addTextChangedListener(object:TextWatcher {
+                                override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
+                                override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){clearError()}
+                                override fun afterTextChanged(s:Editable?){}
+                            })
+                        }
+                        box.addView(ed,LinearLayout.LayoutParams(0,-1,1f))
+                        box.addView(mText(unitSuffix,12f,palette.muted),LinearLayout.LayoutParams(-2,-2))
+                        timeRow.addView(box,LinearLayout.LayoutParams(0,palette.dp(50),1f).apply {if(endMargin>0)marginEnd=palette.dp(endMargin)})
+                        return ed
+                    }
+                    val hours=timeField("0","h",3,"reading-hours",8)
+                    val minutes=timeField("0","min",2,"reading-minutes",0)
+                    if(draft!=null){
+                        val total=(repository.elapsed(draft)+59999)/60000
+                        hours.setText((total/60).toString())
+                        minutes.setText((total%60).toString())
+                    }
+
+                    body.addView(errorText,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(8)})
+                    body.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {topMargin=palette.dp(4);bottomMargin=palette.dp(12)})
+
+                    // 4) Primary action + secondary actions
+                    body.addView(
+                        mText("Registrar leitura",13.5f,palette.background,medium=true).apply {
+                            tag="reading-submit";gravity=Gravity.CENTER;minHeight=palette.dp(46);isFocusable=true
+                            background=btnBg(true)
+                            setOnClickListener {
+                                val target=chosenPage() ?: return@setOnClickListener
+                                if(target<=startRef){showError("Para voltar a página, use Só corrigir página.");return@setOnClickListener}
+                                val h=hours.text.toString().toIntOrNull() ?: 0
+                                val m=minutes.text.toString().toIntOrNull() ?: 0
+                                if(m !in 0..59 || h*60+m<=0){showError("Informe o tempo de leitura.");return@setOnClickListener}
+                                try {repository.recordReading(b.id,current.currentPage,target,(h*60L+m)*60000);committed=true;dlg.dismiss();refresh()}
+                                catch(e:Exception){showError(e.message ?: "Não foi possível registrar.")}
+                            }
+                        },
+                        LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(8)},
+                    )
+                    val secondaryRow=LinearLayout(activity).apply {orientation=LinearLayout.HORIZONTAL}
+                    body.addView(secondaryRow,LinearLayout.LayoutParams(-1,-2))
+                    secondaryRow.addView(
+                        mText("Só corrigir página",12f,palette.text,medium=true).apply {
+                            tag="reading-correct";gravity=Gravity.CENTER;minHeight=palette.dp(40);isFocusable=true
+                            background=btnBg(false,outlined=true)
+                            setOnClickListener {
+                                val target=chosenPage() ?: return@setOnClickListener
+                                try {correctPage(target);if(draft?.runningSince!=null)repository.start(b.id);committed=true;dlg.dismiss();refresh()}
+                                catch(e:Exception){showError(e.message ?: "Não foi possível corrigir.")}
+                            }
+                        },
+                        LinearLayout.LayoutParams(0,-2,1.35f).apply {marginEnd=palette.dp(8)},
+                    )
+                    secondaryRow.addView(
+                        mText("Cancelar",12f,palette.muted,medium=true).apply {
+                            tag="reading-cancel";gravity=Gravity.CENTER;minHeight=palette.dp(40);isFocusable=true
+                            background=btnBg(false)
+                            setOnClickListener {restoreOnce();dlg.dismiss()}
+                        },
+                        LinearLayout.LayoutParams(0,-2,1f),
+                    )
+                }
+                progressDialog=dialog
+                dialog.setOnCancelListener {restoreOnce()}
+                dialog.setOnDismissListener {if(progressDialog===dialog)progressDialog=null}
             }
         })
     }
@@ -2577,7 +2783,6 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(12) },
             )
         }
-        renderBookCustomShelvesRow(hero, b, palette, true)
 
         // Unified translucent reading card tinted with the book's cover palette.
         val unifiedCard = ui.column().apply {
@@ -2852,7 +3057,6 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     private fun bookMenu(b: LibraryBook) {
         if (!baseUi.rectilinear) {
             val options = mutableListOf("Editar livro", "Adicionar datas de leitura").apply { if (b.pagesKnown) add(1, "Informar página exata") }
-            options.add("Prateleiras")
             options.add("Trocar capa")
             if (repository.currentId() != b.id) options.add("Tornar livro atual")
             if (repository.draft()?.bookId == b.id) options.addAll(listOf("Pausar leitura e salvar", "Descartar tempo da leitura"))
@@ -2861,7 +3065,6 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             AlertDialog.Builder(activity).setTitle(b.title).setItems(options.toTypedArray()) { _, index ->
                 when (options[index]) {
                     "Conta" -> onAccount?.invoke()
-                    "Prateleiras" -> editBookCustomShelves(b)
                     "Remover da Estante" -> AlertDialog.Builder(activity).setTitle("Remover da Estante?").setMessage("Nota e histórico serão guardados em Conta → Removidos da Estante.").setPositiveButton("Remover") { _, _ -> attempt { repository.archive(b.id); selected = null; show("library") } }.setNegativeButton("Cancelar", null).show()
                     "Trocar capa" -> personalCover(b)
                     "Editar livro" -> { fields.clear(); editor = repository.book(b.id); newBook = false; show("editor") }
@@ -2962,16 +3165,6 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             }
 
             sheetSectionHeader(body, palette, "Livro")
-            val assignedShelves = CustomShelves.shelvesForBook(customShelfStore.load(), b.id)
-            sheetRow(
-                body,
-                palette,
-                "Prateleiras",
-                subtitle = if (assignedShelves.isEmpty()) "Organizar em listas próprias" else assignedShelves.joinToString(" · ") { it.name },
-            ) {
-                dialog.dismiss()
-                editBookCustomShelves(b)
-            }
             val bookRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
             tile(bookRow, "Editar livro", "Dados e páginas", marginEndDp = 7) {
                 dialog.dismiss()
@@ -3000,243 +3193,6 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         }
     }
 
-    private fun showTrackedCustomShelfDialog(dialog: AlertDialog) {
-        customShelfDialog?.dismiss()
-        customShelfDialog = dialog
-        dialog.setOnDismissListener { if (customShelfDialog === dialog) customShelfDialog = null }
-        dialog.show()
-    }
-
-    private fun renderCustomShelvesBar(parent: LinearLayout, all: List<LibraryBook>, gallery: Boolean) {
-        val shelves = customShelfStore.load()
-        if (selectedCustomShelfId != null && shelves.none { it.id == selectedCustomShelfId }) selectedCustomShelfId = null
-        val allIds = all.mapTo(HashSet()) { it.id }
-        val strip = HorizontalScrollView(activity).apply {
-            isHorizontalScrollBarEnabled = false
-            tag = "custom-shelves-bar"
-        }
-        val row = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
-        strip.addView(row)
-        parent.addView(strip, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(10) })
-
-        fun addShelfChip(label: String, active: Boolean, tagName: String, onClick: () -> Unit, onLongClick: (() -> Unit)? = null) {
-            val fg = if (active) (if (gallery) ui.background else ui.accent) else ui.muted
-            val bg = if (gallery) {
-                if (active) ui.pillRipple(ui.accent, 16, darkRipple = true)
-                else ui.pillRipple(ui.gallerySurface(175), 16, ui.galleryHairline(120))
-            } else {
-                ui.outlined(if (active) ui.activeSurface else ui.surface, if (active) ui.accent else ui.lineColor, 0)
-            }
-            val chip = TextView(activity).apply {
-                text = label
-                tag = tagName
-                textSize = 11f
-                maxLines = 1
-                gravity = Gravity.CENTER
-                includeFontPadding = false
-                setTextColor(fg)
-                typeface = Typeface.create(if (active) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
-                setPadding(ui.dp(11), ui.dp(6), ui.dp(11), ui.dp(6))
-                background = bg
-                isFocusable = true
-                isSelected = active
-                setOnClickListener { onClick() }
-                if (onLongClick != null) setOnLongClickListener { onLongClick(); true }
-            }
-            row.addView(chip, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(7) })
-        }
-
-        if (shelves.isNotEmpty()) {
-            addShelfChip("Todas", selectedCustomShelfId == null, "custom-shelf:all", {
-                if (selectedCustomShelfId != null) {
-                    selectedCustomShelfId = null; shelfScroll = 0; changed()
-                }
-            })
-        }
-        shelves.forEach { shelf ->
-            val count = shelf.bookIds.count { it in allIds }
-            val active = selectedCustomShelfId == shelf.id
-            addShelfChip(
-                label = "${shelf.name} ($count)",
-                active = active,
-                tagName = "custom-shelf:${shelf.id}",
-                onClick = {
-                    selectedCustomShelfId = if (active) null else shelf.id
-                    shelfScroll = 0
-                    changed()
-                },
-                onLongClick = { promptManageCustomShelf(shelf) },
-            )
-        }
-        addShelfChip("+ Prateleira", false, "custom-shelf:add", { promptCreateCustomShelf() })
-    }
-
-    private fun renderBookCustomShelvesRow(hero: LinearLayout, b: LibraryBook, palette: DisplayUi, gallery: Boolean) {
-        val assigned = CustomShelves.shelvesForBook(customShelfStore.load(), b.id)
-        val scrollStrip = HorizontalScrollView(activity).apply {
-            isHorizontalScrollBarEnabled = false
-            tag = "book-custom-shelves"
-        }
-        val row = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        scrollStrip.addView(row)
-        hero.addView(scrollStrip, LinearLayout.LayoutParams(-2, -2).apply { topMargin = ui.dp(10) })
-
-        fun pill(label: String, highlighted: Boolean) {
-            val tv = TextView(activity).apply {
-                text = label
-                textSize = 11f
-                maxLines = 1
-                includeFontPadding = false
-                setTextColor(if (highlighted) palette.accent else palette.muted)
-                typeface = Typeface.create(if (highlighted) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
-                setPadding(ui.dp(11), ui.dp(5), ui.dp(11), ui.dp(5))
-                background = if (gallery) {
-                    palette.pillRipple(
-                        if (highlighted) palette.tint(palette.accent, 28) else palette.gallerySurface(170),
-                        16,
-                        if (highlighted) palette.tint(palette.accent, 110) else palette.galleryHairline(115),
-                    )
-                } else {
-                    palette.outlined(if (highlighted) palette.activeSurface else palette.surface, if (highlighted) palette.accent else palette.lineColor, 0)
-                }
-                isFocusable = true
-                setOnClickListener { editBookCustomShelves(b) }
-            }
-            row.addView(tv, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(6) })
-        }
-
-        if (assigned.isEmpty()) {
-            pill("+ Prateleira", false)
-        } else {
-            assigned.forEach { shelf -> pill(shelf.name, true) }
-            pill("+", false)
-        }
-    }
-
-    private fun promptCreateCustomShelf(initialBookId: String? = null, onCreated: ((CustomShelf) -> Unit)? = null) {
-        val body = ui.column().apply { setPadding(ui.dp(20), ui.dp(10), ui.dp(20), 0) }
-        val inputField = EditText(activity).apply {
-            hint = "Nome da prateleira"
-            isSingleLine = true
-            filters = arrayOf(android.text.InputFilter.LengthFilter(40))
-            setTextColor(ui.text); setHintTextColor(ui.muted)
-        }
-        body.addView(inputField, LinearLayout.LayoutParams(-1, ui.dp(48)))
-        val dialog = AlertDialog.Builder(activity)
-            .setTitle("Nova prateleira")
-            .setView(body)
-            .setPositiveButton("Criar", null)
-            .setNegativeButton("Cancelar", null)
-            .create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val name = inputField.text.toString()
-                try {
-                    val (updated, created) = CustomShelves.create(customShelfStore.load(), name, initialBookId)
-                    customShelfStore.save(updated)
-                    dialog.dismiss()
-                    if (onCreated != null) onCreated(created) else changed()
-                } catch (e: Exception) {
-                    inputField.error = e.message ?: "Nome inválido"
-                }
-            }
-        }
-        showTrackedCustomShelfDialog(dialog)
-    }
-
-    private fun promptManageCustomShelf(shelf: CustomShelf) {
-        val options = arrayOf("Renomear", "Excluir prateleira")
-        val dialog = AlertDialog.Builder(activity)
-            .setTitle(shelf.name)
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> {
-                        val body = ui.column().apply { setPadding(ui.dp(20), ui.dp(10), ui.dp(20), 0) }
-                        val inputField = EditText(activity).apply {
-                            setText(shelf.name)
-                            setSelection(shelf.name.length)
-                            isSingleLine = true
-                            filters = arrayOf(android.text.InputFilter.LengthFilter(40))
-                            setTextColor(ui.text); setHintTextColor(ui.muted)
-                        }
-                        body.addView(inputField, LinearLayout.LayoutParams(-1, ui.dp(48)))
-                        val renameDialog = AlertDialog.Builder(activity)
-                            .setTitle("Renomear prateleira")
-                            .setView(body)
-                            .setPositiveButton("Salvar", null)
-                            .setNegativeButton("Cancelar", null)
-                            .create()
-                        renameDialog.setOnShowListener {
-                            renameDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                                try {
-                                    val updated = CustomShelves.rename(customShelfStore.load(), shelf.id, inputField.text.toString())
-                                    customShelfStore.save(updated)
-                                    renameDialog.dismiss()
-                                    changed()
-                                } catch (e: Exception) {
-                                    inputField.error = e.message ?: "Nome inválido"
-                                }
-                            }
-                        }
-                        showTrackedCustomShelfDialog(renameDialog)
-                    }
-                    1 -> {
-                        val confirm = AlertDialog.Builder(activity)
-                            .setTitle("Excluir \"${shelf.name}\"?")
-                            .setMessage("Os livros continuam na sua estante.")
-                            .setPositiveButton("Excluir") { _, _ ->
-                                val updated = CustomShelves.delete(customShelfStore.load(), shelf.id)
-                                customShelfStore.save(updated)
-                                if (selectedCustomShelfId == shelf.id) selectedCustomShelfId = null
-                                changed()
-                            }
-                            .setNegativeButton("Cancelar", null)
-                            .create()
-                        showTrackedCustomShelfDialog(confirm)
-                    }
-                }
-            }
-            .setNegativeButton("Fechar", null)
-            .create()
-        showTrackedCustomShelfDialog(dialog)
-    }
-
-    private fun editBookCustomShelves(b: LibraryBook) {
-        val shelves = customShelfStore.load()
-        if (shelves.isEmpty()) {
-            promptCreateCustomShelf(initialBookId = b.id) { created ->
-                toast("Adicionado em \"${created.name}\"")
-                changed()
-            }
-            return
-        }
-        val names = shelves.map { it.name }.toTypedArray()
-        val checked = BooleanArray(shelves.size) { b.id in shelves[it].bookIds }
-        val dialog = AlertDialog.Builder(activity)
-            .setTitle("Prateleiras")
-            .setMultiChoiceItems(names, checked) { _, which, isChecked ->
-                checked[which] = isChecked
-            }
-            .setPositiveButton("Salvar") { _, _ ->
-                val selectedIds = shelves.indices.filter { checked[it] }.mapTo(HashSet()) { shelves[it].id }
-                try {
-                    val updated = CustomShelves.setBookShelves(customShelfStore.load(), b.id, selectedIds)
-                    customShelfStore.save(updated)
-                    changed()
-                } catch (e: Exception) {
-                    toast(e.message ?: "Não foi possível salvar.")
-                }
-            }
-            .setNeutralButton("Nova prateleira") { _, _ ->
-                promptCreateCustomShelf(initialBookId = b.id) { created ->
-                    toast("Adicionado em \"${created.name}\"")
-                    changed()
-                }
-            }
-            .setNegativeButton("Cancelar", null)
-            .create()
-        showTrackedCustomShelfDialog(dialog)
-    }
     private fun readingAccent(b: LibraryBook): Int {
         if(ui.rectilinear && repository.currentId()==b.id)return ui.accent
         val base=images.coverColor(b.cover) ?: 0xff633039.toInt()
@@ -4922,34 +4878,13 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         val timedPages=timedKnown.sumOf {it.pages.coerceAtLeast(0).toLong()}
         val hairline=ui.galleryHairline(105)
 
-        showBottomSheet(ui) { body, dialog ->
-            // Header: weekday + formatted date + close button
-            val head=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
-            body.addView(head,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
-            val headLeft=ui.column()
-            head.addView(headLeft,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(10)})
-            if(eyebrow.isNotBlank()){
-                headLeft.addView(
-                    mText(eyebrow,11f,mint,medium=true),
-                    LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(2)},
-                )
-            }
-            headLeft.addView(mText(dateTitle,21f,ui.text,serif=true),LinearLayout.LayoutParams(-1,-2))
-            head.addView(
-                mText("×",22f,ui.muted).apply {
-                    gravity=Gravity.CENTER;contentDescription="Fechar";isFocusable=true
-                    background=ui.pillRipple(Color.TRANSPARENT,18)
-                    setOnClickListener {dialog.dismiss()}
-                },
-                LinearLayout.LayoutParams(ui.dp(36),ui.dp(36)),
-            )
-
+        showCenteredModal(ui, title = dateTitle, eyebrow = eyebrow.takeIf { it.isNotBlank() }) { body, dialog ->
             if(rows.isEmpty()){
                 body.addView(
                     mText("Sem leituras neste dia",13f,ui.muted).apply {setPadding(0,ui.dp(8),0,ui.dp(12))},
                     LinearLayout.LayoutParams(-1,-2),
                 )
-                return@showBottomSheet
+                return@showCenteredModal
             }
 
             // Day totals strip (pages · time · pace)
@@ -5379,6 +5314,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 onOpenBook = onOpenPlannedBook,
                 onAddCatalogBook = onAddCatalogToShelf,
                 onPickBookFromShelf = onRequestShelfBookForPlan,
+                onPickBookFromShelfForPurchase = onRequestShelfBookForPurchase,
             ) { if(!destroyed) changed() }.also { annualPlanPanel = it }
 
             val activePlanPanel=if(statisticsTab=="plan") ensurePlanPanel() else null
@@ -5502,6 +5438,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 onOpenBook = onOpenPlannedBook,
                 onAddCatalogBook = onAddCatalogToShelf,
                 onPickBookFromShelf = onRequestShelfBookForPlan,
+                onPickBookFromShelfForPurchase = onRequestShelfBookForPurchase,
             ) { if(!destroyed) changed() }.also { annualPlanPanel = it }
             panel.render(parent)
             return

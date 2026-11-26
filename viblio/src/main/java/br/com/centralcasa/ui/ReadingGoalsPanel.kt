@@ -31,6 +31,7 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
     val isEditing get()=dialogs.any {it.isShowing}
     private val numbers=NumberFormat.getIntegerInstance(Locale("pt","BR"))
     var onRedeemPurchaseWithWishlist:((ReadingGoalStore.Entry,ReadingGoal,GoalProgress)->Unit)?=null
+    var onPickBookFromShelfForPurchase:((entryId:String,goalName:String)->Unit)?=null
     private fun isGalleryMode()=ui.rectilinear && LocalSettings(activity).galleryUiStyle()
     private fun valid()=!closed && LibraryProfiles.settings(activity)==profile
     private fun tracked(dialog:AlertDialog):AlertDialog {dialogs.add(dialog);dialog.setOnDismissListener {dialogs.remove(dialog)};dialog.show();dialog.window?.setBackgroundDrawable(ui.shape(ui.surface,0));return dialog}
@@ -538,11 +539,21 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
         }
     }
 
+    /** Re-opens the purchase redeem modal with a book picked from the real visual Shelf. */
+    fun openPurchaseRedeemWithBook(entryId:String,prefilledTitle:String=""){
+        if(!valid())return
+        val entry=store.entries().firstOrNull {it.id==entryId && it.goal?.metric==GoalMetric.PURCHASE} ?: return
+        val goal=entry.goal ?: return
+        if(isGalleryMode()) openRedeemPurchaseGalleryModal(entry,goal,prefilledTitle)
+        else confirmPurchase(entry,prefilledTitle)
+    }
+
     /** Centered Galeria modal to record which book was bought with the unlocked purchase reward. */
-    private fun openRedeemPurchaseGalleryModal(entry:ReadingGoalStore.Entry,goal:ReadingGoal){
+    private fun openRedeemPurchaseGalleryModal(entry:ReadingGoalStore.Entry,goal:ReadingGoal,prefilledTitle:String=""){
         if(!valid())return
         val hairline=ui.galleryHairline(110)
         val wishlistHandler=onRedeemPurchaseWithWishlist
+        val shelfPicker=onPickBookFromShelfForPurchase
         showGalleryModal(heading="Registrar compra"){ body, dialog ->
             val countLabel=if(goal.reward==1)"1 livro liberado neste ciclo" else "${goal.reward} livros liberados neste ciclo"
             body.addView(gText(countLabel,12f,ui.accent,medium=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
@@ -553,6 +564,7 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
             )
             val titleInput=EditText(activity).apply {
                 hint="Ex.: Duna"
+                if(prefilledTitle.isNotBlank()){setText(prefilledTitle);setSelection(prefilledTitle.length)}
                 setTextColor(ui.text);setHintTextColor(ui.tint(ui.muted,160))
                 textSize=15f;isSingleLine=true
                 filters=arrayOf(InputFilter.LengthFilter(200))
@@ -561,13 +573,18 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
             }
             body.addView(titleInput,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
 
-            // Quick pickers: Estante & Wishlist
+            // Quick pickers: Estante (real cover grid!) & Wishlist
             val pickRow=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
             body.addView(pickRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(16)})
             val shelfBtn=gText("Escolher da Estante",11.5f,ui.text,medium=true).apply {
                 gravity=Gravity.CENTER;setPadding(ui.dp(12),ui.dp(9),ui.dp(12),ui.dp(9))
                 background=ui.pillRipple(ui.activeSurface,16,ui.galleryHairline(140));isFocusable=true
                 setOnClickListener {
+                    if(shelfPicker!=null){
+                        dialog.dismiss()
+                        shelfPicker(entry.id,goal.name)
+                        return@setOnClickListener
+                    }
                     val shelfBooks=repo.books(false).sortedByDescending {it.updatedAt}
                     if(shelfBooks.isEmpty()){
                         Toast.makeText(activity,"Nenhum livro na Estante.",Toast.LENGTH_SHORT).show()
@@ -766,16 +783,25 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
             tracked(builder.create())
         }
     }
-    private fun confirmPurchase(entry:ReadingGoalStore.Entry){
+    private fun confirmPurchase(entry:ReadingGoalStore.Entry,prefilledTitle:String=""){
         val goal=requireNotNull(entry.goal)
         val wishlistHandler=onRedeemPurchaseWithWishlist
+        val shelfPicker=onPickBookFromShelfForPurchase
         val inputWrap=ui.column().apply {setPadding(ui.dp(20),ui.dp(6),ui.dp(20),0)}
         val bookInput=EditText(activity).apply {
             hint="Livro comprado (opcional)"
+            if(prefilledTitle.isNotBlank()){setText(prefilledTitle);setSelection(prefilledTitle.length)}
             setTextColor(ui.text);setHintTextColor(ui.muted)
             isSingleLine=true;filters=arrayOf(InputFilter.LengthFilter(200))
         }
         inputWrap.addView(bookInput,LinearLayout.LayoutParams(-1,-2))
+        var dialogRef:AlertDialog?=null
+        if(shelfPicker!=null){
+            ui.action(inputWrap,"Escolher da Estante"){
+                dialogRef?.dismiss()
+                shelfPicker(entry.id,goal.name)
+            }.apply {layoutParams=LinearLayout.LayoutParams(-1,ui.dp(40)).apply {topMargin=ui.dp(8)}}
+        }
         val builder=AlertDialog.Builder(activity)
             .setTitle("Registrar compra?")
             .setMessage(if(goal.reward==1)"Compra liberada para 1 livro." else "Compra liberada para ${goal.reward} livros.")
@@ -799,7 +825,7 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
                 store.save(ReadingGoals.purchase(goal,progress,System.currentTimeMillis(),if(typed.isNotEmpty()) listOf(typed) else emptyList()),entry.raw)
             }}
         }
-        tracked(builder.create())
+        dialogRef=tracked(builder.create())
     }
     private fun remove(entry:ReadingGoalStore.Entry){tracked(AlertDialog.Builder(activity).setTitle("Remover meta?").setPositiveButton("Remover"){_,_->mutate {store.remove(entry)}}.setNegativeButton("Cancelar",null).create())}
     private fun edit(entry:ReadingGoalStore.Entry?,defaultMetric:GoalMetric?=null){

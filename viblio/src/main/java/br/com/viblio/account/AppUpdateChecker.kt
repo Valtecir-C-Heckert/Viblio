@@ -113,4 +113,39 @@ object AppUpdateChecker {
             return parseLatestNewerRelease(body, currentVersion)
         }
     }
+
+    private const val PREFS_UPDATE = "viblio_app_update_cache"
+    private const val KEY_CHECKED_AT = "checked_at"
+    private const val KEY_VERSION = "version"
+    private const val KEY_TAG = "tag"
+    private const val KEY_APK_URL = "apk_url"
+    internal const val AUTO_CHECK_INTERVAL_MS = 30L * 60L * 1000L
+
+    fun shouldAutoCheck(context: Context, nowMs: Long = System.currentTimeMillis()): Boolean {
+        val last = context.applicationContext.getSharedPreferences(PREFS_UPDATE, Context.MODE_PRIVATE)
+            .getLong(KEY_CHECKED_AT, 0L)
+        return nowMs - last >= AUTO_CHECK_INTERVAL_MS
+    }
+
+    fun cachedNewerRelease(context: Context, currentVersion: String): AppUpdateRelease? {
+        val p = context.applicationContext.getSharedPreferences(PREFS_UPDATE, Context.MODE_PRIVATE)
+        val version = p.getString(KEY_VERSION, null).orEmpty()
+        val tag = p.getString(KEY_TAG, null).orEmpty()
+        val url = p.getString(KEY_APK_URL, null).orEmpty()
+        if (version.isBlank() || tag.isBlank() || !isAllowedApkUrl(url)) return null
+        return if (compareVersions(version, currentVersion) > 0) AppUpdateRelease(version, tag, url) else null
+    }
+
+    fun recordCheckResult(context: Context, release: AppUpdateRelease?, nowMs: Long = System.currentTimeMillis()) {
+        val edit = context.applicationContext.getSharedPreferences(PREFS_UPDATE, Context.MODE_PRIVATE).edit()
+            .putLong(KEY_CHECKED_AT, nowMs)
+        if (release != null && isAllowedApkUrl(release.apkUrl)) {
+            edit.putString(KEY_VERSION, release.version)
+                .putString(KEY_TAG, release.tag)
+                .putString(KEY_APK_URL, release.apkUrl)
+        } else {
+            edit.remove(KEY_VERSION).remove(KEY_TAG).remove(KEY_APK_URL)
+        }
+        edit.apply()
+    }
 }

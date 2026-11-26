@@ -36,6 +36,7 @@ class AnnualPlanPanel(
     private val onOpenBook: ((String) -> Unit)? = null,
     private val onAddCatalogBook: ((CatalogBook) -> Unit)? = null,
     private val onPickBookFromShelf: ((Int, Int) -> Unit)? = null,
+    private val onPickBookFromShelfForPurchase: ((String, String) -> Unit)? = null,
     private val changed: () -> Unit,
 ) {
     private val store = AnnualPlanStore(activity)
@@ -204,7 +205,13 @@ class AnnualPlanPanel(
             onRedeemPurchaseWithWishlist = { entry, goal, progress ->
                 redeemPurchaseFromWishlist(entry, goal, progress)
             }
+            onPickBookFromShelfForPurchase = this@AnnualPlanPanel.onPickBookFromShelfForPurchase
         }.also { goalsPanel = it }
+
+    fun onPurchaseBookPicked(entryId: String, book: LibraryBook?) {
+        if (closed) return
+        goalsHost().openPurchaseRedeemWithBook(entryId, book?.title.orEmpty())
+    }
 
     /** Called after the user taps a book on the real Shelf in selection mode. */
     fun onShelfBookPicked(year: Int, month: Int, book: LibraryBook) {
@@ -645,7 +652,12 @@ class AnnualPlanPanel(
         }
 
         ribbonScroll.post {
-            val targetX = ((selectedMonth - 3).coerceAtLeast(0)) * ui.dp(56)
+            val child = ribbonRow.getChildAt((selectedMonth - 1).coerceIn(0, (ribbonRow.childCount - 1).coerceAtLeast(0)))
+            val targetX = if (child != null && ribbonScroll.width > 0) {
+                (child.left + child.width / 2 - ribbonScroll.width / 2).coerceAtLeast(0)
+            } else {
+                ((selectedMonth - 3).coerceAtLeast(0)) * ui.dp(56)
+            }
             ribbonScroll.scrollTo(targetX, 0)
         }
 
