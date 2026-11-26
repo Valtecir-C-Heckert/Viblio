@@ -31,7 +31,7 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
     val isEditing get()=dialogs.any {it.isShowing}
     private val numbers=NumberFormat.getIntegerInstance(Locale("pt","BR"))
     var onRedeemPurchaseWithWishlist:((ReadingGoalStore.Entry,ReadingGoal,GoalProgress)->Unit)?=null
-    var onPickBookFromShelfForPurchase:((entryId:String,goalName:String)->Unit)?=null
+    var onPickBookFromShelfForPurchase:((entryId:String,goalName:String,cycleId:String?)->Unit)?=null
     private fun isGalleryMode()=ui.rectilinear && LocalSettings(activity).galleryUiStyle()
     private fun valid()=!closed && LibraryProfiles.settings(activity)==profile
     private fun tracked(dialog:AlertDialog):AlertDialog {dialogs.add(dialog);dialog.setOnDismissListener {dialogs.remove(dialog)};dialog.show();dialog.window?.setBackgroundDrawable(ui.shape(ui.surface,0));return dialog}
@@ -539,101 +539,187 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
         }
     }
 
-    /** Re-opens the purchase redeem modal with a book picked from the real visual Shelf. */
-    fun openPurchaseRedeemWithBook(entryId:String,prefilledTitle:String=""){
+    /** Clean flat matte bottom sheet (zero radial glow, underlined fields, grounded buttons). */
+    private fun showCleanBottomSheet(
+        heading:String,
+        meta:String?=null,
+        build:(LinearLayout,Dialog)->Unit,
+    ):Dialog {
+        val gallery=isGalleryMode()
+        val dialog=Dialog(activity)
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+        val sheetBg=GradientDrawable().apply {
+            setColor(ui.surface)
+            val r=if(gallery) ui.dp(20).toFloat() else 0f
+            cornerRadii=floatArrayOf(r,r,r,r,0f,0f,0f,0f)
+        }
+        val card=ui.column().apply {
+            background=sheetBg
+            setPadding(ui.dp(20),ui.dp(10),ui.dp(20),ui.dp(20))
+        }
+        if(gallery){
+            val handle=View(activity).apply {
+                background=ui.pillShape(ui.galleryHairline(150),4)
+            }
+            card.addView(handle,LinearLayout.LayoutParams(ui.dp(36),ui.dp(4)).apply {
+                gravity=Gravity.CENTER_HORIZONTAL;bottomMargin=ui.dp(14)
+            })
+        }
+        val headRow=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+        card.addView(headRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(16)})
+        headRow.addView(
+            gText(heading,16.5f,ui.text,medium=true).apply {maxLines=1;ellipsize=TextUtils.TruncateAt.END},
+            LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)},
+        )
+        if(!meta.isNullOrBlank()){
+            headRow.addView(
+                gText(meta,11.5f,ui.muted).apply {maxLines=1;fontFeatureSettings="tnum"},
+                LinearLayout.LayoutParams(-2,-2),
+            )
+        }
+        val body=ui.column()
+        card.addView(body,LinearLayout.LayoutParams(-1,-2))
+        build(body,dialog)
+        val scroll=ScrollView(activity).apply {isVerticalScrollBarEnabled=false;addView(card,FrameLayout.LayoutParams(-1,-2))}
+        dialog.setContentView(scroll)
+        dialog.window?.apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setLayout(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.BOTTOM)
+            setDimAmount(0.55f)
+            setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        }
+        dialogs.add(dialog)
+        dialog.setOnDismissListener {dialogs.remove(dialog)}
+        dialog.show()
+        return dialog
+    }
+
+    private fun underlineDrawable(focused:Boolean):Drawable = object:Drawable() {
+        private val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color=if(focused) ui.accent else ui.galleryHairline(165)
+        }
+        override fun draw(canvas:Canvas){
+            val h=ui.dp(if(focused) 2 else 1).coerceAtLeast(1).toFloat()
+            canvas.drawRect(bounds.left.toFloat(),bounds.bottom-h,bounds.right.toFloat(),bounds.bottom.toFloat(),paint)
+        }
+        override fun setAlpha(alpha:Int){paint.alpha=alpha}
+        override fun setColorFilter(colorFilter:ColorFilter?){paint.colorFilter=colorFilter}
+        @Deprecated("Deprecated in Java")
+        override fun getOpacity()=PixelFormat.TRANSLUCENT
+    }
+
+    private fun buildUnderlinedInput(hintText:String,initialText:String):EditText = EditText(activity).apply {
+        hint=hintText
+        if(initialText.isNotBlank()){setText(initialText);setSelection(initialText.length)}
+        setTextColor(ui.text);setHintTextColor(ui.tint(ui.muted,150))
+        textSize=15.5f;isSingleLine=true
+        filters=arrayOf(InputFilter.LengthFilter(200))
+        background=underlineDrawable(false)
+        setPadding(0,ui.dp(4),0,ui.dp(8))
+        setOnFocusChangeListener {_,hasFocus->background=underlineDrawable(hasFocus)}
+    }
+
+    private fun addFlatPickerRow(parent:LinearLayout,label:String,accentText:Boolean=false,bottomMarginDp:Int=12,onClick:()->Unit){
+        val gallery=isGalleryMode()
+        val row=ui.row().apply {
+            gravity=Gravity.CENTER_VERTICAL
+            isFocusable=true
+            setPadding(ui.dp(12),ui.dp(11),ui.dp(12),ui.dp(11))
+            background=if(gallery) ui.pillRipple(ui.activeSurface,10) else ui.outlined(ui.activeSurface,ui.lineColor,0)
+            setOnClickListener {onClick()}
+        }
+        row.addView(
+            gText(label,13f,if(accentText) ui.accent else ui.text,medium=true),
+            LinearLayout.LayoutParams(0,-2,1f),
+        )
+        row.addView(gText("›",16f,ui.muted),LinearLayout.LayoutParams(-2,-2))
+        parent.addView(row,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(bottomMarginDp)})
+    }
+
+    fun openPurchaseRedeem(entryId:String){
         if(!valid())return
         val entry=store.entries().firstOrNull {it.id==entryId && it.goal?.metric==GoalMetric.PURCHASE} ?: return
         val goal=entry.goal ?: return
-        if(isGalleryMode()) openRedeemPurchaseGalleryModal(entry,goal,prefilledTitle)
-        else confirmPurchase(entry,prefilledTitle)
+        openRedeemPurchaseGalleryModal(entry,goal,"")
     }
 
-    /** Centered Galeria modal to record which book was bought with the unlocked purchase reward. */
+    /** Re-opens the purchase redeem or cycle-edit sheet with a book picked from the real visual Shelf. */
+    fun openPurchaseRedeemWithBook(entryId:String,prefilledTitle:String="",cycleId:String?=null){
+        if(!valid())return
+        val entry=store.entries().firstOrNull {it.id==entryId && it.goal?.metric==GoalMetric.PURCHASE} ?: return
+        val goal=entry.goal ?: return
+        if(cycleId!=null){
+            val cycleIdx=goal.cycles.indexOfFirst {it.id==cycleId}
+            val cycle=goal.cycles.getOrNull(cycleIdx) ?: return
+            openEditCyclePurchasedDialog(
+                entry=entry,
+                goal=goal,
+                cycle=cycle,
+                reopenGalleryCycle=if(isGalleryMode()) cycleIdx+1 else null,
+                prefilledTitle=prefilledTitle.ifBlank {null},
+            )
+            return
+        }
+        openRedeemPurchaseGalleryModal(entry,goal,prefilledTitle)
+    }
+
+    /** Clean bottom sheet to record which book was bought with the unlocked purchase reward. */
     private fun openRedeemPurchaseGalleryModal(entry:ReadingGoalStore.Entry,goal:ReadingGoal,prefilledTitle:String=""){
         if(!valid())return
-        val hairline=ui.galleryHairline(110)
+        val gallery=isGalleryMode()
         val wishlistHandler=onRedeemPurchaseWithWishlist
         val shelfPicker=onPickBookFromShelfForPurchase
-        showGalleryModal(heading="Registrar compra"){ body, dialog ->
-            val countLabel=if(goal.reward==1)"1 livro liberado neste ciclo" else "${goal.reward} livros liberados neste ciclo"
-            body.addView(gText(countLabel,12f,ui.accent,medium=true),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+        val metaLabel=if(goal.reward==1)"1 livro liberado" else "${goal.reward} livros liberados"
+        showCleanBottomSheet(heading="Registrar compra",meta=metaLabel){ body, dialog ->
+            body.addView(gText("Título",11f,ui.muted),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
+            val titleInput=buildUnderlinedInput("Ex.: Duna",prefilledTitle)
+            body.addView(titleInput,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
 
-            body.addView(
-                gText("LIVRO COMPRADO",10f,ui.muted,medium=true).apply {letterSpacing=0.08f},
-                LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(6)},
-            )
-            val titleInput=EditText(activity).apply {
-                hint="Ex.: Duna"
-                if(prefilledTitle.isNotBlank()){setText(prefilledTitle);setSelection(prefilledTitle.length)}
-                setTextColor(ui.text);setHintTextColor(ui.tint(ui.muted,160))
-                textSize=15f;isSingleLine=true
-                filters=arrayOf(InputFilter.LengthFilter(200))
-                background=ui.pillShape(ui.background,14,ui.galleryHairline(135))
-                setPadding(ui.dp(14),ui.dp(11),ui.dp(14),ui.dp(11))
-            }
-            body.addView(titleInput,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(10)})
-
-            // Quick pickers: Estante (real cover grid!) & Wishlist
-            val pickRow=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
-            body.addView(pickRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(16)})
-            val shelfBtn=gText("Escolher da Estante",11.5f,ui.text,medium=true).apply {
-                gravity=Gravity.CENTER;setPadding(ui.dp(12),ui.dp(9),ui.dp(12),ui.dp(9))
-                background=ui.pillRipple(ui.activeSurface,16,ui.galleryHairline(140));isFocusable=true
-                setOnClickListener {
-                    if(shelfPicker!=null){
-                        dialog.dismiss()
-                        shelfPicker(entry.id,goal.name)
-                        return@setOnClickListener
-                    }
-                    val shelfBooks=repo.books(false).sortedByDescending {it.updatedAt}
-                    if(shelfBooks.isEmpty()){
-                        Toast.makeText(activity,"Nenhum livro na Estante.",Toast.LENGTH_SHORT).show()
-                        return@setOnClickListener
-                    }
-                    val labels=shelfBooks.map {b->if(b.author.isNotBlank())"${b.title} · ${b.author}" else b.title}.toTypedArray()
-                    tracked(AlertDialog.Builder(activity).setTitle("Escolher da Estante").setItems(labels){_,idx->
-                        titleInput.setText(shelfBooks[idx].title)
-                        titleInput.setSelection(titleInput.text.length)
-                    }.setNegativeButton("Cancelar",null).create())
+            addFlatPickerRow(body,"Escolher da Estante",bottomMarginDp=if(wishlistHandler!=null) 8 else 16){
+                if(shelfPicker!=null){
+                    dialog.dismiss()
+                    shelfPicker(entry.id,goal.name,null)
+                }else {
+                    Toast.makeText(activity,"Abra a Estante para escolher um livro.",Toast.LENGTH_SHORT).show()
                 }
             }
-            pickRow.addView(shelfBtn,LinearLayout.LayoutParams(0,-2,1f).apply {if(wishlistHandler!=null) marginEnd=ui.dp(8)})
-
             if(wishlistHandler!=null){
-                val wishBtn=gText("Da Wishlist ›",11.5f,ui.accent,medium=true).apply {
-                    gravity=Gravity.CENTER;setPadding(ui.dp(12),ui.dp(9),ui.dp(12),ui.dp(9))
-                    background=ui.pillRipple(ui.activeSurface,16,ui.tint(ui.accent,140));isFocusable=true
-                    setOnClickListener {
-                        val fresh=ReadingGoals.progress(goal,repo.books(true),repo.sessions(),System.currentTimeMillis())
-                        if(fresh.value>=goal.target){
-                            dialog.dismiss()
-                            wishlistHandler(entry,goal,fresh)
-                        }else {
-                            Toast.makeText(activity,"A compra ainda não foi liberada.",Toast.LENGTH_LONG).show()
-                        }
+                addFlatPickerRow(body,"Escolher da Wishlist",accentText=true,bottomMarginDp=16){
+                    val fresh=ReadingGoals.progress(goal,repo.books(true),repo.sessions(),System.currentTimeMillis())
+                    if(fresh.value>=goal.target){
+                        dialog.dismiss()
+                        wishlistHandler(entry,goal,fresh)
+                    }else {
+                        Toast.makeText(activity,"A compra ainda não foi liberada.",Toast.LENGTH_LONG).show()
                     }
                 }
-                pickRow.addView(wishBtn,LinearLayout.LayoutParams(0,-2,1f))
             }
 
-            body.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {bottomMargin=ui.dp(14)})
-
-            val actions=ui.row().apply {gravity=Gravity.CENTER_VERTICAL}
+            val actions=ui.row().apply {gravity=Gravity.CENTER_VERTICAL or Gravity.END}
             body.addView(actions,LinearLayout.LayoutParams(-1,-2))
             actions.addView(
-                gText("Cancelar",12.5f,ui.muted,medium=true).apply {
-                    gravity=Gravity.CENTER;minHeight=ui.dp(42);isFocusable=true
-                    setPadding(ui.dp(14),ui.dp(10),ui.dp(14),ui.dp(10))
-                    background=ui.pillRipple(ui.activeSurface,20,ui.galleryHairline(130))
-                    setOnClickListener {dialog.dismiss();openPurchaseGalleryModal(entry.id)}
+                Button(activity).apply {
+                    id=android.R.id.button2;text="Cancelar";isAllCaps=false;textSize=13f
+                    setTextColor(ui.muted);gravity=Gravity.CENTER;minWidth=0;minHeight=ui.dp(40)
+                    stateListAnimator=null;background=null;includeFontPadding=false
+                    typeface=Typeface.create("sans-serif",Typeface.NORMAL)
+                    setPadding(ui.dp(14),ui.dp(8),ui.dp(14),ui.dp(8))
+                    setOnClickListener {
+                        dialog.dismiss()
+                        if(gallery) openPurchaseGalleryModal(entry.id)
+                    }
                 },
-                LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=ui.dp(8)},
+                LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(8)},
             )
             actions.addView(
-                gText("Confirmar compra",12.5f,ui.background,medium=true).apply {
-                    gravity=Gravity.CENTER;minHeight=ui.dp(42);isFocusable=true
-                    setPadding(ui.dp(14),ui.dp(10),ui.dp(14),ui.dp(10))
-                    background=ui.pillRipple(ui.accent,20,darkRipple=true)
+                Button(activity).apply {
+                    id=android.R.id.button1;text="Salvar";isAllCaps=false;textSize=13f
+                    setTextColor(ui.background);gravity=Gravity.CENTER;minWidth=0;minHeight=ui.dp(40)
+                    stateListAnimator=null;includeFontPadding=false
+                    typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                    setPadding(ui.dp(20),ui.dp(9),ui.dp(20),ui.dp(9))
+                    background=if(gallery) ui.pillRipple(ui.accent,10,darkRipple=true) else ui.outlined(ui.accent,ui.accent,0)
                     setOnClickListener {
                         val typed=titleInput.text.toString().trim()
                         val bought=if(typed.isNotEmpty()) listOf(typed) else emptyList()
@@ -642,10 +728,10 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
                             store.save(ReadingGoals.purchase(goal,fresh,System.currentTimeMillis(),bought),entry.raw)
                         }
                         dialog.dismiss()
-                        openPurchaseGalleryModal(entry.id)
+                        if(gallery) openPurchaseGalleryModal(entry.id)
                     }
                 },
-                LinearLayout.LayoutParams(0,-2,1.4f),
+                LinearLayout.LayoutParams(-2,-2),
             )
         }
     }
@@ -687,35 +773,67 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
         }
     }
 
-    private fun openEditCyclePurchasedDialog(entry:ReadingGoalStore.Entry,goal:ReadingGoal,cycle:GoalCycle,reopenGalleryCycle:Int?=null){
-        val body=ui.column().apply {setPadding(ui.dp(20),ui.dp(10),ui.dp(20),ui.dp(4))}
-        val input=EditText(activity).apply {
-            hint="Título do livro comprado"
-            setText(cycle.purchased.joinToString(", "))
-            setTextColor(ui.text);setHintTextColor(ui.muted)
-            isSingleLine=true;filters=arrayOf(InputFilter.LengthFilter(200))
+    private fun openEditCyclePurchasedDialog(
+        entry:ReadingGoalStore.Entry,
+        goal:ReadingGoal,
+        cycle:GoalCycle,
+        reopenGalleryCycle:Int?=null,
+        prefilledTitle:String?=null,
+    ){
+        if(!valid())return
+        val gallery=isGalleryMode()
+        val shelfPicker=onPickBookFromShelfForPurchase
+        val cycleNumber=reopenGalleryCycle ?: (goal.cycles.indexOfFirst {it.id==cycle.id}+1).coerceAtLeast(1)
+        val initialText=prefilledTitle ?: cycle.purchased.joinToString(", ")
+        showCleanBottomSheet(heading="Livro comprado",meta="Ciclo $cycleNumber"){ body, dialog ->
+            body.addView(gText("Título",11f,ui.muted),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(4)})
+            val input=buildUnderlinedInput("Título do livro comprado",initialText)
+            body.addView(input,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=ui.dp(14)})
+
+            addFlatPickerRow(body,"Escolher da Estante",bottomMarginDp=16){
+                if(shelfPicker!=null){
+                    dialog.dismiss()
+                    shelfPicker(entry.id,goal.name,cycle.id)
+                }else {
+                    Toast.makeText(activity,"Abra a Estante para escolher um livro.",Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            val actions=ui.row().apply {gravity=Gravity.CENTER_VERTICAL or Gravity.END}
+            body.addView(actions,LinearLayout.LayoutParams(-1,-2))
+            actions.addView(
+                Button(activity).apply {
+                    id=android.R.id.button2;text="Cancelar";isAllCaps=false;textSize=13f
+                    setTextColor(ui.muted);gravity=Gravity.CENTER;minWidth=0;minHeight=ui.dp(40)
+                    stateListAnimator=null;background=null;includeFontPadding=false
+                    typeface=Typeface.create("sans-serif",Typeface.NORMAL)
+                    setPadding(ui.dp(14),ui.dp(8),ui.dp(14),ui.dp(8))
+                    setOnClickListener {
+                        dialog.dismiss()
+                        if(reopenGalleryCycle!=null) openPurchaseGalleryModal(entry.id)
+                    }
+                },
+                LinearLayout.LayoutParams(-2,-2).apply {marginEnd=ui.dp(8)},
+            )
+            actions.addView(
+                Button(activity).apply {
+                    id=android.R.id.button1;text="Salvar";isAllCaps=false;textSize=13f
+                    setTextColor(ui.background);gravity=Gravity.CENTER;minWidth=0;minHeight=ui.dp(40)
+                    stateListAnimator=null;includeFontPadding=false
+                    typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                    setPadding(ui.dp(20),ui.dp(9),ui.dp(20),ui.dp(9))
+                    background=if(gallery) ui.pillRipple(ui.accent,10,darkRipple=true) else ui.outlined(ui.accent,ui.accent,0)
+                    setOnClickListener {
+                        val raw=input.text.toString().trim()
+                        val list=if(raw.isEmpty()) emptyList() else listOf(raw)
+                        mutate {store.save(ReadingGoals.updateCyclePurchased(goal,cycle.id,list),entry.raw)}
+                        dialog.dismiss()
+                        if(reopenGalleryCycle!=null) openPurchaseGalleryModal(entry.id)
+                    }
+                },
+                LinearLayout.LayoutParams(-2,-2),
+            )
         }
-        body.addView(input,LinearLayout.LayoutParams(-1,-2))
-        tracked(AlertDialog.Builder(activity)
-            .setTitle("Livro comprado")
-            .setView(body)
-            .setNeutralButton("Escolher da Estante"){_,_->
-                val shelfBooks=repo.books(false).sortedByDescending {it.updatedAt}
-                if(shelfBooks.isEmpty()){Toast.makeText(activity,"Nenhum livro na Estante.",Toast.LENGTH_SHORT).show();return@setNeutralButton}
-                val labels=shelfBooks.map {b->if(b.author.isNotBlank())"${b.title} · ${b.author}" else b.title}.toTypedArray()
-                tracked(AlertDialog.Builder(activity).setTitle("Escolher da Estante").setItems(labels){_,idx->
-                    val chosenTitle=shelfBooks[idx].title
-                    mutate {store.save(ReadingGoals.updateCyclePurchased(goal,cycle.id,listOf(chosenTitle)),entry.raw)}
-                    if(reopenGalleryCycle!=null) openPurchaseGalleryModal(entry.id)
-                }.setNegativeButton("Cancelar",null).create())
-            }
-            .setPositiveButton("Salvar"){_,_->
-                val raw=input.text.toString().trim()
-                val list=if(raw.isEmpty()) emptyList() else listOf(raw)
-                mutate {store.save(ReadingGoals.updateCyclePurchased(goal,cycle.id,list),entry.raw)}
-                if(reopenGalleryCycle!=null) openPurchaseGalleryModal(entry.id)
-            }
-            .setNegativeButton("Cancelar",null).create())
     }
 
     private fun purchase(parent:LinearLayout,entry:ReadingGoalStore.Entry,goal:ReadingGoal,progress:GoalProgress):LinearLayout {
@@ -784,48 +902,8 @@ class ReadingGoalsPanel(private val activity:Activity,private val ui:DisplayUi,p
         }
     }
     private fun confirmPurchase(entry:ReadingGoalStore.Entry,prefilledTitle:String=""){
-        val goal=requireNotNull(entry.goal)
-        val wishlistHandler=onRedeemPurchaseWithWishlist
-        val shelfPicker=onPickBookFromShelfForPurchase
-        val inputWrap=ui.column().apply {setPadding(ui.dp(20),ui.dp(6),ui.dp(20),0)}
-        val bookInput=EditText(activity).apply {
-            hint="Livro comprado (opcional)"
-            if(prefilledTitle.isNotBlank()){setText(prefilledTitle);setSelection(prefilledTitle.length)}
-            setTextColor(ui.text);setHintTextColor(ui.muted)
-            isSingleLine=true;filters=arrayOf(InputFilter.LengthFilter(200))
-        }
-        inputWrap.addView(bookInput,LinearLayout.LayoutParams(-1,-2))
-        var dialogRef:AlertDialog?=null
-        if(shelfPicker!=null){
-            ui.action(inputWrap,"Escolher da Estante"){
-                dialogRef?.dismiss()
-                shelfPicker(entry.id,goal.name)
-            }.apply {layoutParams=LinearLayout.LayoutParams(-1,ui.dp(40)).apply {topMargin=ui.dp(8)}}
-        }
-        val builder=AlertDialog.Builder(activity)
-            .setTitle("Registrar compra?")
-            .setMessage(if(goal.reward==1)"Compra liberada para 1 livro." else "Compra liberada para ${goal.reward} livros.")
-            .setView(inputWrap)
-            .setNegativeButton("Cancelar",null)
-        if(wishlistHandler!=null){
-            builder.setPositiveButton("Escolher da Wishlist"){_,_->
-                val progress=ReadingGoals.progress(goal,repo.books(true),repo.sessions(),System.currentTimeMillis())
-                if(progress.value>=goal.target) wishlistHandler(entry,goal,progress)
-                else Toast.makeText(activity,"A compra ainda não foi liberada.",Toast.LENGTH_LONG).show()
-            }
-            builder.setNeutralButton("Registrar manual"){_,_->mutate {
-                val progress=ReadingGoals.progress(goal,repo.books(true),repo.sessions(),System.currentTimeMillis())
-                val typed=bookInput.text.toString().trim()
-                store.save(ReadingGoals.purchase(goal,progress,System.currentTimeMillis(),if(typed.isNotEmpty()) listOf(typed) else emptyList()),entry.raw)
-            }}
-        } else {
-            builder.setPositiveButton("Registrar"){_,_->mutate {
-                val progress=ReadingGoals.progress(goal,repo.books(true),repo.sessions(),System.currentTimeMillis())
-                val typed=bookInput.text.toString().trim()
-                store.save(ReadingGoals.purchase(goal,progress,System.currentTimeMillis(),if(typed.isNotEmpty()) listOf(typed) else emptyList()),entry.raw)
-            }}
-        }
-        dialogRef=tracked(builder.create())
+        val goal=entry.goal ?: return
+        openRedeemPurchaseGalleryModal(entry,goal,prefilledTitle)
     }
     private fun remove(entry:ReadingGoalStore.Entry){tracked(AlertDialog.Builder(activity).setTitle("Remover meta?").setPositiveButton("Remover"){_,_->mutate {store.remove(entry)}}.setNegativeButton("Cancelar",null).create())}
     private fun edit(entry:ReadingGoalStore.Entry?,defaultMetric:GoalMetric?=null){

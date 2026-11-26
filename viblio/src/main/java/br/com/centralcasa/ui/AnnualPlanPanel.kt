@@ -36,7 +36,7 @@ class AnnualPlanPanel(
     private val onOpenBook: ((String) -> Unit)? = null,
     private val onAddCatalogBook: ((CatalogBook) -> Unit)? = null,
     private val onPickBookFromShelf: ((Int, Int) -> Unit)? = null,
-    private val onPickBookFromShelfForPurchase: ((String, String) -> Unit)? = null,
+    private val onPickBookFromShelfForPurchase: ((String, String, String?) -> Unit)? = null,
     private val changed: () -> Unit,
 ) {
     private val store = AnnualPlanStore(activity)
@@ -208,9 +208,9 @@ class AnnualPlanPanel(
             onPickBookFromShelfForPurchase = this@AnnualPlanPanel.onPickBookFromShelfForPurchase
         }.also { goalsPanel = it }
 
-    fun onPurchaseBookPicked(entryId: String, book: LibraryBook?) {
+    fun onPurchaseBookPicked(entryId: String, book: LibraryBook?, cycleId: String? = null) {
         if (closed) return
-        goalsHost().openPurchaseRedeemWithBook(entryId, book?.title.orEmpty())
+        goalsHost().openPurchaseRedeemWithBook(entryId, book?.title.orEmpty(), cycleId)
     }
 
     /** Called after the user taps a book on the real Shelf in selection mode. */
@@ -585,13 +585,13 @@ class AnnualPlanPanel(
             if (unlocked) {
                 TextView(activity).apply {
                     tag = "plan-purchase-wishlist"
-                    text = "Wishlist ›"
+                    text = "Resgatar ›"
                     textSize = 11f
                     setTextColor(ui.background)
                     typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                     background = ui.shape(ui.accent, 0)
                     setPadding(ui.dp(9), ui.dp(6), ui.dp(9), ui.dp(6))
-                    setOnClickListener { redeemPurchaseFromWishlist(purchaseGoalEntry, pGoal, pProg) }
+                    setOnClickListener { goalsHost().openPurchaseRedeem(purchaseGoalEntry.id) }
                 }.also { strip.addView(it, LinearLayout.LayoutParams(-2, -2)) }
             } else {
                 ui.label(strip, "Ver ciclo ›", 10, ui.accent).apply {
@@ -1116,11 +1116,11 @@ class AnnualPlanPanel(
             )
             if (unlocked) {
                 strip.addView(
-                    gText("Wishlist ›", 11f, ui.background, medium = true).apply {
+                    gText("Resgatar ›", 11f, ui.background, medium = true).apply {
                         tag = "plan-purchase-wishlist"; gravity = Gravity.CENTER
                         setPadding(ui.dp(11), ui.dp(6), ui.dp(11), ui.dp(6))
                         background = ui.pillRipple(ui.accent, 18, darkRipple = true)
-                        setOnClickListener { redeemPurchaseFromWishlist(purchaseGoalEntry, pGoal, pProg) }
+                        setOnClickListener { goalsHost().openPurchaseRedeem(purchaseGoalEntry.id) }
                     },
                     LinearLayout.LayoutParams(-2, -2),
                 )

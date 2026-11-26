@@ -11,7 +11,7 @@ import br.com.centralcasa.ui.DisplayUi
 import br.com.centralcasa.R
 import br.com.centralcasa.books.*
 import br.com.viblio.account.AccountManager
-class AccountPanel(private val activity:Activity,private val ui:DisplayUi,private val accounts:AccountManager,private val changed:()->Unit,private val shelf:()->Unit,private val backup:(()->Unit)?=null) {
+class AccountPanel(private val activity:Activity,private val ui:DisplayUi,private val accounts:AccountManager,private val changed:()->Unit,private val shelf:()->Unit,private val backup:(()->Unit)?=null,private val onInstallUpdate:((br.com.viblio.account.AppUpdateRelease)->Unit)?=null) {
     private var mode="login";private var serverExpanded=false;private var bootstrapExpanded=false;private val form=mutableMapOf<String,String>()
     fun renderLogin(parent:LinearLayout,offline:()->Unit) {
         val page=object:LinearLayout(activity){
@@ -162,10 +162,13 @@ class AccountPanel(private val activity:Activity,private val ui:DisplayUi,privat
                             Toast.makeText(activity,"Você já está na versão mais recente (${version.versionName}).",Toast.LENGTH_LONG).show()
                         }else {
                             AlertDialog.Builder(activity)
-                                .setTitle("Nova versão ${release.version} disponível")
-                                .setMessage("Sua versão atual é ${version.versionName}. Deseja baixar o APK assinado da ${release.version}?")
-                                .setPositiveButton("Baixar atualização") {_,_->
-                                    if(br.com.viblio.account.AppUpdateChecker.isAllowedApkUrl(release.apkUrl)){
+                                .setTitle("Nova versão ${release.version}")
+                                .setMessage("Versão atual: ${version.versionName}. Baixar e instalar a ${release.version}?")
+                                .setPositiveButton("Atualizar") {_,_->
+                                    val installer=onInstallUpdate
+                                    if(installer!=null){
+                                        installer(release)
+                                    }else if(br.com.viblio.account.AppUpdateChecker.isAllowedApkUrl(release.apkUrl)){
                                         runCatching {
                                             activity.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW,android.net.Uri.parse(release.apkUrl)))
                                         }.onFailure {

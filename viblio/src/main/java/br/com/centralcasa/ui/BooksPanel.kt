@@ -68,7 +68,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
     var onOpenPlannedBook:((String)->Unit)?=null
     var onAddCatalogToShelf:((br.com.centralcasa.books.catalog.CatalogBook)->Unit)?=null
     var onRequestShelfBookForPlan:((Int,Int)->Unit)?=null
-    var onRequestShelfBookForPurchase:((String,String)->Unit)?=null
+    var onRequestShelfBookForPurchase:((String,String,String?)->Unit)?=null
     var planSelectionTitle:String?=null
     var onPlanBookSelected:((LibraryBook)->Unit)?=null
     var onCancelPlanSelection:(()->Unit)?=null
@@ -83,14 +83,14 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         ){ if(!destroyed) changed() }.also { annualPlanPanel=it }
         panel.onShelfBookPicked(year,month,book)
     }
-    fun completePurchaseBookSelection(entryId:String,book:LibraryBook?){
+    fun completePurchaseBookSelection(entryId:String,book:LibraryBook?,cycleId:String?=null){
         statisticsTab="plan"
         val panel=annualPlanPanel ?: AnnualPlanPanel(
             activity=activity,ui=baseUi,repo=repository,catalogProvider={planCatalogProvider()},
             onOpenBook=onOpenPlannedBook,onAddCatalogBook=onAddCatalogToShelf,
             onPickBookFromShelf=onRequestShelfBookForPlan,onPickBookFromShelfForPurchase=onRequestShelfBookForPurchase,
         ){ if(!destroyed) changed() }.also { annualPlanPanel=it }
-        panel.onPurchaseBookPicked(entryId,book)
+        panel.onPurchaseBookPicked(entryId,book,cycleId)
     }
     var onAccount:(()->Unit)?=null
     var accountMenuBadge:(()->AccountMenuBadge)?=null
@@ -2428,31 +2428,40 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 val gallery=settings.galleryUiStyle()
                 val palette=if(repository.currentId()==b.id) ui else bookPalette(b)
                 val accent=palette.accent
-                val hairline=palette.galleryHairline(115)
-                val errorColor=0xFFE8867A.toInt()
+                val errorColor=0xFFE07A70.toInt()
                 fun refresh(){val scroll=activity.findViewById<ScrollView>(br.com.centralcasa.R.id.content_scroll);val position=scroll.scrollY;changed();scroll.post {scroll.scrollTo(0,position)}}
-                fun mText(value:CharSequence,sp:Float,color:Int,serif:Boolean=false,medium:Boolean=false)=TextView(activity).apply {
+                fun sText(value:CharSequence,sp:Float,color:Int,medium:Boolean=false)=TextView(activity).apply {
                     text=value;textSize=sp;setTextColor(color);includeFontPadding=false
-                    typeface=when {
-                        serif -> Typeface.create("serif",Typeface.NORMAL)
-                        medium -> Typeface.create("sans-serif-medium",Typeface.NORMAL)
-                        else -> Typeface.create("sans-serif",Typeface.NORMAL)
-                    }
+                    typeface=Typeface.create(if(medium)"sans-serif-medium" else "sans-serif",Typeface.NORMAL)
                 }
-                fun fieldBg()=if(gallery) palette.pillShape(palette.background,14,palette.galleryHairline(145))
-                    else palette.outlined(palette.background,palette.lineColor,0)
-                fun btnBg(primary:Boolean,outlined:Boolean=false)=if(gallery){
-                    when {
-                        primary -> palette.pillRipple(accent,20,darkRipple=true)
-                        outlined -> palette.pillRipple(palette.activeSurface,20,palette.galleryHairline(145))
-                        else -> palette.pillRipple(Color.TRANSPARENT,20,palette.galleryHairline(115))
+                fun underlineBg(focused:Boolean):Drawable = object:Drawable() {
+                    private val p=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        color=if(focused) accent else palette.galleryHairline(165)
                     }
-                } else {
-                    when {
-                        primary -> palette.outlined(accent,accent,0)
-                        outlined -> palette.outlined(palette.activeSurface,palette.lineColor,0)
-                        else -> palette.outlined(Color.TRANSPARENT,palette.lineColor,0)
+                    override fun draw(canvas:Canvas){
+                        val h=palette.dp(if(focused) 2 else 1).coerceAtLeast(1).toFloat()
+                        canvas.drawRect(bounds.left.toFloat(),bounds.bottom-h,bounds.right.toFloat(),bounds.bottom.toFloat(),p)
                     }
+                    override fun setAlpha(alpha:Int){p.alpha=alpha}
+                    override fun setColorFilter(colorFilter:ColorFilter?){p.colorFilter=colorFilter}
+                    @Deprecated("Deprecated in Java")
+                    override fun getOpacity()=PixelFormat.TRANSLUCENT
+                }
+                fun flatButton(idVal:Int,tagName:String,label:String,primary:Boolean,onClick:()->Unit)=Button(activity).apply {
+                    id=idVal;tag=tagName;text=label;isAllCaps=false
+                    textSize=13f;gravity=Gravity.CENTER;includeFontPadding=false
+                    minWidth=0;minHeight=palette.dp(40);stateListAnimator=null
+                    setTextColor(if(primary) palette.background else palette.muted)
+                    typeface=Typeface.create(if(primary)"sans-serif-medium" else "sans-serif",Typeface.NORMAL)
+                    if(primary){
+                        setPadding(palette.dp(20),palette.dp(9),palette.dp(20),palette.dp(9))
+                        background=if(gallery) palette.pillRipple(accent,10,darkRipple=true)
+                            else palette.outlined(accent,accent,0)
+                    }else {
+                        setPadding(palette.dp(6),palette.dp(8),palette.dp(6),palette.dp(8))
+                        background=if(gallery) palette.pillRipple(Color.TRANSPARENT,8) else null
+                    }
+                    setOnClickListener {onClick()}
                 }
                 fun correctPage(value:Int){
                     val latest=requireNotNull(repository.book(b.id)){"Livro não encontrado."}
@@ -2472,213 +2481,206 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                     slider.progress=latestPage;preview(latestPage)
                     if(draft?.runningSince!=null){repository.start(b.id);refresh()}
                 }
-                val dialog=showCenteredModal(
-                    palette=palette,
-                    title=if(backward)"Corrigir página" else "Registrar leitura",
-                    eyebrow=current.title,
-                    onClose={restoreOnce()},
-                ){ body, dlg ->
-                    // 1) Live progress preview pill card
-                    val summaryCard=LinearLayout(activity).apply {
-                        orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL
-                        background=if(gallery) palette.pillShape(palette.activeSurface,14,palette.galleryHairline(125))
-                            else palette.outlined(palette.activeSurface,palette.lineColor,0)
-                        setPadding(palette.dp(14),palette.dp(11),palette.dp(14),palette.dp(11))
-                    }
-                    body.addView(summaryCard,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(14)})
-                    val rangeTxt=mText("",17f,palette.text,serif=true).apply {fontFeatureSettings="tnum"}
-                    summaryCard.addView(rangeTxt,LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=palette.dp(8)})
-                    val deltaBadge=mText("",11.5f,accent,medium=true).apply {
-                        fontFeatureSettings="tnum";gravity=Gravity.CENTER
-                        setPadding(palette.dp(10),palette.dp(4),palette.dp(10),palette.dp(4))
-                        background=if(gallery) palette.pillShape(palette.tint(accent,32),14,palette.tint(accent,110))
-                            else palette.outlined(palette.surface,accent,0)
-                    }
-                    summaryCard.addView(deltaBadge,LinearLayout.LayoutParams(-2,-2))
 
-                    fun updateSummary(raw:String){
-                        val parsed=raw.toIntOrNull()
-                        val displayDest=parsed?.toString() ?: "—"
-                        rangeTxt.text="p. $startRef → $displayDest"
-                        if(parsed!=null && parsed in 0..current.totalPages){
-                            val diff=parsed-startRef
-                            val pct=if(parsed==current.totalPages) 100 else Math.round(parsed*100f/current.totalPages).coerceIn(0,99)
-                            val diffStr=when {
-                                diff>0 -> "+$diff págs"
-                                diff<0 -> "$diff págs"
-                                else -> "0 págs"
-                            }
-                            deltaBadge.text="$diffStr · $pct%"
-                            deltaBadge.visibility=View.VISIBLE
-                        } else {
-                            deltaBadge.visibility=View.GONE
-                        }
-                    }
+                val dialog=android.app.Dialog(activity)
+                dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+                val sheetBg=android.graphics.drawable.GradientDrawable().apply {
+                    setColor(palette.surface)
+                    val r=if(gallery) palette.dp(20).toFloat() else 0f
+                    cornerRadii=floatArrayOf(r,r,r,r,0f,0f,0f,0f)
+                }
+                val sheet=LinearLayout(activity).apply {
+                    orientation=LinearLayout.VERTICAL
+                    background=sheetBg
+                    setPadding(palette.dp(20),palette.dp(10),palette.dp(20),palette.dp(20))
+                }
+                if(gallery){
+                    val handle=View(activity).apply {background=palette.pillShape(palette.galleryHairline(150),4)}
+                    sheet.addView(handle,LinearLayout.LayoutParams(palette.dp(36),palette.dp(4)).apply {
+                        gravity=Gravity.CENTER_HORIZONTAL;bottomMargin=palette.dp(14)
+                    })
+                }
 
-                    // 2) Destination page input with "/ total" suffix
-                    body.addView(
-                        mText("PÁGINA ATUAL",10f,palette.muted,medium=true).apply {letterSpacing=0.08f},
-                        LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(6)},
+                // Header: title on left, quiet tabular progress delta on right (+ discrete close button in forward mode)
+                val headRow=LinearLayout(activity).apply {orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL}
+                sheet.addView(headRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(18)})
+                headRow.addView(
+                    sText(if(backward)"Corrigir página" else "Registrar leitura",16.5f,palette.text,medium=true),
+                    LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=palette.dp(8)},
+                )
+                val metaTxt=sText("",12f,palette.muted).apply {fontFeatureSettings="tnum";maxLines=1}
+                headRow.addView(metaTxt,LinearLayout.LayoutParams(-2,-2))
+                if(!backward){
+                    val closeBtn=Button(activity).apply {
+                        id=android.R.id.button2;tag="reading-cancel";text="×";isAllCaps=false
+                        textSize=19f;setTextColor(palette.muted);gravity=Gravity.CENTER
+                        includeFontPadding=false;minWidth=0;minHeight=0;stateListAnimator=null
+                        contentDescription="Cancelar"
+                        setPadding(0,0,0,0)
+                        background=if(gallery) palette.pillRipple(Color.TRANSPARENT,16) else null
+                        setOnClickListener {restoreOnce();dialog.dismiss()}
+                    }
+                    headRow.addView(closeBtn,LinearLayout.LayoutParams(palette.dp(30),palette.dp(30)).apply {marginStart=palette.dp(6)})
+                }
+
+                fun updateMeta(raw:String){
+                    val parsed=raw.toIntOrNull()
+                    if(parsed!=null && parsed in 0..current.totalPages){
+                        val diff=parsed-startRef
+                        val sign=if(diff>0)"+" else ""
+                        metaTxt.text="$startRef → $parsed · $sign$diff págs"
+                    }else {
+                        metaTxt.text="$startRef → —"
+                    }
+                }
+
+                // Inline typographic underlined fields (side-by-side, ZERO nested boxes)
+                val fieldsRow=LinearLayout(activity).apply {orientation=LinearLayout.HORIZONTAL;gravity=Gravity.BOTTOM}
+                sheet.addView(fieldsRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(14)})
+
+                val pageCol=LinearLayout(activity).apply {orientation=LinearLayout.VERTICAL}
+                fieldsRow.addView(pageCol,LinearLayout.LayoutParams(0,-2,1f).apply {if(!backward) marginEnd=palette.dp(18)})
+                pageCol.addView(sText("Página",11f,palette.muted),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(4)})
+                val pageLine=LinearLayout(activity).apply {orientation=LinearLayout.HORIZONTAL;gravity=Gravity.BOTTOM}
+                pageCol.addView(pageLine,LinearLayout.LayoutParams(-1,-2))
+                val destination=EditText(activity).apply {
+                    tag="reading-page";inputType=InputType.TYPE_CLASS_NUMBER;isSingleLine=true
+                    filters=arrayOf(android.text.InputFilter.LengthFilter(6))
+                    setText(page.toString());setSelectAllOnFocus(true)
+                    setTextColor(palette.text);setHintTextColor(palette.muted)
+                    textSize=23f;typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                    fontFeatureSettings="tnum";background=underlineBg(false)
+                    setPadding(0,palette.dp(2),palette.dp(4),palette.dp(6))
+                    setOnFocusChangeListener {_,hasFocus->background=underlineBg(hasFocus)}
+                }
+                pageLine.addView(destination,LinearLayout.LayoutParams(palette.dp(68),-2).apply {marginEnd=palette.dp(6)})
+                pageLine.addView(
+                    sText("/ ${current.totalPages}",13f,palette.muted).apply {
+                        fontFeatureSettings="tnum";setPadding(0,0,0,palette.dp(6))
+                    },
+                    LinearLayout.LayoutParams(-2,-2),
+                )
+                updateMeta(page.toString())
+
+                val errorText=sText("",11.5f,errorColor,medium=true).apply {visibility=View.GONE}
+                fun showError(msg:String,onPage:Boolean=false){
+                    errorText.text=msg;errorText.visibility=View.VISIBLE
+                    if(onPage) destination.error=msg
+                }
+                fun clearError(){
+                    errorText.text="";errorText.visibility=View.GONE
+                    destination.error=null
+                }
+
+                destination.addTextChangedListener(object:TextWatcher {
+                    override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
+                    override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){
+                        updateMeta(s?.toString().orEmpty());clearError()
+                    }
+                    override fun afterTextChanged(s:Editable?){}
+                })
+
+                fun chosenPage():Int? {
+                    val value=destination.text.toString().toIntOrNull()
+                    if(value==null || value !in 0..current.totalPages){
+                        showError("Use uma página entre 0 e ${current.totalPages}.",onPage=true)
+                        return null
+                    }
+                    clearError();return value
+                }
+
+                if(backward){
+                    sheet.addView(errorText,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(10)})
+                    val btnRow=LinearLayout(activity).apply {orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL or Gravity.END}
+                    sheet.addView(btnRow,LinearLayout.LayoutParams(-1,-2).apply {topMargin=palette.dp(6)})
+                    btnRow.addView(
+                        flatButton(android.R.id.button2,"reading-cancel","Cancelar",primary=false){restoreOnce();dialog.dismiss()},
+                        LinearLayout.LayoutParams(-2,-2).apply {marginEnd=palette.dp(12)},
                     )
-                    val pageBox=LinearLayout(activity).apply {
-                        orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL
-                        background=fieldBg()
-                        setPadding(palette.dp(14),palette.dp(2),palette.dp(14),palette.dp(2))
-                    }
-                    body.addView(pageBox,LinearLayout.LayoutParams(-1,palette.dp(50)).apply {bottomMargin=palette.dp(if(backward) 8 else 14)})
-                    val destination=EditText(activity).apply {
-                        tag="reading-page";inputType=InputType.TYPE_CLASS_NUMBER;isSingleLine=true
-                        filters=arrayOf(android.text.InputFilter.LengthFilter(6))
-                        setText(page.toString());setSelectAllOnFocus(true)
-                        setTextColor(palette.text);setHintTextColor(palette.muted)
-                        textSize=18f;typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
-                        fontFeatureSettings="tnum";background=null;setPadding(0,0,0,0)
-                    }
-                    pageBox.addView(destination,LinearLayout.LayoutParams(0,-1,1f))
-                    pageBox.addView(
-                        mText("/ ${current.totalPages}",13f,palette.muted).apply {fontFeatureSettings="tnum"},
+                    btnRow.addView(
+                        flatButton(android.R.id.button1,"reading-correct","Corrigir",primary=true){
+                            val target=chosenPage() ?: return@flatButton
+                            try {correctPage(target);committed=true;dialog.dismiss();refresh()}
+                            catch(e:Exception){showError(e.message ?: "Não foi possível corrigir.",onPage=true)}
+                        },
                         LinearLayout.LayoutParams(-2,-2),
                     )
-                    updateSummary(page.toString())
-
-                    val errorText=mText("",11.5f,errorColor,medium=true).apply {visibility=View.GONE}
-                    fun showError(msg:String){errorText.text=msg;errorText.visibility=View.VISIBLE}
-                    fun clearError(){errorText.text="";errorText.visibility=View.GONE}
-
-                    destination.addTextChangedListener(object:TextWatcher {
-                        override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
-                        override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){
-                            updateSummary(s?.toString().orEmpty());clearError()
-                        }
-                        override fun afterTextChanged(s:Editable?){}
-                    })
-
-                    fun chosenPage():Int? {
-                        val value=destination.text.toString().toIntOrNull()
-                        if(value==null || value !in 0..current.totalPages){
-                            showError("Use uma página entre 0 e ${current.totalPages}.")
-                            return null
-                        }
-                        clearError();return value
-                    }
-
-                    if(backward){
-                        body.addView(errorText,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(10)})
-                        body.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {topMargin=palette.dp(4);bottomMargin=palette.dp(12)})
-                        val btnRow=LinearLayout(activity).apply {orientation=LinearLayout.HORIZONTAL}
-                        body.addView(btnRow,LinearLayout.LayoutParams(-1,-2))
-                        btnRow.addView(
-                            mText("Cancelar",12.5f,palette.muted,medium=true).apply {
-                                tag="reading-cancel";gravity=Gravity.CENTER;minHeight=palette.dp(44);isFocusable=true
-                                background=btnBg(false,outlined=true)
-                                setOnClickListener {restoreOnce();dlg.dismiss()}
-                            },
-                            LinearLayout.LayoutParams(0,-2,1f).apply {marginEnd=palette.dp(8)},
-                        )
-                        btnRow.addView(
-                            mText("Só corrigir página",12.5f,palette.background,medium=true).apply {
-                                tag="reading-correct";gravity=Gravity.CENTER;minHeight=palette.dp(44);isFocusable=true
-                                background=btnBg(true)
-                                setOnClickListener {
-                                    val target=chosenPage() ?: return@setOnClickListener
-                                    try {correctPage(target);committed=true;dlg.dismiss();refresh()}
-                                    catch(e:Exception){showError(e.message ?: "Não foi possível corrigir.")}
-                                }
-                            },
-                            LinearLayout.LayoutParams(0,-2,1.35f),
-                        )
-                        return@showCenteredModal
-                    }
-
-                    // 3) Reading duration inputs (Hours + Minutes side-by-side)
-                    val timeHead=LinearLayout(activity).apply {orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL}
-                    body.addView(timeHead,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(6)})
-                    timeHead.addView(
-                        mText("TEMPO DE LEITURA",10f,palette.muted,medium=true).apply {letterSpacing=0.08f},
-                        LinearLayout.LayoutParams(0,-2,1f),
+                }else {
+                    val timeCol=LinearLayout(activity).apply {orientation=LinearLayout.VERTICAL}
+                    fieldsRow.addView(timeCol,LinearLayout.LayoutParams(0,-2,1.1f))
+                    timeCol.addView(sText("Duração",11f,palette.muted),LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(4)})
+                    val timeLine=LinearLayout(activity).apply {orientation=LinearLayout.HORIZONTAL;gravity=Gravity.BOTTOM}
+                    timeCol.addView(timeLine,LinearLayout.LayoutParams(-1,-2))
+                    fun timeField(maxLen:Int,tagName:String,widthDp:Int)=EditText(activity).apply {
+                        tag=tagName;hint="0";inputType=InputType.TYPE_CLASS_NUMBER;isSingleLine=true
+                        filters=arrayOf(android.text.InputFilter.LengthFilter(maxLen))
+                        setTextColor(palette.text);setHintTextColor(palette.tint(palette.muted,140))
+                        textSize=23f;typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                        gravity=Gravity.CENTER_HORIZONTAL;fontFeatureSettings="tnum"
+                        background=underlineBg(false);setPadding(0,palette.dp(2),0,palette.dp(6))
+                        setOnFocusChangeListener {_,hasFocus->background=underlineBg(hasFocus)}
+                        addTextChangedListener(object:TextWatcher {
+                            override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
+                            override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){clearError()}
+                            override fun afterTextChanged(s:Editable?){}
+                        })
+                    }.also {ed->timeLine.addView(ed,LinearLayout.LayoutParams(palette.dp(widthDp),-2))}
+                    val hours=timeField(3,"reading-hours",38)
+                    timeLine.addView(
+                        sText("h",13f,palette.muted).apply {setPadding(palette.dp(4),0,palette.dp(10),palette.dp(6))},
+                        LinearLayout.LayoutParams(-2,-2),
                     )
-                    if(draft!=null){
-                        timeHead.addView(mText("do cronômetro",10.5f,accent,medium=true),LinearLayout.LayoutParams(-2,-2))
-                    }
-                    val timeRow=LinearLayout(activity).apply {orientation=LinearLayout.HORIZONTAL}
-                    body.addView(timeRow,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(8)})
-                    fun timeField(hintLabel:String,unitSuffix:String,maxLen:Int,tagName:String,endMargin:Int):EditText {
-                        val box=LinearLayout(activity).apply {
-                            orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL
-                            background=fieldBg()
-                            setPadding(palette.dp(14),palette.dp(2),palette.dp(12),palette.dp(2))
-                        }
-                        val ed=EditText(activity).apply {
-                            tag=tagName;hint=hintLabel;inputType=InputType.TYPE_CLASS_NUMBER;isSingleLine=true
-                            filters=arrayOf(android.text.InputFilter.LengthFilter(maxLen))
-                            setTextColor(palette.text);setHintTextColor(palette.tint(palette.muted,150))
-                            textSize=18f;typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
-                            fontFeatureSettings="tnum";background=null;setPadding(0,0,0,0)
-                            addTextChangedListener(object:TextWatcher {
-                                override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
-                                override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){clearError()}
-                                override fun afterTextChanged(s:Editable?){}
-                            })
-                        }
-                        box.addView(ed,LinearLayout.LayoutParams(0,-1,1f))
-                        box.addView(mText(unitSuffix,12f,palette.muted),LinearLayout.LayoutParams(-2,-2))
-                        timeRow.addView(box,LinearLayout.LayoutParams(0,palette.dp(50),1f).apply {if(endMargin>0)marginEnd=palette.dp(endMargin)})
-                        return ed
-                    }
-                    val hours=timeField("0","h",3,"reading-hours",8)
-                    val minutes=timeField("0","min",2,"reading-minutes",0)
+                    val minutes=timeField(2,"reading-minutes",46)
+                    timeLine.addView(
+                        sText("min",13f,palette.muted).apply {setPadding(palette.dp(4),0,0,palette.dp(6))},
+                        LinearLayout.LayoutParams(-2,-2),
+                    )
                     if(draft!=null){
                         val total=(repository.elapsed(draft)+59999)/60000
                         hours.setText((total/60).toString())
                         minutes.setText((total%60).toString())
                     }
 
-                    body.addView(errorText,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(8)})
-                    body.addView(View(activity).apply {setBackgroundColor(hairline)},LinearLayout.LayoutParams(-1,1).apply {topMargin=palette.dp(4);bottomMargin=palette.dp(12)})
+                    sheet.addView(errorText,LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(8)})
 
-                    // 4) Primary action + secondary actions
-                    body.addView(
-                        mText("Registrar leitura",13.5f,palette.background,medium=true).apply {
-                            tag="reading-submit";gravity=Gravity.CENTER;minHeight=palette.dp(46);isFocusable=true
-                            background=btnBg(true)
-                            setOnClickListener {
-                                val target=chosenPage() ?: return@setOnClickListener
-                                if(target<=startRef){showError("Para voltar a página, use Só corrigir página.");return@setOnClickListener}
-                                val h=hours.text.toString().toIntOrNull() ?: 0
-                                val m=minutes.text.toString().toIntOrNull() ?: 0
-                                if(m !in 0..59 || h*60+m<=0){showError("Informe o tempo de leitura.");return@setOnClickListener}
-                                try {repository.recordReading(b.id,current.currentPage,target,(h*60L+m)*60000);committed=true;dlg.dismiss();refresh()}
-                                catch(e:Exception){showError(e.message ?: "Não foi possível registrar.")}
-                            }
+                    val btnRow=LinearLayout(activity).apply {orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL}
+                    sheet.addView(btnRow,LinearLayout.LayoutParams(-1,-2).apply {topMargin=palette.dp(6)})
+                    btnRow.addView(
+                        flatButton(android.R.id.button3,"reading-correct","Só corrigir página",primary=false){
+                            val target=chosenPage() ?: return@flatButton
+                            try {correctPage(target);if(draft?.runningSince!=null)repository.start(b.id);committed=true;dialog.dismiss();refresh()}
+                            catch(e:Exception){showError(e.message ?: "Não foi possível corrigir.",onPage=true)}
                         },
-                        LinearLayout.LayoutParams(-1,-2).apply {bottomMargin=palette.dp(8)},
+                        LinearLayout.LayoutParams(-2,-2),
                     )
-                    val secondaryRow=LinearLayout(activity).apply {orientation=LinearLayout.HORIZONTAL}
-                    body.addView(secondaryRow,LinearLayout.LayoutParams(-1,-2))
-                    secondaryRow.addView(
-                        mText("Só corrigir página",12f,palette.text,medium=true).apply {
-                            tag="reading-correct";gravity=Gravity.CENTER;minHeight=palette.dp(40);isFocusable=true
-                            background=btnBg(false,outlined=true)
-                            setOnClickListener {
-                                val target=chosenPage() ?: return@setOnClickListener
-                                try {correctPage(target);if(draft?.runningSince!=null)repository.start(b.id);committed=true;dlg.dismiss();refresh()}
-                                catch(e:Exception){showError(e.message ?: "Não foi possível corrigir.")}
-                            }
+                    btnRow.addView(View(activity),LinearLayout.LayoutParams(0,1,1f))
+                    btnRow.addView(
+                        flatButton(android.R.id.button1,"reading-submit","Salvar",primary=true){
+                            val target=chosenPage() ?: return@flatButton
+                            if(target<=startRef){showError("Para voltar a página, use Só corrigir página.",onPage=true);return@flatButton}
+                            val h=hours.text.toString().toIntOrNull() ?: 0
+                            val m=minutes.text.toString().toIntOrNull() ?: 0
+                            if(m !in 0..59 || h*60+m<=0){showError("Informe o tempo de leitura.");return@flatButton}
+                            try {repository.recordReading(b.id,current.currentPage,target,(h*60L+m)*60000);committed=true;dialog.dismiss();refresh()}
+                            catch(e:Exception){showError(e.message ?: "Não foi possível registrar.")}
                         },
-                        LinearLayout.LayoutParams(0,-2,1.35f).apply {marginEnd=palette.dp(8)},
+                        LinearLayout.LayoutParams(-2,-2),
                     )
-                    secondaryRow.addView(
-                        mText("Cancelar",12f,palette.muted,medium=true).apply {
-                            tag="reading-cancel";gravity=Gravity.CENTER;minHeight=palette.dp(40);isFocusable=true
-                            background=btnBg(false)
-                            setOnClickListener {restoreOnce();dlg.dismiss()}
-                        },
-                        LinearLayout.LayoutParams(0,-2,1f),
-                    )
+                }
+
+                val scroll=ScrollView(activity).apply {isVerticalScrollBarEnabled=false;addView(sheet,FrameLayout.LayoutParams(-1,-2))}
+                dialog.setContentView(scroll)
+                dialog.window?.apply {
+                    setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+                    setLayout(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT)
+                    setGravity(Gravity.BOTTOM)
+                    setDimAmount(0.55f)
+                    setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
                 }
                 progressDialog=dialog
                 dialog.setOnCancelListener {restoreOnce()}
                 dialog.setOnDismissListener {if(progressDialog===dialog)progressDialog=null}
+                dialog.show()
             }
         })
     }

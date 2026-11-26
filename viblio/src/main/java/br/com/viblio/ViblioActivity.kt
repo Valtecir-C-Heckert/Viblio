@@ -146,8 +146,14 @@ class ViblioActivity : Activity() {
     private lateinit var updateToastLabel: android.widget.TextView
     private lateinit var updateToastAction: android.widget.TextView
     private lateinit var updateToastClose: android.widget.TextView
+    private lateinit var updateToastProgressWrap: FrameLayout
+    private lateinit var updateToastProgressFill: android.view.View
     private var availableUpdate: br.com.viblio.account.AppUpdateRelease? = null
     private var updateToastDismissedTag: String? = null
+    @Volatile private var updateDownloading = false
+    private var updateStatusText: String? = null
+    private var updateProgressPct = 0
+    private var pendingInstallRelease: br.com.viblio.account.AppUpdateRelease? = null
     private val updateWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     private fun purgeRemovedCustomShelves() {
@@ -162,6 +168,9 @@ class ViblioActivity : Activity() {
         if (isDestroyed) return
         val appCtx = applicationContext
         val current = br.com.viblio.account.AppUpdateChecker.currentVersion(appCtx)
+        if (!updateDownloading && pendingInstallRelease == null) {
+            updateWorker.execute { br.com.viblio.account.AppUpdateChecker.cleanupUpdates(appCtx) }
+        }
         br.com.viblio.account.AppUpdateChecker.cachedNewerRelease(appCtx, current.versionName)?.let { cached ->
             availableUpdate = cached
             refreshUpdateToastVisibility()
@@ -181,15 +190,104 @@ class ViblioActivity : Activity() {
         }
     }
 
+    private fun setUpdateProgressBar(pct: Int) {
+        updateProgressPct = pct.coerceIn(0, 100)
+        if (!::updateToastProgressWrap.isInitialized) return
+        val visible = updateDownloading
+        updateToastProgressWrap.visibility = if (visible) android.view.View.VISIBLE else android.view.View.GONE
+        if (visible) {
+            updateToastProgressWrap.post {
+                val totalW = updateToastProgressWrap.width
+                if (totalW > 0) {
+                    val w = ((totalW * updateProgressPct) / 100).coerceIn(0, totalW)
+                    updateToastProgressFill.layoutParams = FrameLayout.LayoutParams(w, FrameLayout.LayoutParams.MATCH_PARENT)
+                }
+            }
+        }
+    }
+
+    private fun startInAppUpdate(release: br.com.viblio.account.AppUpdateRelease) {
+        if (isDestroyed || updateDownloading) return
+        if (!br.com.viblio.account.AppUpdateChecker.isAllowedApkUrl(release.apkUrl)) {
+            android.widget.Toast.makeText(this, "Endereço de atualização inválido.", android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            pendingInstallRelease = release
+            android.widget.Toast.makeText(this, "Ative 'Permitir desta fonte' e volte para instalar.", android.widget.Toast.LENGTH_LONG).show()
+            val settingsIntent = Intent(
+                android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                android.net.Uri.parse("package:$packageName"),
+            )
+            runCatching { startActivity(settingsIntent) }.onFailure {
+                pendingInstallRelease = null
+                android.widget.Toast.makeText(this, "Não foi possível abrir as permissões de instalação.", android.widget.Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+        availableUpdate = release
+        updateToastDismissedTag = null
+        updateDownloading = true
+        updateStatusText = "Baixando ${release.version}…"
+        setUpdateProgressBar(2)
+        refreshUpdateToastVisibility()
+        val appCtx = applicationContext
+        val currentVer = br.com.viblio.account.AppUpdateChecker.currentVersion(appCtx).versionName
+        updateWorker.execute {
+            val result = runCatching {
+                val resolved = if (release.sumsUrl != null) release else {
+                    br.com.viblio.account.AppUpdateChecker.fetchLatestNewer(currentVer)
+                        ?.takeIf { it.tag == release.tag && it.sumsUrl != null }
+                        ?.also { br.com.viblio.account.AppUpdateChecker.recordCheckResult(appCtx, it) }
+                        ?: release
+                }
+                val apkFile = br.com.viblio.account.AppUpdateChecker.downloadAndVerifyApk(appCtx, resolved) { pct ->
+                    root.post {
+                        if (!isDestroyed && updateDownloading) {
+                            updateStatusText = if (pct >= 99) "Verificando assinatura…" else "Baixando ${resolved.version}… $pct%"
+                            setUpdateProgressBar(pct)
+                            refreshUpdateToastVisibility()
+                        }
+                    }
+                }
+                root.post {
+                    if (!isDestroyed) {
+                        updateStatusText = "Abrindo instalador…"
+                        setUpdateProgressBar(100)
+                        refreshUpdateToastVisibility()
+                    }
+                }
+                br.com.viblio.account.AppUpdateChecker.installApk(appCtx, apkFile)
+            }
+            root.post {
+                updateDownloading = false
+                updateStatusText = null
+                setUpdateProgressBar(0)
+                if (!isDestroyed) {
+                    refreshUpdateToastVisibility()
+                    result.onFailure { err ->
+                        android.widget.Toast.makeText(
+                            this@ViblioActivity,
+                            err.message ?: "Não foi possível atualizar o aplicativo.",
+                            android.widget.Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+            }
+        }
+    }
+
     private fun refreshUpdateToastVisibility() {
         if (!::updateToastBar.isInitialized) return
         val release = availableUpdate
-        val show = release != null &&
-            release.tag != updateToastDismissedTag &&
+        val show = (updateDownloading || (release != null && release.tag != updateToastDismissedTag)) &&
             !needsLogin() &&
             (!::composerDock.isInitialized || composerDock.visibility != android.view.View.VISIBLE)
-        if (show && release != null) {
-            updateToastLabel.text = "Nova versão ${release.version} disponível"
+        if (show) {
+            updateToastLabel.text = updateStatusText ?: "Nova versão ${release?.version.orEmpty()}"
+            updateToastAction.visibility = if (updateDownloading) android.view.View.GONE else android.view.View.VISIBLE
+            updateToastClose.visibility = if (updateDownloading) android.view.View.GONE else android.view.View.VISIBLE
+            updateToastProgressWrap.visibility = if (updateDownloading) android.view.View.VISIBLE else android.view.View.GONE
             updateToastBar.visibility = android.view.View.VISIBLE
         } else {
             updateToastBar.visibility = android.view.View.GONE
@@ -200,18 +298,21 @@ class ViblioActivity : Activity() {
         if (!::updateToastBar.isInitialized) return
         val gallery = br.com.centralcasa.data.LocalSettings(this).galleryUiStyle()
         updateToastBar.background = if (gallery) {
-            theme.pillShape(theme.galleryPill(246), 18, theme.tint(theme.accent, 150))
+            theme.pillShape(theme.activeSurface, 10, theme.galleryHairline(95))
         } else {
-            theme.outlined(theme.surface, theme.accent, 0)
+            theme.outlined(theme.surface, theme.lineColor, 0)
         }
+        updateToastBar.clipToOutline = gallery
         updateToastLabel.setTextColor(theme.text)
-        updateToastAction.setTextColor(theme.background)
+        updateToastAction.setTextColor(theme.accent)
         updateToastAction.background = if (gallery) {
-            theme.pillRipple(theme.accent, 14, darkRipple = true)
+            theme.pillRipple(Color.TRANSPARENT, 8)
         } else {
-            theme.outlined(theme.accent, theme.accent, 0)
+            theme.ripple(Color.TRANSPARENT, 0)
         }
         updateToastClose.setTextColor(theme.muted)
+        updateToastProgressWrap.setBackgroundColor(theme.galleryHairline(90))
+        updateToastProgressFill.setBackgroundColor(theme.accent)
         refreshUpdateToastVisibility()
     }
 
@@ -297,22 +398,16 @@ class ViblioActivity : Activity() {
         updateToastAction = android.widget.TextView(this).apply {
             tag = "app-update-toast-action"
             text = "Atualizar"
-            textSize = 11.5f
+            textSize = 12.5f
             gravity = Gravity.CENTER
             includeFontPadding = false
-            setTextColor(ui.background)
+            setTextColor(ui.accent)
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-            setPadding(ui.dp(12), ui.dp(7), ui.dp(12), ui.dp(7))
+            setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(6))
             isFocusable = true
             setOnClickListener {
                 val release = availableUpdate ?: return@setOnClickListener
-                if (br.com.viblio.account.AppUpdateChecker.isAllowedApkUrl(release.apkUrl)) {
-                    runCatching {
-                        startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(release.apkUrl)))
-                    }.onFailure {
-                        android.widget.Toast.makeText(this@ViblioActivity, "Não foi possível abrir o navegador.", android.widget.Toast.LENGTH_LONG).show()
-                    }
-                }
+                startInAppUpdate(release)
             }
         }
         updateToastClose = android.widget.TextView(this).apply {
@@ -329,15 +424,27 @@ class ViblioActivity : Activity() {
                 refreshUpdateToastVisibility()
             }
         }
-        updateToastBar = ui.row().apply {
-            tag = "app-update-toast"
+        updateToastProgressFill = android.view.View(this).apply {
+            setBackgroundColor(ui.accent)
+        }
+        updateToastProgressWrap = FrameLayout(this).apply {
+            setBackgroundColor(ui.galleryHairline(90))
+            visibility = android.view.View.GONE
+            addView(updateToastProgressFill, FrameLayout.LayoutParams(0, FrameLayout.LayoutParams.MATCH_PARENT))
+        }
+        val updateToastRow = ui.row().apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(ui.dp(14), ui.dp(10), ui.dp(8), ui.dp(10))
-            elevation = ui.dp(10).toFloat()
-            visibility = android.view.View.GONE
-            addView(updateToastLabel, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(10) })
-            addView(updateToastAction, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(4) })
+            addView(updateToastLabel, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) })
+            addView(updateToastAction, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(2) })
             addView(updateToastClose, LinearLayout.LayoutParams(ui.dp(32), ui.dp(32)))
+        }
+        updateToastBar = ui.column().apply {
+            tag = "app-update-toast"
+            elevation = ui.dp(8).toFloat()
+            visibility = android.view.View.GONE
+            addView(updateToastRow, LinearLayout.LayoutParams(-1, -2))
+            addView(updateToastProgressWrap, LinearLayout.LayoutParams(-1, ui.dp(2).coerceAtLeast(2)))
         }
         val scrollHost = FrameLayout(this).apply {
             addView(scroll, FrameLayout.LayoutParams(-1, -1))
@@ -423,7 +530,7 @@ class ViblioActivity : Activity() {
         friends=makeFriends()
         snapshotShelfPages()
         purgeRemovedCustomShelves()
-        account=AccountPanel(this,ui,accounts,changed={accounts.localChanged();render()},shelf={switchTab("shelf")},backup={library.backupSettings()})
+        account=AccountPanel(this,ui,accounts,changed={accounts.localChanged();render()},shelf={switchTab("shelf")},backup={library.backupSettings()},onInstallUpdate=::startInAppUpdate)
         offline=state?.getBoolean("viblio.offline",false) ?: false
         scanTarget=state?.getString("scan.target");scanProfile=state?.getString("scan.profile");scanEditor=state?.getString("scan.editor")
         library.restoreState(state)
@@ -663,17 +770,17 @@ class ViblioActivity : Activity() {
                         library.openShelf()
                         scroll.post { scroll.scrollTo(0,0) }
                     }
-                    onRequestShelfBookForPurchase={ entryId, goalName ->
+                    onRequestShelfBookForPurchase={ entryId, goalName, cycleId ->
                         library.planSelectionTitle=goalName
                         library.onPlanBookSelected={ picked ->
                             library.clearPlanSelection()
                             switchTab("stats")
-                            statistics?.completePurchaseBookSelection(entryId,picked)
+                            statistics?.completePurchaseBookSelection(entryId,picked,cycleId)
                         }
                         library.onCancelPlanSelection={
                             library.clearPlanSelection()
                             switchTab("stats")
-                            statistics?.completePurchaseBookSelection(entryId,null)
+                            statistics?.completePurchaseBookSelection(entryId,null,cycleId)
                         }
                         switchTab("shelf")
                         library.openShelf()
@@ -831,7 +938,7 @@ class ViblioActivity : Activity() {
     }
     override fun onStart() { super.onStart();suppressIconSwitch=false;stopped=false;accounts.start();homeAssistant.start();started=true;if(tab=="shelf" && !needsLogin()) library.onStart();catalog.retry();if(br.com.viblio.reminder.ReadingReminder.isEnabled(this)) br.com.viblio.reminder.ReadingReminder.scheduleNext(this);if(accounts.signedIn && br.com.viblio.reminder.SocialNotifier.isEnabled(this)) br.com.viblio.reminder.SocialNotifier.schedule(this);if(accounts.signedIn) refreshSocialSummary();checkAppUpdateSilently();if(needsRender)render() }
     override fun onStop() { stopped=true;accounts.stop();homeAssistant.stop();started=false;library.onStop();if(tab=="search") search.hide();if(tab=="friends")friends.hide();refreshWidgetsAsync(captureLastBook=true);super.onStop() }
-    override fun onResume() { super.onResume();if(accounts.signedIn){friends.retryPendingClubProgressSync(library.repository.books());refreshSocialSummary()};if(tab=="search" || tab=="friends") render() }
+    override fun onResume() { super.onResume();val pendingRel=pendingInstallRelease;if(pendingRel!=null){pendingInstallRelease=null;if(android.os.Build.VERSION.SDK_INT<26 || packageManager.canRequestPackageInstalls())startInAppUpdate(pendingRel)};if(accounts.signedIn){friends.retryPendingClubProgressSync(library.repository.books());refreshSocialSummary()};if(tab=="search" || tab=="friends") render() }
     override fun onDestroy() { root.removeCallbacks(pullTimeout);introView?.cancel();introView=null;socialSummaryConn?.let { runCatching { it.cancel() } };socialSummaryConn=null;socialSummaryWorker.shutdownNow();updateWorker.shutdownNow();navigationCovers.shutdownNow();accounts.close();homeAssistant.close();search.close();catalog.close();friends.close();statistics?.onDestroy();library.onDestroy();super.onDestroy() }
     override fun onSaveInstanceState(outState:Bundle) {
         outState.putString("scan.target",scanTarget);outState.putString("scan.profile",scanProfile);outState.putString("scan.editor",scanEditor)
