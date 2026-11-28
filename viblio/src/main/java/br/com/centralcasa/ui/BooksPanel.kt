@@ -2231,7 +2231,11 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         field(identity, "author", if (c.kind == "manga") "Mangaká" else "Autor", c.author, vocabulary = all.map { it.author } + books.map { it.author })
         field(identity, "publisher", "Editora", c.publisher, vocabulary = all.map { it.publisher } + books.map { it.publisher })
         val classification = section("Classificação", "Gênero organiza a Estante; a cor dos cartões acompanha a capa.")
-        if (c.kind == "book") ui.label(classification, "Light novel · coleção por volumes", 12, ui.muted)
+        kindFieldClassic(classification, c.kind) { chosen ->
+            captureCollectionEditor()
+            collectionEditor = collectionEditor?.copy(kind = chosen)
+            collectionFields.clear(); changed()
+        }
         genreFields(classification)
         val volumes = section("Volumes", "Somente os exemplares que você possui ficam na estante.")
         if (collectionEditorNew) field(volumes, "owned", "Volumes que tenho", collectionOwned, true)
@@ -2257,7 +2261,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             captureCollectionEditor(); val input = requireNotNull(collectionEditor)
             val owned = if (collectionEditorNew) collectionOwned.toIntOrNull() ?: throw IllegalArgumentException("Informe quantos volumes você possui.") else 0
             val updated = input.copy(title = input.title.trim(), author = input.author.trim(), publisher = input.publisher.trim(), genre = input.genre.trim(), updatedAt = System.currentTimeMillis()).validated()
-            if (collectionEditorNew && updated.kind == "book" && editor != null) repository.createLightNovel(updated, requireNotNull(editor), owned)
+            if (collectionEditorNew && editor != null) repository.createLightNovel(updated, requireNotNull(editor), owned)
             else if (collectionEditorNew) repository.createCollection(updated, owned) else repository.saveTitleCover(updated)
             repository.books().filter { it.collectionId==updated.id && (it.cover.isNotBlank() || it.catalogId!=null) }.forEach { catalog?.saved(it) }
             collectionFields.clear(); collectionEditor = null; editor = null; selectedCollection = updated.id; show("collection")
@@ -3372,7 +3376,15 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         if(catalog!=null && newBook && b.collectionId.isBlank()) catalogSuggestions(identity)
         suggestedField(identity, "author", "Autor", b.author, repository.books().map { it.author })
         suggestedField(identity, "publisher", "Editora", b.publisher, repository.books().map { it.publisher } + repository.collections().map { it.publisher })
-        genreFields(section("Classificação", "Gênero organiza a Estante; a cor dos cartões acompanha a capa."))
+        val classification = section("Classificação", "Gênero organiza a Estante; a cor dos cartões acompanha a capa.")
+        if (b.collectionId.isBlank()) {
+            kindFieldClassic(classification, b.kind) { chosen ->
+                captureEditor()
+                editor = editor?.copy(kind = chosen)
+                fields.clear(); changed()
+            }
+        }
+        genreFields(classification)
         val saga = section("Saga e edição", "Opcional. As sugestões usam as sagas já cadastradas.")
         suggestedField(saga, "saga", "Nome da saga", b.saga, repository.books().map { it.saga })
         field(saga, "sequence", if (b.collectionId.isNotBlank()) "Número do volume" else "Número na saga", b.sequenceNumber?.toString().orEmpty(), true)
@@ -3464,6 +3476,50 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         return inputView
     }
 
+    private fun kindFieldClassic(parent: LinearLayout, currentKind: String, onChoose: (String) -> Unit) {
+        val keys = CollectionKinds.editable.keys.toList()
+        val labels = CollectionKinds.editable.values.toTypedArray()
+        ui.label(parent, "Tipo", 12, ui.muted, true)
+        ui.action(parent, "${CollectionKinds.singular(currentKind)}  ▾") {
+            AlertDialog.Builder(activity).setTitle("Tipo").setItems(labels) { _, index ->
+                val chosen = keys[index]
+                if (chosen != currentKind) onChoose(chosen)
+            }.setNegativeButton("Cancelar", null).show()
+        }.apply {
+            tag = "editor-kind"
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            background = ui.outlined(0x40151515)
+            (layoutParams as LinearLayout.LayoutParams).bottomMargin = ui.dp(10)
+        }
+    }
+
+    private fun kindColophonRowGallery(parent: LinearLayout, palette: DisplayUi, currentKind: String, onChoose: (String) -> Unit) {
+        val hairline = palette.galleryHairline(105)
+        val keys = CollectionKinds.editable.keys.toList()
+        val labels = CollectionKinds.editable.values.toTypedArray()
+        val kRow = ui.row().apply {
+            tag = "editor-kind"
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, ui.dp(12), 0, ui.dp(12))
+            isFocusable = true
+            setOnClickListener {
+                AlertDialog.Builder(activity).setTitle("Tipo").setItems(labels) { _, index ->
+                    val chosen = keys[index]
+                    if (chosen != currentKind) onChoose(chosen)
+                }.setNegativeButton("Cancelar", null).show()
+            }
+        }
+        parent.addView(kRow, LinearLayout.LayoutParams(-1, -2))
+        kRow.addView(editorText("Tipo", 12.5f, palette.muted), LinearLayout.LayoutParams(-2, -2).apply { marginEnd = ui.dp(12) })
+        kRow.addView(
+            editorText("${CollectionKinds.singular(currentKind)} ▾", 13.5f, palette.accent, medium = true).apply {
+                gravity = Gravity.END; maxLines = 1
+            },
+            LinearLayout.LayoutParams(0, -2, 1f),
+        )
+        parent.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
+    }
+
     private fun genreColophonRowsGallery(parent: LinearLayout, palette: DisplayUi) {
         subgenreInput = null
         val hairline = palette.galleryHairline(105)
@@ -3475,7 +3531,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
             setPadding(0, ui.dp(12), 0, ui.dp(12))
             isFocusable = true
             setOnClickListener {
-                val canCreateLightNovel = screen == "editor" && editor?.kind == "book" && editor?.collectionId.orEmpty().isBlank()
+                val canCreateLightNovel = screen == "editor" && editor?.collectionId.orEmpty().isBlank()
                 val genres = BookGenres.suggestions(books.map { it.genre } + editingGenre)
                 val options = genres + (if (canCreateLightNovel) listOf("Light novel · por volumes") else emptyList()) + "+ Criar novo gênero"
                 fun choose(name: String) {
@@ -3789,6 +3845,13 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         parent.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
 
         // CATALOG COLOPHON ROWS (Key-Value hairline table — ZERO heavy boxes!)
+        if (b.collectionId.isBlank()) {
+            kindColophonRowGallery(parent, palette, b.kind) { chosen ->
+                captureEditor()
+                editor = editor?.copy(kind = chosen)
+                fields.clear(); changed()
+            }
+        }
         fields["publisher"] = editorColophonInputRow(parent, palette, "Editora", b.publisher, "Opcional", vocabulary = repository.books().map { it.publisher } + repository.collections().map { it.publisher })
         genreColophonRowsGallery(parent, palette)
         fields["saga"] = editorColophonInputRow(parent, palette, "Saga", b.saga, "Opcional", vocabulary = repository.books().map { it.saga })
@@ -3840,7 +3903,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
                 captureCollectionEditor(); val input = requireNotNull(collectionEditor)
                 val owned = if (collectionEditorNew) collectionOwned.toIntOrNull() ?: throw IllegalArgumentException("Informe quantos volumes você possui.") else 0
                 val updated = input.copy(title = input.title.trim(), author = input.author.trim(), publisher = input.publisher.trim(), genre = input.genre.trim(), updatedAt = System.currentTimeMillis()).validated()
-                if (collectionEditorNew && updated.kind == "book" && editor != null) repository.createLightNovel(updated, requireNotNull(editor), owned)
+                if (collectionEditorNew && editor != null) repository.createLightNovel(updated, requireNotNull(editor), owned)
                 else if (collectionEditorNew) repository.createCollection(updated, owned) else repository.saveTitleCover(updated)
                 repository.books().filter { it.collectionId == updated.id && (it.cover.isNotBlank() || it.catalogId != null) }.forEach { catalog?.saved(it) }
                 collectionFields.clear(); collectionEditor = null; editor = null; selectedCollection = updated.id; show("collection")
@@ -4000,6 +4063,11 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         parent.addView(View(activity).apply { setBackgroundColor(hairline) }, LinearLayout.LayoutParams(-1, 1))
 
         // CATALOG COLOPHON ROWS
+        kindColophonRowGallery(parent, palette, c.kind) { chosen ->
+            captureCollectionEditor()
+            collectionEditor = collectionEditor?.copy(kind = chosen)
+            collectionFields.clear(); changed()
+        }
         collectionFields["publisher"] = editorColophonInputRow(parent, palette, "Editora", c.publisher, "Opcional", vocabulary = all.map { it.publisher } + books.map { it.publisher })
         genreColophonRowsGallery(parent, palette)
 
@@ -4166,7 +4234,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         captureEditor()
         val b = editor ?: return
         collectionFields.clear()
-        collectionEditor = CollectionTitle(kind = "book", title = b.title, author = b.author,
+        collectionEditor = CollectionTitle(kind = "manga", title = b.title, author = b.author,
             publisher = b.publisher, genre = b.genre.takeUnless { ShelfFilters.key(it) in listOf("light novel", "light novels") }.orEmpty(), subgenres = b.selectedSubgenres.takeUnless { ShelfFilters.key(b.genre) in listOf("light novel", "light novels") }.orEmpty(), cover = b.cover, rating = b.rating)
         collectionEditorNew = true; collectionOwned = "1"
         fields.clear(); selected = null; selectedCollection = null
@@ -4177,7 +4245,7 @@ class BooksPanel(private val activity: Activity, private val baseUi: DisplayUi, 
         val books = repository.books() + repository.collections().map { it.shelfBook(emptyList()) }
         ui.label(parent, "Gênero principal", 12, ui.muted, true)
         ui.action(parent, editingGenre.ifBlank { "Selecionar gênero" } + "  ▾") {
-            val canCreateLightNovel = screen == "editor" && editor?.kind == "book" && editor?.collectionId.orEmpty().isBlank()
+            val canCreateLightNovel = screen == "editor" && editor?.collectionId.orEmpty().isBlank()
             val genres = BookGenres.suggestions(books.map { it.genre } + editingGenre)
             val options = genres + (if (canCreateLightNovel) listOf("Light novel · por volumes") else emptyList()) + "+ Criar novo gênero"
             fun choose(name: String) {

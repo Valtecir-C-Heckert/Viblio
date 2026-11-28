@@ -164,6 +164,15 @@ class ViblioActivity : Activity() {
         }
     }
 
+    private fun migrateLightNovelsToMangaOnce() {
+        val dbKey = "ln_to_manga:${br.com.centralcasa.books.LibraryProfiles.database(this)}"
+        val localPrefs = getSharedPreferences("viblio_local_migrations", MODE_PRIVATE)
+        if (localPrefs.getBoolean(dbKey, false)) return
+        val moved = runCatching { library.repository.migrateLightNovelsToManga() }.getOrDefault(0)
+        localPrefs.edit().putBoolean(dbKey, true).apply()
+        if (moved > 0 && ::accounts.isInitialized && accounts.signedIn) accounts.localChanged()
+    }
+
     private fun checkAppUpdateSilently() {
         if (isDestroyed) return
         val appCtx = applicationContext
@@ -530,6 +539,7 @@ class ViblioActivity : Activity() {
         friends=makeFriends()
         snapshotShelfPages()
         purgeRemovedCustomShelves()
+        migrateLightNovelsToMangaOnce()
         account=AccountPanel(this,ui,accounts,changed={accounts.localChanged();render()},shelf={switchTab("shelf")},backup={library.backupSettings()},onInstallUpdate=::startInAppUpdate)
         offline=state?.getBoolean("viblio.offline",false) ?: false
         scanTarget=state?.getString("scan.target");scanProfile=state?.getString("scan.profile");scanEditor=state?.getString("scan.editor")
@@ -679,6 +689,7 @@ class ViblioActivity : Activity() {
         library=makeLibrary().apply {catalog=this@ViblioActivity.catalog}
         snapshotShelfPages()
         purgeRemovedCustomShelves()
+        migrateLightNovelsToMangaOnce()
         refreshWidgetsAsync()
         if(started){homeAssistant.start();if(tab=="shelf" && !needsLogin())library.onStart();refreshSocialSummary(force=true)};render()
     }

@@ -4,6 +4,10 @@ import java.util.UUID
 
 object CollectionKinds {
     val labels = linkedMapOf("book" to "Livros", "manga" to "Mangás", "comic" to "Quadrinhos", "all" to "Todos")
+    val editable = linkedMapOf("book" to "Livro", "manga" to "Mangá", "comic" to "Quadrinho")
+    fun singular(kind: String): String = editable[kind] ?: "Livro"
+    fun isLightNovelGenre(genre: String, subgenres: List<String> = emptyList()): Boolean =
+        (listOf(genre) + subgenres).any { ShelfFilters.key(it) in listOf("light novel", "light novels") }
 }
 data class CollectionTitle(
     val id: String = UUID.randomUUID().toString(), val kind: String = "manga", val title: String,
@@ -25,8 +29,8 @@ data class CollectionTitle(
     }
     /** Keep the existing book ID so sessions, dates and the current reading stay attached. */
     fun lightNovelVolumeOne(book: LibraryBook): LibraryBook {
-        require(kind == "book" && book.kind == "book" && book.collectionId.isBlank()) { "Escolha um livro sem coleção." }
-        return book.copy(collectionId = id, sequenceNumber = 1, saga = title,
+        require(kind in CollectionKinds.editable.keys && book.collectionId.isBlank()) { "Escolha um livro sem coleção." }
+        return book.copy(kind = kind, collectionId = id, sequenceNumber = 1, saga = title,
             title = title, author = author, publisher = publisher, genre = genre,
             subgenres = subgenres, subgenre = subgenres.firstOrNull().orEmpty(), cover = cover,
             totalPages = if (book.totalPages > 0) book.totalPages else 1,

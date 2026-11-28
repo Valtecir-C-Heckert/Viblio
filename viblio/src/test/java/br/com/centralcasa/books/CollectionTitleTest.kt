@@ -89,4 +89,28 @@ class CollectionTitleTest {
         assertEquals(1, newVolume.totalPages)
     }
 
+    @Test fun convertingLightNovelToMangaPreservesIdentityAndUpdatesKind() {
+        val book = LibraryBook(id = "ln-1", title = "Re:Zero", totalPages = 320, currentPage = 110,
+            cover = "cover-1", publisher = "NewPOP", rating = 5.0, kind = "book")
+        val mangaCollection = CollectionTitle(kind = "manga", title = book.title, publisher = book.publisher, cover = book.cover)
+        val vol1 = mangaCollection.lightNovelVolumeOne(book)
+        assertEquals("ln-1", vol1.id)
+        assertEquals("manga", vol1.kind)
+        assertEquals(110, vol1.currentPage)
+        assertEquals(320, vol1.totalPages)
+        assertEquals(5.0, vol1.rating!!, 0.0)
+        assertEquals(mangaCollection.id, vol1.collectionId)
+        assertEquals(1, vol1.sequenceNumber)
+    }
+
+    @Test fun detectsLightNovelGenreAndFormatsSingularKindLabels() {
+        assertTrue(CollectionKinds.isLightNovelGenre("Light novel"))
+        assertTrue(CollectionKinds.isLightNovelGenre("Light Novels"))
+        assertTrue(CollectionKinds.isLightNovelGenre("Fantasia", listOf("Isekai", "Light Novel")))
+        assertFalse(CollectionKinds.isLightNovelGenre("Fantasia", listOf("Isekai")))
+        assertEquals("Livro", CollectionKinds.singular("book"))
+        assertEquals("Mangá", CollectionKinds.singular("manga"))
+        assertEquals("Quadrinho", CollectionKinds.singular("comic"))
+    }
+
 }

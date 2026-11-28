@@ -65,6 +65,12 @@ class LibraryRepository(private val context: Context, private val databaseName: 
                 put("cover", c.cover); put("updated_at", c.updatedAt); put("subgenres", org.json.JSONArray(c.subgenres).toString())
             }
             if (writableDatabase.update("collections", values, "id=?", arrayOf(c.id)) == 0) writableDatabase.insertOrThrow("collections", null, values)
+            writableDatabase.update(
+                "books",
+                ContentValues().apply { put("kind", c.kind); put("updated_at", c.updatedAt) },
+                "collection_id=? AND kind!=?",
+                arrayOf(c.id, c.kind),
+            )
         }
     }
     fun saveTitleCover(input: CollectionTitle) {
@@ -288,15 +294,37 @@ class LibraryRepository(private val context: Context, private val databaseName: 
     }
     fun createLightNovel(input: CollectionTitle, first: LibraryBook, ownedVolumes: Int) {
         require(ownedVolumes in 1..5000) { "Inclua pelo menos o volume 1 deste livro." }
-        val volumeOne = input.validated().lightNovelVolumeOne(first)
+        val validated = input.validated()
+        val volumeOne = validated.lightNovelVolumeOne(first)
         transaction {
-            createCollection(input.copy(expectedVolumes=input.expectedVolumes ?: input.missingVolumes?.let {(it+ownedVolumes).takeIf {n->n>0}}), 0)
+            createCollection(validated.copy(expectedVolumes=validated.expectedVolumes ?: validated.missingVolumes?.let {(it+ownedVolumes).takeIf {n->n>0}}), 0)
             save(volumeOne)
-            for (number in 2..ownedVolumes) save(LibraryBook(title = input.title, author = input.author,
-                publisher = input.publisher, genre = input.genre, subgenres = input.subgenres,
-                kind = "book", collectionId = input.id, saga = input.title, sequenceNumber = number,
+            for (number in 2..ownedVolumes) save(LibraryBook(title = validated.title, author = validated.author,
+                publisher = validated.publisher, genre = validated.genre, subgenres = validated.subgenres,
+                kind = validated.kind, collectionId = validated.id, saga = validated.title, sequenceNumber = number,
                 totalPages = 1, pagesKnown = false))
         }
+    }
+    /** Moves existing light novel collections (kind=book) and standalone light novel books to kind=manga without altering reading history or active timer. */
+    fun migrateLightNovelsToManga(): Int {
+        var moved = 0
+        val now = System.currentTimeMillis()
+        transaction {
+            val lnCollections = collections(includeArchived = true).filter { it.kind == "book" }
+            lnCollections.forEach { c ->
+                writableDatabase.update("collections", ContentValues().apply { put("kind", "manga"); put("updated_at", now) }, "id=?", arrayOf(c.id))
+                writableDatabase.update("books", ContentValues().apply { put("kind", "manga"); put("updated_at", now) }, "collection_id=?", arrayOf(c.id))
+                moved++
+            }
+            val lnBooks = books(includeArchived = true).filter {
+                it.kind == "book" && it.collectionId.isBlank() && CollectionKinds.isLightNovelGenre(it.genre, it.selectedSubgenres)
+            }
+            lnBooks.forEach { b ->
+                writableDatabase.update("books", ContentValues().apply { put("kind", "manga"); put("updated_at", now) }, "id=?", arrayOf(b.id))
+                moved++
+            }
+        }
+        return moved
     }
     fun importSnapshot(books: List<LibraryBook>, sessions: List<ReadingSession>, currentId: String?, dates: List<ReadingDate> = emptyList(), collections: List<CollectionTitle> = emptyList()): Int {
         val active = draft()
